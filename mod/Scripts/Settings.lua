@@ -55,6 +55,7 @@ local TOOLS = {
 		sm.uuid.new( "9c47acb7-ef4c-48b3-8e08-c1ce2e8beb58" ),   -- ClayTool
 	},
 	extinguisher = { sm.uuid.new( "2c7e0586-2534-44cc-9f4b-e28c436446b6" ) },
+	-- The Fire Launcher is grouped separately below, not with the spud guns.
 	-- Cornade turns out to be a TOOL, not a consumable (tools_shared.json), so
 	-- forceTool does reach it. "No explosives" is a real off switch after all,
 	-- not just damage-neutering as previously assumed.
@@ -65,13 +66,19 @@ local TOOLS = {
 		sm.uuid.new( "bb641a4f-e391-441c-bc6d-0ae21a069476" ),
 		sm.uuid.new( "ed185725-ea12-43fc-9cd7-4295d0dbf88b" ),   -- creative variant
 	},
-	spudgun = {
-		sm.uuid.new( "c5ea0c2f-185b-48d6-b4df-45c386a575cc" ),   -- rifle
-		sm.uuid.new( "f6250bf4-9726-406f-a29a-945c06e460e5" ),   -- shotgun
-		sm.uuid.new( "9fde0601-c2ba-4c70-8d5c-2a7a9fdd122b" ),   -- gatling
-		sm.uuid.new( "a2a2bb33-a841-4b23-88da-b758063d9206" ),   -- launcher
-		sm.uuid.new( "d51ec758-057b-4263-bd16-7a731e149480" ),   -- scrap rifle
+	-- Names below are the IN-GAME titles from
+	-- Survival/Gui/Language/English/inventoryDescriptions.json, not the script
+	-- class names. That distinction matters: uuid a2a2bb33 has the script class
+	-- "PotatoLauncher" but is called the FIRE LAUNCHER in game and shoots balls
+	-- of fire. Grouping it with the spud guns on class name alone left a
+	-- flamethrower enabled by default. Always check the title, not the class.
+	spudguns = {
+		sm.uuid.new( "c5ea0c2f-185b-48d6-b4df-45c386a575cc" ),   -- Spud Gun
+		sm.uuid.new( "f6250bf4-9726-406f-a29a-945c06e460e5" ),   -- Spud Shotgun
+		sm.uuid.new( "9fde0601-c2ba-4c70-8d5c-2a7a9fdd122b" ),   -- Spudling Gun
+		sm.uuid.new( "d51ec758-057b-4263-bd16-7a731e149480" ),   -- Scrap Spud Gun
 	},
+	firelauncher = { sm.uuid.new( "a2a2bb33-a841-4b23-88da-b758063d9206" ) },
 	painttool = { sm.uuid.new( "c60b9627-fc2b-4319-97c5-05921cb976c6" ) },
 	connecttool = { sm.uuid.new( "8c7efc37-cd7c-4262-976e-39585f8527bf" ) },
 	weldtool = { sm.uuid.new( "fdb8b8be-96e7-4de0-85c7-d2f42e4f33ce" ) },
@@ -115,12 +122,15 @@ Settings.SCHEMA = {
 	-- single block anywhere. Disabling it was protecting against nothing.
 	{ key = "sledgehammer", kind = "bool", default = true,
 	  help = "allow the sledgehammer (it cannot break protected builds anyway)" },
-	{ key = "spudgun", kind = "bool", default = true, help = "allow the spudguns" },
+	{ key = "spudguns", kind = "bool", default = true,
+	  help = "allow the Spud Gun / Shotgun / Spudling / Scrap Spud Gun" },
 	{ key = "glowsticks", kind = "bool", default = true, help = "allow glowsticks" },
 
 	-- The three the owner wants off out of the box. Everything else is a build
 	-- tool and stays on.
-	{ key = "claygun", kind = "bool", default = false, help = "allow the clay gun" },
+	{ key = "claygun", kind = "bool", default = false, help = "allow the Clay Gun" },
+	{ key = "firelauncher", kind = "bool", default = false,
+	  help = "allow the Fire Launcher (the flamethrower -- shoots balls of fire)" },
 	{ key = "extinguisher", kind = "bool", default = false, help = "allow the fire extinguisher" },
 	{ key = "cornades", kind = "bool", default = false, help = "allow cornades (explosives)" },
 	{ key = "painttool", kind = "bool", default = true, help = "allow the paint tool" },
@@ -134,11 +144,22 @@ Settings.SCHEMA = {
 
 	-- "Allowlists sounds like a good idea" -- JuneCarya, stream chat, endorsed by
 	-- the owner in the same conversation. Nobody who is not on the list gets in.
-	-- Asked for, and not deliverable. There is no binding to turn player-vs-player
-	-- collision off: the executable's whole string table contains isGhost (a body
-	-- getter, no setter), setCollisionSoundEnabled (audio only) and the
-	-- onCollision callbacks. Nothing that changes what a character collides with.
-	-- Left out rather than shipped as a switch that silently does nothing.
+	-- PLAYER-VS-PLAYER COLLISION CANNOT BE DISABLED. Asked for twice; the answer
+	-- did not change, so here is the evidence in full so nobody has to re-derive it:
+	--
+	--   * The complete wrap_Character.cpp binding list is setSwimming, setDiving,
+	--     setClimbing, setDowned, setHovering, setVisible, setColor, applyImpulse,
+	--     setUpDirection, setWorldPosition and friends. No collision anything.
+	--   * The executable's entire string table contains exactly three
+	--     collision-related identifiers reachable from Lua: isGhost (a BODY
+	--     getter, no setter and not a character), setCollisionSoundEnabled
+	--     (audio only), and the onCollision callbacks (notifications).
+	--   * setFlying and setHovering exist but the binary itself carries the
+	--     string "Player characters can not activate flying."
+	--
+	-- No switch is exposed here, because a setting that appears in /settings and
+	-- silently does nothing is worse than an honest gap. /home is the mitigation:
+	-- it fixes being shoved somewhere, which is the actual complaint.
 
 	{ key = "allowlist", kind = "bool", default = false,
 	  help = "only players on the allow list may join (/allow <name>)" },

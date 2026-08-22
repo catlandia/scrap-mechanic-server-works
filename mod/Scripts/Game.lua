@@ -463,6 +463,8 @@ function Game.client_onCreate( self )
 		"How this server works and what you can type" )
 	sm.game.bindChatCommand( "/rules", {}, "cl_onAdminCommand",
 		"The server rules and the numbers currently in force" )
+	sm.game.bindChatCommand( "/home", {}, "cl_onAdminCommand",
+		"Teleport back to your own plot" )
 
 	sm.game.bindChatCommand( "/plot",
 		{ { "string", "action", false, { "claim", "info", "team", "leave", "list" } },
@@ -529,7 +531,10 @@ function Game.cl_onAdminCommand( self, params )
 	self.network:sendToServer( "sv_n_adminCommand", params )
 end
 
-local PLAYER_COMMANDS = { ["/help"] = true, ["/plot"] = true, ["/players"] = true, ["/rules"] = true }
+local PLAYER_COMMANDS = {
+	["/help"] = true, ["/plot"] = true, ["/players"] = true,
+	["/rules"] = true, ["/home"] = true,
+}
 
 function Game.sv_n_adminCommand( self, params, player )
 	local function reply( text )
@@ -553,6 +558,7 @@ function Game.sv_n_adminCommand( self, params, player )
 		reply( "  /plot team <name>   ask a neighbour to team up (they type it back)" )
 		reply( "  /plot leave         give up your plot" )
 		reply( "  /players            who is here" )
+		reply( "  /home               teleport back to your own plot" )
 		if isHost then
 			reply( "HOST" )
 			reply( "  /settings  /set <name> <value>" )
@@ -585,6 +591,37 @@ function Game.sv_n_adminCommand( self, params, player )
 		reply( "  11. Fireworks " .. onoff( "fireworks" ) .. ", plasma drills " .. onoff( "plasmadrills" ) )
 		reply( "  12. Beacons " .. onoff( "beacons" ) )
 		reply( "Go over a limit and your plot locks until you trim it. Nothing is taken away." )
+		return
+	end
+
+	-- Player-vs-player collision cannot be turned off (see the note in
+	-- Settings.lua for the full evidence), so people do still get shoved and
+	-- flung -- stream chat, verbatim: "yall are gonna have to teleport me towards
+	-- here cuz i got flung real hard". This does not prevent that, it undoes it.
+	if cmd == "/home" then
+		local perma = Identity.Sv_PermaOf( player )
+		local index = perma and self.sv.plots:sv_plotOf( perma )
+		if index == nil then
+			reply( "you do not own a plot -- stand on an empty one and /plot claim" )
+			return
+		end
+		local character = player:getCharacter()
+		if not ( character and sm.exists( character ) ) then
+			reply( "no character to move" )
+			return
+		end
+		local plots = self.sv.plots
+		local stride = plots:sv_stride()
+		local ox, oy = plots:sv_originBlocks()
+		local col = ( index - 1 ) % plots.grid.cols
+		local row = math.floor( ( index - 1 ) / plots.grid.cols )
+		local bx = ox + col * stride + plots.grid.plot * 0.5
+		local by = oy + row * stride + plots.grid.plot * 0.5
+		local ok = pcall( function()
+			character:setWorldPosition( sm.vec3.new( bx * Plots.BLOCK, by * Plots.BLOCK,
+				character.worldPosition.z + 1 ) )
+		end )
+		reply( ok and string.format( "sent you to plot %d", index ) or "teleport failed" )
 		return
 	end
 
