@@ -1,0 +1,9 @@
+{
+	"allow_add_mods" : true,
+	"custom_icons" : false,
+	"description" : "Creative custom game built for hosting building events. Anti-grief protection you can arm in one command, and a ban list that survives between events.",
+	"localId" : "a34bfc8b-2570-420a-973b-3409182dad8d",
+	"name" : "Server Works",
+	"type" : "Custom Game",
+	"version" : 1
+}

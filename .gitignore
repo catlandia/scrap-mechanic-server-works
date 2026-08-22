@@ -1,0 +1,11 @@
+# Written by the running game, not by us
+mod/BanList.json
+mod/Players.json
+mod/Settings.json
+mod/Snapshots/*.json
+
+__pycache__/
+*.pyc
+
+# local Claude Code tooling, not part of the mod
+.claude/
