@@ -1,42 +1,139 @@
 dofile( "$GAME_DATA/Scripts/game/worlds/CreativeFlatWorld.lua" )
+dofile( "$CONTENT_DATA/Scripts/Protection.lua" )
+dofile( "$CONTENT_DATA/Scripts/Plots.lua" )
+dofile( "$CONTENT_DATA/Scripts/Rules.lua" )
+dofile( "$CONTENT_DATA/Scripts/Snapshots.lua" )
 
--- Our own world, for two reasons: explosions, and fire spread.
+-- The World script, and the reason this file carries the weight of the mod.
 --
--- EXPLOSIONS. Stream chat from the 2026-08-22 event reports a cornade going off
--- and someone "trying to use explosives". Bodies are already safe -- Protection
--- pins destructable false -- but the ground is not. CreativeBaseWorld's
--- server_onExplosion calls world:sphereVoxelDensitySubtraction(), which digs a
--- crater, and no body flag covers that. server_onExplosion is a notification,
--- not a veto: it returns nothing and the explosion has already happened. So the
--- explosion cannot be cancelled, but its terrain damage simply is not applied.
+-- MEASURED, first run, 2026-08-22 23:16:44:
 --
--- FIRE. Turning fire off takes two switches, because the engine has two
--- mechanisms. sm.fire.setFireLimit( 0 ) caps how many fire instances may exist
--- (Settings handles that). AttachedFireManager is the separate system that walks
--- burning shapes each tick and lights their neighbours -- that is the *spread*.
--- Capping the instance budget without stopping the manager leaves spread logic
--- running every tick against a budget of zero, which is wasted work at best.
+--   [C]: in function 'getAllBodies'
+--   Protection.lua:165: in function 'sv_setMode'
+--   Game.lua:123: in function 'server_onCreate'
+--   ERROR: Calling world dependent functions in a no world script!
+--
+-- A Game script has NO WORLD. sm.body.getAllBodies, and everything else that
+-- touches bodies, is world-dependent and simply cannot be called from it. That
+-- is why vanilla keeps restrictAllBodies() in world_util and calls it from
+-- BuilderWorld -- a *world* script -- and following the vanilla structure would
+-- have avoided the whole class of bug.
+--
+-- So: anything that touches a body lives here. Game.lua keeps chat, identity,
+-- settings and timers, and forwards world work over sm.event.sendToWorld.
+--
+-- Game and World share one Lua global environment (this is how vanilla's
+-- g_unitManager, created in CreativeGame, is reachable from CreativeBaseWorld),
+-- so the Settings and Identity modules are visible from both without plumbing.
+--
+-- This file also exists to stop explosions cratering the ground and to stop fire
+-- spreading; see server_onExplosion and server_onFixedUpdate below.
 
 World = class( CreativeFlatWorld )
 
--- Set from Settings. Globals rather than instance state because the world object
--- is not reachable from a settings apply function.
+-- Set from Settings; globals because a settings apply function cannot reach the
+-- world instance.
 g_swProtectTerrain = true
 g_swFireEnabled = false
 
+-- Reachable from Game.lua for read-only status queries.
+g_swProtection = nil
+g_swPlots = nil
+g_swRules = nil
+g_swSnapshots = nil
+
+local TICKS_PER_SECOND = 40
+
+
+function World.server_onCreate( self )
+	CreativeFlatWorld.server_onCreate( self )
+
+	self.sw = {
+		lastCensus = nil,
+		alarmQuietUntil = 0,
+		buildDeadline = nil,
+		nextAutoSnapshot = nil,
+		patrolFaulted = false,
+		rulesFaulted = false,
+	}
+
+	g_swSnapshots = Snapshots()
+	g_swSnapshots:sv_onCreate()
+
+	g_swPlots = Plots()
+	g_swPlots:sv_onCreate( Plots.Sv_LoadFile() )
+
+	g_swProtection = Protection()
+	g_swProtection:sv_onCreate( Settings.Get( "protection" ) )
+
+	g_swProtection:sv_setResolver( function( body )
+		-- Rule 3: nothing is buildable at all until the host opens building.
+		if Settings.Get( "buildopen" ) == false then
+			return false
+		end
+		return g_swPlots:sv_bodyIsOpen( body )
+	end )
+
+	g_swRules = Rules()
+	g_swRules:sv_onCreate()
+
+	-- Now that a world exists, the world-dependent settings can actually apply.
+	-- sm.fire.setFireLimit is one of them: CreativeBaseWorld calls it from its own
+	-- server_onCreate, which is the proof it belongs here and not in Game.
+	Settings.Sv_ApplyAll()
+	self:sv_applySettings()
+
+	local _, detail = g_swProtection:sv_setMode( g_swProtection:sv_getMode() )
+	sm.log.info( string.format( "[ServerWorks] world ready, protection %s (%s)",
+		g_swProtection:sv_getMode(), tostring( detail ) ) )
+end
+
+function World.sv_applySettings( self )
+	g_swPlots.enabled = Settings.Get( "plots" ) == true
+	Plots.PUSH_INTRUDERS = Settings.Get( "pushintruders" ) == true
+
+	local minutes = tonumber( Settings.Get( "autosave" ) ) or 0
+	if minutes > 0 then
+		if self.sw.nextAutoSnapshot == nil then
+			self.sw.nextAutoSnapshot = sm.game.getCurrentTick() + minutes * 60 * TICKS_PER_SECOND
+		end
+	else
+		self.sw.nextAutoSnapshot = nil
+	end
+end
+
+function World.sv_reply( self, player, text )
+	sm.event.sendToGame( "sv_e_swReply", { player = player, text = text } )
+end
+
+function World.sv_broadcast( self, text )
+	sm.event.sendToGame( "sv_e_swBroadcast", { text = text } )
+end
+
+function World.sv_quietAlarm( self, seconds )
+	self.sw.alarmQuietUntil = sm.game.getCurrentTick() + seconds * TICKS_PER_SECOND
+end
+
+
+--[[ explosions and fire ]]
+
 function World.server_onExplosion( self, center, destructionLevel, radius )
 	if g_swProtectTerrain then
-		-- Deliberately skipping the base call. CablebotManager.Sv_Explosion goes
-		-- with it; there are no cablebots in a flat creative build world, and
-		-- letting an explosion cut cables would be griefing by another name.
+		-- server_onExplosion is a notification, not a veto: the explosion has
+		-- already happened. What can still be declined is the terrain damage,
+		-- which is the base class calling sphereVoxelDensitySubtraction and is
+		-- not covered by any body permission flag.
 		return
 	end
 	CreativeFlatWorld.server_onExplosion( self, center, destructionLevel, radius )
 end
 
--- The parent's body is three calls and there is no way to skip just one of them,
--- so it is restated here rather than delegated. If CreativeBaseWorld gains a
--- fourth call in a game update, this must gain it too -- check
+
+--[[ the tick ]]
+
+-- The parent's body is three calls and there is no way to skip only one of them,
+-- so it is restated rather than delegated. If CreativeBaseWorld gains a fourth
+-- call in a game update this must gain it too -- recheck
 -- Data/Scripts/game/worlds/CreativeBaseWorld.lua after any patch.
 function World.server_onFixedUpdate( self )
 	if g_swFireEnabled then
@@ -44,6 +141,27 @@ function World.server_onFixedUpdate( self )
 	end
 	CablebotManager.Sv_OnWorldFixedUpdate( self.world )
 	self.waterManager:sv_onFixedUpdate()
+
+	local tick = sm.game.getCurrentTick()
+
+	-- A fault here must never take the world down mid-event: the world stays in
+	-- whatever state it is already in and /unlock still works.
+	local ok, err = pcall( function()
+		g_swPlots:sv_updateOccupancy( function( player )
+			return Identity.Sv_PermaOf( player )
+		end, tick )
+		g_swProtection:sv_onFixedUpdate()
+	end )
+	if not ok and not self.sw.patrolFaulted then
+		self.sw.patrolFaulted = true       -- log once, never per tick
+		sm.log.warning( "[ServerWorks] protection patrol disabled after error: " .. tostring( err ) )
+		g_swProtection.patrolEnabled = false
+	end
+
+	self:sv_stepSnapshots()
+	self:sv_checkRules( tick )
+	self:sv_checkGriefAlarm( tick )
+	self:sv_checkTimers( tick )
 end
 
 function World.client_onFixedUpdate( self )
@@ -52,4 +170,400 @@ function World.client_onFixedUpdate( self )
 	end
 	CablebotManager.Cl_OnWorldFixedUpdate( self.world )
 	self.waterManager:cl_onFixedUpdate()
+end
+
+function World.sv_stepSnapshots( self )
+	local ok, done = pcall( function() return g_swSnapshots:sv_onFixedUpdate() end )
+	if not ok then
+		sm.log.warning( "[ServerWorks] snapshot job aborted: " .. tostring( done ) )
+		g_swSnapshots.job = nil
+		return
+	end
+	if done then
+		self:sv_quietAlarm( 10 )
+		self:sv_broadcast( done )
+	end
+end
+
+-- The engine fires nothing when a plain block is destroyed, so mass deletion can
+-- only be noticed by watching the world's total shape count fall. Protection's
+-- patrol already produces that number once per cycle for one extra call per body.
+function World.sv_checkGriefAlarm( self, tick )
+	local census = g_swProtection:sv_census()
+	if census == nil then return end
+
+	local previous = self.sw.lastCensus
+	self.sw.lastCensus = census
+
+	if previous == nil or tick < self.sw.alarmQuietUntil then return end
+	if g_swSnapshots:sv_busy() then return end
+
+	local lost = previous - census
+	if lost < ( tonumber( Settings.Get( "alarmdrop" ) ) or 250 ) then return end
+
+	sm.log.info( string.format( "[ServerWorks] GRIEF ALARM: %d shapes lost", lost ) )
+	self:sv_broadcast( string.format( "*** %d blocks just disappeared ***", lost ) )
+	self:sv_quietAlarm( 30 )
+
+	if Settings.Get( "alarmlock" ) and g_swProtection:sv_getMode() ~= "locked" then
+		local locked, detail = g_swProtection:sv_setMode( "locked" )
+		if locked then
+			Settings.Sv_SetQuiet( "protection", "locked" )
+			self:sv_broadcast( "BUILDS LOCKED automatically -- " .. detail )
+			self:sv_broadcast( "Host: /restore <name> to roll back, /unlock to resume." )
+		end
+	end
+end
+
+function World.sv_checkRules( self, tick )
+	local ok, report = pcall( function()
+		return g_swRules:sv_audit( tick, g_swPlots, Settings.Get )
+	end )
+	if not ok then
+		if not self.sw.rulesFaulted then
+			self.sw.rulesFaulted = true
+			sm.log.warning( "[ServerWorks] rules audit disabled: " .. tostring( report ) )
+		end
+		return
+	end
+	if report == nil then return end       -- not due yet
+
+	-- A plot over budget stops being buildable until its owner trims it. Nothing
+	-- already built is taken away: over-budget is a brake, not a punishment.
+	g_swPlots.overBudget = {}
+	for index, reasons in pairs( g_swRules.violations ) do
+		g_swPlots.overBudget[index] = true
+		if g_swRules:sv_shouldReport( index, tick ) then
+			local owner = g_swPlots.owners[index]
+			local name = owner and Identity.Sv_NameOf( owner )
+			for _, p in ipairs( sm.player.getAllPlayers() ) do
+				if name and p.name == name then
+					self:sv_reply( p, string.format(
+						"Plot %d is over the server limits and is locked until you trim it:", index ) )
+					for _, reason in ipairs( reasons ) do
+						self:sv_reply( p, "   " .. reason )
+					end
+				end
+			end
+		end
+	end
+
+	if #report.contraband > 0 then
+		local autoremove = Settings.Get( "autoremove" ) == true
+		local labels, removedAny = {}, false
+		for _, item in ipairs( report.contraband ) do
+			labels[item.label] = ( labels[item.label] or 0 ) + 1
+			-- Explosives go regardless of the autoremove setting: announcing that
+			-- a live cornade exists and leaving it there helps nobody.
+			if ( autoremove or item.alwaysRemove ) and sm.exists( item.shape ) then
+				pcall( function() item.shape:destroyShape() end )
+				removedAny = true
+			end
+		end
+		for label, n in pairs( labels ) do
+			self:sv_broadcast( string.format( "%d %s%s %s -- banned on this server%s",
+				n, label, n > 1 and "s" or "", removedAny and "removed" or "found",
+				removedAny and "" or " (host: /set autoremove on)" ) )
+		end
+		if removedAny then self:sv_quietAlarm( 15 ) end
+	end
+end
+
+function World.sv_checkTimers( self, tick )
+	if self.sw.buildDeadline and tick >= self.sw.buildDeadline then
+		self.sw.buildDeadline = nil
+		local locked, detail = g_swProtection:sv_setMode( "locked" )
+		if locked then
+			Settings.Sv_SetQuiet( "protection", "locked" )
+			self:sv_broadcast( "Build time is up. BUILDS LOCKED -- " .. detail )
+		end
+		g_swSnapshots:sv_beginCapture( "buildend", self.world, self:sv_plotOfBody() )
+	end
+
+	local minutes = tonumber( Settings.Get( "autosave" ) ) or 0
+	if minutes > 0 and self.sw.nextAutoSnapshot and tick >= self.sw.nextAutoSnapshot then
+		self.sw.nextAutoSnapshot = tick + minutes * 60 * TICKS_PER_SECOND
+		if not g_swSnapshots:sv_busy() then
+			local started, detail = g_swSnapshots:sv_beginCapture(
+				g_swSnapshots:sv_autoName(), self.world, self:sv_plotOfBody() )
+			if started then
+				sm.log.info( "[ServerWorks] auto-snapshot: " .. detail )
+			end
+		end
+	end
+end
+
+
+--[[ helpers that need a world ]]
+
+function World.sv_plotOfBody( self )
+	return function( body )
+		local z = g_swPlots:sv_locate( body.worldPosition )
+		return ( z and z.kind == "plot" ) and z.index or nil
+	end
+end
+
+-- Wipe one plot, so a restore can repair a single build without flattening the
+-- city around it.
+function World.sv_clearPlot( self, index )
+	local removed = 0
+	for _, body in ipairs( sm.body.getAllBodies() ) do
+		if sm.exists( body ) then
+			local z = g_swPlots:sv_locate( body.worldPosition )
+			if z and z.kind == "plot" and z.index == index then
+				for _, shape in ipairs( body:getShapes() ) do
+					shape:destroyShape()
+				end
+				removed = removed + 1
+			end
+		end
+	end
+	return removed
+end
+
+
+--[[ commands forwarded from Game ]]
+
+-- params = { cmd, args, player }
+function World.sv_e_swCommand( self, params )
+	local cmd, args, player = params.cmd, params.args, params.player
+	local function reply( text ) self:sv_reply( player, text ) end
+
+	if cmd == "/lockdown" or cmd == "/unlock" then
+		local mode = "open"
+		if cmd == "/lockdown" then
+			mode = ( args[2] == "display" ) and "display" or "locked"
+		end
+		local ok, detail = g_swProtection:sv_setMode( mode )
+		if ok then
+			Settings.Sv_SetQuiet( "protection", mode )
+			sm.log.info( string.format( "[ServerWorks] protection -> %s (%s)", mode, detail ) )
+			self:sv_broadcast(
+				mode == "locked" and ( "BUILDS LOCKED (strict) -- " .. detail )
+				or mode == "display" and ( "BUILDS LOCKED, seats and buttons still work -- " .. detail )
+				or ( "Building reopened -- " .. detail ) )
+		else
+			reply( "Failed: " .. tostring( detail ) )
+		end
+
+	elseif cmd == "/protection" then
+		reply( g_swProtection:sv_status() )
+		reply( string.format( "shapes in world: %s",
+			tostring( g_swProtection:sv_census() or "counting..." ) ) )
+		local claimed, total = g_swPlots:sv_counts()
+		reply( string.format( "plots: %s, %d of %d claimed",
+			g_swPlots.enabled and "ON" or "off", claimed, total ) )
+		local progress = g_swSnapshots:sv_progress()
+		if progress then reply( progress ) end
+		if self.sw.buildDeadline then
+			local left = ( self.sw.buildDeadline - sm.game.getCurrentTick() ) / ( 60 * TICKS_PER_SECOND )
+			reply( string.format( "build time remaining: %.1f min", left ) )
+		end
+
+	elseif cmd == "/buildtime" then
+		local minutes = tonumber( args[2] ) or 0
+		if minutes <= 0 then
+			self.sw.buildDeadline = nil
+			reply( "build timer cancelled" )
+		else
+			self.sw.buildDeadline = sm.game.getCurrentTick() + minutes * 60 * TICKS_PER_SECOND
+			self:sv_broadcast( string.format( "Building closes in %g minutes.", minutes ) )
+		end
+
+	elseif cmd == "/snapshot" then
+		local name = args[2]
+		if name == nil or name == "" then name = "manual" end
+		local ok, detail = g_swSnapshots:sv_beginCapture( name, self.world, self:sv_plotOfBody() )
+		reply( ok and detail or ( "Failed: " .. tostring( detail ) ) )
+
+	elseif cmd == "/snapshots" then
+		local names = g_swSnapshots:sv_names()
+		if #names == 0 then
+			reply( "no snapshots yet -- /snapshot to make one" )
+		else
+			for _, line in ipairs( names ) do reply( "  " .. line ) end
+		end
+
+	elseif cmd == "/restore" then
+		local opts = {}
+		if params.plot then
+			opts.plot = params.plot
+			opts.clear = function() self:sv_clearPlot( params.plot ) end
+		end
+		self:sv_quietAlarm( 120 )
+		local ok, detail = g_swSnapshots:sv_beginRestore( args[2], self.world, opts )
+		if ok then
+			self:sv_broadcast( ( params.plot
+				and string.format( "Repairing plot %d -- ", params.plot )
+				or "Rolling the world back -- " ) .. detail )
+		else
+			reply( "Failed: " .. tostring( detail ) )
+		end
+
+	elseif cmd == "/purge" then
+		-- Script-side destroyShape ignores the erasable flag entirely -- vanilla's
+		-- own sv_e_clear relies on that -- so this reaches litter that protection
+		-- has otherwise made permanent.
+		local what, n, removed = args[2], tonumber( args[3] ), 0
+		if what == "plot" then
+			if n == nil then reply( "/purge plot <number>" ) return end
+			removed = self:sv_clearPlot( n )
+			reply( string.format( "cleared %d bodies from plot %d", removed, n ) )
+		elseif what == "here" then
+			local radius = n or 5
+			local character = player:getCharacter()
+			if not ( character and sm.exists( character ) ) then reply( "no character" ) return end
+			local origin = character.worldPosition
+			for _, body in ipairs( sm.body.getAllBodies() ) do
+				if sm.exists( body ) and ( body.worldPosition - origin ):length() <= radius then
+					for _, shape in ipairs( body:getShapes() ) do shape:destroyShape() end
+					removed = removed + 1
+				end
+			end
+			reply( string.format( "cleared %d bodies within %g m", removed, radius ) )
+		elseif what == "walkways" then
+			for _, body in ipairs( sm.body.getAllBodies() ) do
+				if sm.exists( body ) then
+					local z = g_swPlots:sv_locate( body.worldPosition )
+					if z == nil or z.kind ~= "plot" then
+						for _, shape in ipairs( body:getShapes() ) do shape:destroyShape() end
+						removed = removed + 1
+					end
+				end
+			end
+			reply( string.format( "cleared %d bodies off walkways and open ground", removed ) )
+		end
+		if removed > 0 then
+			self:sv_quietAlarm( 20 )       -- our own cleanup must not trip the alarm
+			sm.log.info( string.format( "[ServerWorks] purge %s: %d bodies", tostring( what ), removed ) )
+		end
+
+	elseif cmd == "/plots" or cmd == "/plotgrid" or cmd == "/settingschanged" then
+		self:sv_applySettings()
+		g_swProtection:sv_setMode( g_swProtection:sv_getMode() )   -- re-sweep
+		if cmd == "/plots" then
+			local claimed, total = g_swPlots:sv_counts()
+			self:sv_broadcast( string.format( "Plot system %s (%d of %d plots claimed).",
+				g_swPlots.enabled and "ON" or "OFF", claimed, total ) )
+		end
+
+	elseif cmd == "/plot" then
+		self:sv_plotCommand( args, player, reply )
+
+	elseif cmd == "/home" then
+		self:sv_home( player, reply )
+	end
+end
+
+function World.sv_plotCommand( self, args, player, reply )
+	local action = args[2]
+	local perma = Identity.Sv_PermaOf( player )
+
+	if perma == nil then
+		reply( "you are not registered yet -- rejoin" )
+		return
+	end
+	if not g_swPlots.enabled then
+		reply( "the plot system is off on this server" )
+		return
+	end
+
+	local character = player:getCharacter()
+	local here = character and sm.exists( character )
+		and g_swPlots:sv_locate( character.worldPosition ) or nil
+
+	local function nameOf( p ) return Identity.Sv_NameOf( p ) end
+
+	if action == "claim" then
+		if here == nil or here.kind ~= "plot" then
+			reply( "stand inside a plot to claim it -- you are on the walkway or outside the city" )
+			return
+		end
+		local ok, detail = g_swPlots:sv_claim( here.index, perma )
+		reply( detail )
+		if ok then
+			Plots.Sv_SaveFile( g_swPlots )
+			self:sv_broadcast( string.format( "%s claimed plot %d.", player.name, here.index ) )
+		end
+
+	elseif action == "info" then
+		if here == nil then
+			reply( "you are outside the city" )
+		elseif here.kind == "plot" then
+			reply( g_swPlots:sv_describe( here.index, nameOf ) )
+		elseif here.kind == "corner" then
+			reply( "walkway corner -- nobody can build here" )
+		else
+			local allowed = g_swPlots:sv_authorised( here )
+			reply( next( allowed ) ~= nil
+				and "shared filler -- the two plots either side are teamed"
+				or "filler strip -- team up with the plot opposite to build here" )
+		end
+
+	elseif action == "team" then
+		local other = args[3]
+		if other == nil or other == "" then
+			reply( "/plot team <player name>" )
+			return
+		end
+		local rec = Identity.Sv_FindByName( other )
+		local otherPerma = rec and rec.perma
+		if otherPerma == nil then
+			reply( string.format( "no player known as '%s'", other ) )
+			return
+		end
+		local ok, detail = g_swPlots:sv_request( perma, otherPerma )
+		reply( detail )
+		if ok then
+			Plots.Sv_SaveFile( g_swPlots )
+			for _, p in ipairs( sm.player.getAllPlayers() ) do
+				if Identity.Sv_PermaOf( p ) == otherPerma then
+					self:sv_reply( p, string.format(
+						"%s wants to team plots with you. Type: /plot team %s", player.name, player.name ) )
+				end
+			end
+		end
+
+	elseif action == "leave" then
+		local ok, detail = g_swPlots:sv_unteam( perma )
+		reply( detail )
+		local released, detail2 = g_swPlots:sv_release( perma )
+		reply( detail2 )
+		if ok or released then Plots.Sv_SaveFile( g_swPlots ) end
+
+	elseif action == "list" then
+		local claimed, total = g_swPlots:sv_counts()
+		reply( string.format( "%d of %d plots claimed", claimed, total ) )
+		for i in pairs( g_swPlots.owners ) do
+			reply( "  " .. g_swPlots:sv_describe( i, nameOf ) )
+		end
+	end
+end
+
+-- Player-vs-player collision cannot be turned off (see Settings.lua for the
+-- evidence), so people do get shoved and flung. This does not prevent that, it
+-- undoes it.
+function World.sv_home( self, player, reply )
+	local perma = Identity.Sv_PermaOf( player )
+	local index = perma and g_swPlots:sv_plotOf( perma )
+	if index == nil then
+		reply( "you do not own a plot -- stand on an empty one and /plot claim" )
+		return
+	end
+	local character = player:getCharacter()
+	if not ( character and sm.exists( character ) ) then
+		reply( "no character to move" )
+		return
+	end
+	local stride = g_swPlots:sv_stride()
+	local ox, oy = g_swPlots:sv_originBlocks()
+	local col = ( index - 1 ) % g_swPlots.grid.cols
+	local row = math.floor( ( index - 1 ) / g_swPlots.grid.cols )
+	local bx = ox + col * stride + g_swPlots.grid.plot * 0.5
+	local by = oy + row * stride + g_swPlots.grid.plot * 0.5
+	local ok = pcall( function()
+		character:setWorldPosition( sm.vec3.new( bx * Plots.BLOCK, by * Plots.BLOCK,
+			character.worldPosition.z + 1 ) )
+	end )
+	reply( ok and string.format( "sent you to plot %d", index ) or "teleport failed" )
 end

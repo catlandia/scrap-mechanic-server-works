@@ -37,6 +37,26 @@ local function key_fillerX( c, r )  return "x" .. c .. "_" .. r end
 local function key_fillerY( c, r )  return "y" .. c .. "_" .. r end
 
 
+-- Plot state lives in its own JSON file rather than the Game script's storage.
+-- The World is created from inside CreativeGame.server_onCreate, so at the
+-- moment World.server_onCreate runs there is no guarantee the Game has finished
+-- populating its saved table. A file has no ordering problem.
+Plots.FILE = "$CONTENT_DATA/Plots.json"
+
+function Plots.Sv_LoadFile()
+	local ok, exists = pcall( sm.json.fileExists, Plots.FILE )
+	if not ok or not exists then return nil end
+	local read, loaded = pcall( sm.json.open, Plots.FILE )
+	return ( read and type( loaded ) == "table" ) and loaded or nil
+end
+
+function Plots.Sv_SaveFile( plots )
+	local ok, err = pcall( sm.json.save, plots:sv_serialise(), Plots.FILE )
+	if not ok then
+		sm.log.warning( "[ServerWorks] could not write plots: " .. tostring( err ) )
+	end
+end
+
 function Plots.sv_onCreate( self, saved )
 	local cfg = ( saved and saved.grid ) or Plots.DEFAULT
 	self.grid = {

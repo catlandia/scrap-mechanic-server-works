@@ -187,6 +187,11 @@ Settings.SCHEMA = {
 	{ key = "autoremove", kind = "bool", default = false,
 	  help = "delete banned parts automatically instead of only warning" },
 
+	-- Not shown as a toggle; /lockdown and /unlock write it. Kept in settings so
+	-- the World can read the mode back on load without touching Game storage.
+	{ key = "protection", kind = "string", default = "open", hidden = true,
+	  help = "current protection mode: open, locked or display" },
+
 	{ key = "alarmdrop", kind = "number", default = 250,
 	  help = "blocks that must vanish at once to trip the grief alarm" },
 	{ key = "alarmlock", kind = "bool", default = true,
@@ -211,7 +216,11 @@ function Settings.Get( key )
 	return row and row.default or nil
 end
 
-function Settings.Sv_Load()
+-- applyNow defaults to true. The Game script loads with it FALSE, because half
+-- the apply hooks (sm.fire.setFireLimit, for one) are world-dependent and a Game
+-- script has no world -- calling them there throws. The World calls
+-- Settings.Sv_ApplyAll() once it exists.
+function Settings.Sv_Load( applyNow )
 	Settings.values = {}
 	local ok, exists = pcall( sm.json.fileExists, Settings.PATH )
 	if ok and exists then
@@ -225,7 +234,9 @@ function Settings.Sv_Load()
 			Settings.values[row.key] = row.default
 		end
 	end
-	Settings.Sv_ApplyAll()
+	if applyNow ~= false then
+		Settings.Sv_ApplyAll()
+	end
 end
 
 function Settings.Sv_Save()
@@ -255,7 +266,9 @@ function Settings.Sv_Set( key, raw )
 	end
 
 	local value
-	if row.kind == "bool" then
+	if row.kind == "string" then
+		value = tostring( raw )
+	elseif row.kind == "bool" then
 		local t = string.lower( tostring( raw ) )
 		if t == "on" or t == "true" or t == "yes" or t == "1" then
 			value = true
@@ -283,11 +296,22 @@ end
 function Settings.Sv_Lines()
 	local lines = {}
 	for _, row in ipairs( Settings.SCHEMA ) do
-		local v = Settings.values[row.key]
-		local shown = ( row.kind == "bool" ) and ( v and "on" or "off" ) or tostring( v )
-		lines[#lines + 1] = string.format( "  %-14s %-5s  %s", row.key, shown, row.help )
+		if not row.hidden then
+			local v = Settings.values[row.key]
+			local shown = ( row.kind == "bool" ) and ( v and "on" or "off" ) or tostring( v )
+			lines[#lines + 1] = string.format( "  %-14s %-5s  %s", row.key, shown, row.help )
+		end
 	end
 	return lines
+end
+
+
+-- Write a value without running its apply hook or announcing it. Used for
+-- bookkeeping values like the current protection mode, which are a consequence
+-- of a command rather than a setting the host typed.
+function Settings.Sv_SetQuiet( key, value )
+	Settings.values[key] = value
+	Settings.Sv_Save()
 end
 
 
