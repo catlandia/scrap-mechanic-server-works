@@ -43,30 +43,55 @@ Settings.values = {}
 -- Tool uuids, read out of the game's own scripts rather than a wiki:
 --   Survival/Scripts/game/survival_items.lua
 --   ChallengeData/Scripts/game/challenge_tools.lua
+-- Every tool uuid in vanilla, recovered from Survival/Tools/ToolSets/*.json
+-- (each entry there maps a uuid to its script class). That list is the whole
+-- set: there is NO flamethrower tool in vanilla Scrap Mechanic. If one is
+-- wanted it is coming from a Blocks-and-Parts mod and its uuid has to be added
+-- here by hand.
 local TOOLS = {
+	-- default OFF
+	claygun = {
+		sm.uuid.new( "6993e5df-6852-4e84-88ae-df49f765e784" ),   -- ClayRifle
+		sm.uuid.new( "9c47acb7-ef4c-48b3-8e08-c1ce2e8beb58" ),   -- ClayTool
+	},
+	extinguisher = { sm.uuid.new( "2c7e0586-2534-44cc-9f4b-e28c436446b6" ) },
+	-- Cornade turns out to be a TOOL, not a consumable (tools_shared.json), so
+	-- forceTool does reach it. "No explosives" is a real off switch after all,
+	-- not just damage-neutering as previously assumed.
+	cornades = { sm.uuid.new( "f978a804-0685-4c3e-b282-cedec6140f33" ) },
+
+	-- default ON
 	sledgehammer = {
-		sm.uuid.new( "ed185725-ea12-43fc-9cd7-4295d0dbf88b" ),   -- creative
-		sm.uuid.new( "bb641a4f-e391-441c-bc6d-0ae21a069476" ),   -- survival
-		sm.uuid.new( "cf41bd2d-8bd3-432b-8a92-a36eda7e7740" ),   -- obj_tool_sledgehammer
+		sm.uuid.new( "bb641a4f-e391-441c-bc6d-0ae21a069476" ),
+		sm.uuid.new( "ed185725-ea12-43fc-9cd7-4295d0dbf88b" ),   -- creative variant
 	},
 	spudgun = {
-		sm.uuid.new( "c5ea0c2f-185b-48d6-b4df-45c386a575cc" ),
-		sm.uuid.new( "2d7f1278-ac93-4039-9eb2-d31715ea10ff" ),
+		sm.uuid.new( "c5ea0c2f-185b-48d6-b4df-45c386a575cc" ),   -- rifle
+		sm.uuid.new( "f6250bf4-9726-406f-a29a-945c06e460e5" ),   -- shotgun
+		sm.uuid.new( "9fde0601-c2ba-4c70-8d5c-2a7a9fdd122b" ),   -- gatling
+		sm.uuid.new( "a2a2bb33-a841-4b23-88da-b758063d9206" ),   -- launcher
+		sm.uuid.new( "d51ec758-057b-4263-bd16-7a731e149480" ),   -- scrap rifle
 	},
 	painttool = { sm.uuid.new( "c60b9627-fc2b-4319-97c5-05921cb976c6" ) },
 	connecttool = { sm.uuid.new( "8c7efc37-cd7c-4262-976e-39585f8527bf" ) },
 	weldtool = { sm.uuid.new( "fdb8b8be-96e7-4de0-85c7-d2f42e4f33ce" ) },
 	lift = { sm.uuid.new( "8f190ce2-3a59-423e-8483-a7aa67bd5bc0" ) },
+	glowsticks = { sm.uuid.new( "9506abb9-e415-4229-a824-28a479cca788" ) },
 }
 
 -- Every setting is { key, kind, default, help, apply }. Adding one means adding
 -- a row here and nothing else -- /set and /settings pick it up automatically.
 Settings.SCHEMA = {
+	-- Two halves, because the engine has two mechanisms. setFireLimit caps how
+	-- many fire instances may exist; AttachedFireManager is the separate system
+	-- that walks burning shapes and lights their neighbours. Capping instances
+	-- without stopping the manager would leave spread logic running against a
+	-- zero budget, so our World also declines to tick it (see World.lua).
 	{ key = "fire", kind = "bool", default = false,
-	  help = "let fire start and spread",
+	  help = "let fire exist and spread at all",
 	  apply = function( v )
-		-- 0 means no fire instance may exist at all.
 		pcall( sm.fire.setFireLimit, v and ( FIRE_INSTANCE_LIMIT or 128 ) or 0 )
+		g_swFireEnabled = v and true or false
 	  end },
 
 	{ key = "terraindamage", kind = "bool", default = false,
@@ -90,7 +115,14 @@ Settings.SCHEMA = {
 	-- single block anywhere. Disabling it was protecting against nothing.
 	{ key = "sledgehammer", kind = "bool", default = true,
 	  help = "allow the sledgehammer (it cannot break protected builds anyway)" },
-	{ key = "spudgun", kind = "bool", default = true, help = "allow the spudgun" },
+	{ key = "spudgun", kind = "bool", default = true, help = "allow the spudguns" },
+	{ key = "glowsticks", kind = "bool", default = true, help = "allow glowsticks" },
+
+	-- The three the owner wants off out of the box. Everything else is a build
+	-- tool and stays on.
+	{ key = "claygun", kind = "bool", default = false, help = "allow the clay gun" },
+	{ key = "extinguisher", kind = "bool", default = false, help = "allow the fire extinguisher" },
+	{ key = "cornades", kind = "bool", default = false, help = "allow cornades (explosives)" },
 	{ key = "painttool", kind = "bool", default = true, help = "allow the paint tool" },
 	{ key = "connecttool", kind = "bool", default = true, help = "allow the connect tool" },
 	{ key = "weldtool", kind = "bool", default = true, help = "allow the weld tool" },
@@ -102,6 +134,12 @@ Settings.SCHEMA = {
 
 	-- "Allowlists sounds like a good idea" -- JuneCarya, stream chat, endorsed by
 	-- the owner in the same conversation. Nobody who is not on the list gets in.
+	-- Asked for, and not deliverable. There is no binding to turn player-vs-player
+	-- collision off: the executable's whole string table contains isGhost (a body
+	-- getter, no setter), setCollisionSoundEnabled (audio only) and the
+	-- onCollision callbacks. Nothing that changes what a character collides with.
+	-- Left out rather than shipped as a switch that silently does nothing.
+
 	{ key = "allowlist", kind = "bool", default = false,
 	  help = "only players on the allow list may join (/allow <name>)" },
 

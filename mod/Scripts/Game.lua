@@ -293,7 +293,15 @@ function Game.sv_checkToolGuard( self, tick )
 	local blocked = self.sv.blockedTools
 	if next( blocked ) == nil then return end
 
-	Settings.Sv_CheckTools( sm.player.getAllPlayers(), blocked, function( player, name )
+	-- The host runs the event: they need every tool, including the ones banned
+	-- for guests, to place and clear things. Skip them entirely.
+	local host = sm.player.getHostPlayer()
+	local guests = {}
+	for _, p in ipairs( sm.player.getAllPlayers() ) do
+		if p ~= host then guests[#guests + 1] = p end
+	end
+
+	Settings.Sv_CheckTools( guests, blocked, function( player, name )
 		self.network:sendToClient( player, "client_dropTool", name )
 	end )
 end

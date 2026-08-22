@@ -173,14 +173,21 @@ function Plots.sv_updateOccupancy( self, identify, tick )
 		end
 	end
 
+	-- The host is authorised on every square of the map. They are running the
+	-- event: they have to be able to stand anywhere, place things and clear
+	-- things, and a host who gets shoved off a plot while fixing it is useless.
+	local host = sm.player.getHostPlayer()
+
 	for zk, entry in pairs( occupied ) do
 		local allowed = self:sv_authorised( entry.zone )
 		local clean = true
 		for _, player in ipairs( entry.players ) do
-			local perma = identify( player )
-			if not ( perma and allowed[perma] ) then
-				clean = false
-				self:sv_pushOut( player, entry.zone, tick )
+			if player ~= host then
+				local perma = identify( player )
+				if not ( perma and allowed[perma] ) then
+					clean = false
+					self:sv_pushOut( player, entry.zone, tick )
+				end
 			end
 		end
 		self.zoneOpen[zk] = clean
@@ -192,6 +199,9 @@ end
 -- working -- presence enforcement would become a griefing tool of its own.
 function Plots.sv_pushOut( self, player, z, tick )
 	if not Plots.PUSH_INTRUDERS or z == nil or z.kind ~= "plot" then
+		return
+	end
+	if player == sm.player.getHostPlayer() then
 		return
 	end
 	local last = self.lastPush[player.id]
