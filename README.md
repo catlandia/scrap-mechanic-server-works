@@ -63,6 +63,19 @@ Full command list: `/help` in game. Server rules: `/rules`.
 
 ---
 
+## Releasing a version
+
+The mod revision lives in `VERSION`, **not** in `description.json` — the `version`
+field there is the game *content* version and must stay `1`, or every world load
+warns that the mod is out of date.
+
+    python dev/make_preview.py --bump    # V2, V3... stamped onto mod/preview.jpg
+    python dev/check_lua.py
+    python dev/sync_mod.py
+
+The version is on the thumbnail so a host can see which build a machine is running
+from the Custom Game list, without opening a file.
+
 ## Install
 
     python dev/check_lua.py     # compile every script through a real Lua parser

@@ -271,18 +271,22 @@ function Game.sv_checkRules( self, tick )
 	if #report.contraband > 0 then
 		local autoremove = Settings.Get( "autoremove" ) == true
 		local labels = {}
+		local removedAny = false
 		for _, item in ipairs( report.contraband ) do
 			labels[item.label] = ( labels[item.label] or 0 ) + 1
-			if autoremove and sm.exists( item.shape ) then
+			-- Explosives go regardless of the autoremove setting: announcing that
+			-- a live cornade exists and then leaving it there helps nobody.
+			if ( autoremove or item.alwaysRemove ) and sm.exists( item.shape ) then
 				pcall( function() item.shape:destroyShape() end )
+				removedAny = true
 			end
 		end
 		for label, n in pairs( labels ) do
 			self:sv_broadcast( string.format( "%d %s%s %s -- banned on this server%s",
-				n, label, n > 1 and "s" or "", autoremove and "removed" or "found",
-				autoremove and "" or " (host: /set autoremove on)" ) )
+				n, label, n > 1 and "s" or "", removedAny and "removed" or "found",
+				removedAny and "" or " (host: /set autoremove on)" ) )
 		end
-		if autoremove then self:sv_quietAlarm( 15 ) end
+		if removedAny then self:sv_quietAlarm( 15 ) end
 	end
 end
 

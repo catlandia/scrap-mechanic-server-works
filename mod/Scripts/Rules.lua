@@ -75,7 +75,18 @@ local LIGHTS = set{
 }
 
 -- Contraband. Each maps to the setting that permits it.
+--
+-- alwaysRemove means "delete on sight regardless of the autoremove setting".
+-- A beacon is a rule infraction and a warning is the right response. A live
+-- cornade is a hazard, and warning the chat that one exists while leaving it
+-- sitting there is useless -- which is why explosives kept going off after the
+-- tool guard started blocking the cornade TOOL: these are placeable shapes, and
+-- sm.tool.forceTool has no reach over a shape someone has already put down.
 local CONTRABAND = {
+	["e3bdeea5-d349-4d08-9b5a-5695ea05537e"] =
+		{ setting = "cornades", label = "cornade", alwaysRemove = true },
+	["a4c1590f-c491-4e7f-974a-f1cd09503c18"] =
+		{ setting = "cornades", label = "armed explosive", alwaysRemove = true },
 	["a5985971-1f95-4373-a5d9-4ce0a3e74851"] = { setting = "beacons", label = "beacon" },
 	["78677314-1885-4c9e-87ee-04cdc929b0dc"] = { setting = "fireworks", label = "fireworks" },
 	["9b9c0a82-a9bf-41d4-a599-58182f162058"] = { setting = "plasmadrills", label = "plasma drill" },
