@@ -840,6 +840,15 @@ def the_my_plot_panel_fits_in_every_state():
         items = panel_fits(f"my plot ({label})", root, G.W, G.H)
         no_button_is_buried(f"my plot ({label})", items, G.H)
 
+        # The map has to actually be there. panel_fits would happily pass a
+        # panel whose map drew nothing at all, and a blank square where the
+        # city should be is the exact bug this panel exists to avoid.
+        if extra.get("plotsOn"):
+            cells = [i for i in items if str(i["name"]).startswith(("md", "mp"))]
+            assert len(cells) > 50, (
+                f"my plot ({label}): the map drew {len(cells)} cells -- "
+                f"PlotsGui.AddMap is not being reached")
+
 
 def main():
     check("settings: schema is internally consistent", settings_schema_is_sane)
