@@ -393,8 +393,10 @@ function Game.client_onCreate( self )
 		{ { "string", "name", false }, { "number", "plot", true } }, "cl_onAdminCommand",
 		"Host: rebuild from a snapshot. Add a plot number to repair one plot. Run twice to confirm" )
 	sm.game.bindChatCommand( "/purge",
-		{ { "string", "what", false, { "here", "plot", "walkways" } }, { "number", "n", true } },
-		"cl_onAdminCommand", "Host: delete junk. here <radius> | plot <n> | walkways" )
+		{ { "string", "what", false, { "look", "carry", "here", "plot", "walkways" } },
+		  { "number", "n", true } },
+		"cl_onAdminCommand",
+		"Host: delete junk. look | carry | here <m> | plot <n> | walkways" )
 
 	sm.game.bindChatCommand( "/known", {}, "cl_onAdminCommand", "Host: everyone who has ever joined" )
 	sm.game.bindChatCommand( "/ban", nameParams(), "cl_onAdminCommand",
@@ -676,6 +678,9 @@ function Game.sv_n_adminCommand( self, params, player )
 			reply( "  /plotgrid <plot> <gap> <cols> <rows>" )
 			reply( "  /lockdown [display]  /unlock  /protection  /buildtime N  /autosave N" )
 			reply( "  /snapshot [name]  /snapshots  /restore <name> [plot]" )
+			reply( "  /purge look         delete whatever you are pointing at" )
+			reply( "  /purge look 1       delete the whole creation, not one block" )
+			reply( "  /purge carry        destroy whatever you picked up" )
 			reply( "  /purge here <m> | /purge plot <n> | /purge walkways" )
 			reply( "  /why                point at a build, ask why it is locked" )
 			reply( "  /ban <who>  /unban <who>  /banlist  /known  /kick <who>" )

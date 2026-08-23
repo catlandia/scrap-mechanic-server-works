@@ -436,7 +436,51 @@ function World.sv_e_swCommand( self, params )
 		-- own sv_e_clear relies on that -- so this reaches litter that protection
 		-- has otherwise made permanent.
 		local what, n, removed = args[2], tonumber( args[3] ), 0
-		if what == "plot" then
+		if what == "look" then
+			-- Point-and-delete. Carryable props -- gems, crates, harvestables --
+			-- get PICKED UP by the remove tool instead of erased, so once one is
+			-- on a plot there is no ordinary way to be rid of it. This reaches
+			-- them: script-side destroyShape ignores every permission flag.
+			local character = player:getCharacter()
+			if not ( character and sm.exists( character ) ) then reply( "no character" ) return end
+			local from = character.worldPosition + sm.vec3.new( 0, 0, 0.6 )
+			local hit, result = sm.physics.raycast( from,
+				from + character:getDirection() * 14, character )
+			if not hit then reply( "nothing in front of you within 14 m" ) return end
+
+			if result.type == "body" then
+				local body = result:getBody()
+				local shape = result:getShape()
+				if n and n > 0 then
+					-- a radius was given: take the whole body
+					for _, s in ipairs( body:getShapes() ) do s:destroyShape() end
+					removed = 1
+					reply( string.format( "removed the whole creation (%d shapes)", body:getShapeCount() ) )
+				elseif shape and sm.exists( shape ) then
+					shape:destroyShape()
+					removed = 1
+					reply( "removed that block" )
+				end
+			elseif result.type == "harvestable" then
+				local h = result:getHarvestable()
+				if h and sm.exists( h ) then
+					pcall( function() h:destroy() end )
+					removed = 1
+					reply( "removed that harvestable" )
+				end
+			else
+				reply( "that is not something I can remove (" .. tostring( result.type ) .. ")" )
+			end
+
+		elseif what == "carry" then
+			-- Whatever you are holding in your hands, gone.
+			local ok, carry = pcall( sm.player.getCarryData, player )
+			if not ok or carry == nil then reply( "you are not carrying anything" ) return end
+			pcall( sm.player.setCarryData, player, nil )
+			removed = 1
+			reply( "dropped and destroyed what you were carrying" )
+
+		elseif what == "plot" then
 			if n == nil then reply( "/purge plot <number>" ) return end
 			removed = self:sv_clearPlot( n )
 			reply( string.format( "cleared %d bodies from plot %d", removed, n ) )
