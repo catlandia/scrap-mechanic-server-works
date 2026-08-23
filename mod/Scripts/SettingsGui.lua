@@ -50,7 +50,8 @@ local LABEL = "0.90 0.92 0.96 1"
 SettingsGui.GROUPS = {
 	{ key = "safety", title = "SAFETY", keys = {
 		"fire", "terraindamage", "aggro", "cornades", "beacons",
-		"fireworks", "plasmadrills", "radios", "horns", "autoremove" } },
+		"fireworks", "plasmadrills", "radios", "horns", "destructible",
+		"cleanupdebris", "autoremove" } },
 	{ key = "tools", title = "TOOLS", keys = {
 		"claygun", "firelauncher", "extinguisher", "sledgehammer", "spudguns",
 		"glowsticks", "painttool", "connecttool", "weldtool", "lift" } },

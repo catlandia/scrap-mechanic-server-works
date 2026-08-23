@@ -184,6 +184,11 @@ Settings.SCHEMA = {
 	  help = "rule 5: allow radios (they cannot be muted, only banned)" },
 	{ key = "horns", kind = "bool", default = false,
 	  help = "rule 7: allow horns -- the noise pollution lever" },
+	-- Off by default because an event does not want anything breakable. Turn it
+	-- on and explosives and the sledgehammer work for real -- but only while the
+	-- world is OPEN. A locked world stays locked whatever this says.
+	{ key = "destructible", kind = "bool", default = false,
+	  help = "let explosives and the sledgehammer actually break builds" },
 	{ key = "cleanupdebris", kind = "bool", default = true,
 	  help = "vacuum up the debris an explosion leaves behind" },
 	{ key = "autoremove", kind = "bool", default = false,
@@ -347,7 +352,7 @@ Settings.PRESETS = {
 		},
 	},
 	show = {
-		label = "SHOW -- building is over, the city is on display",
+		label = "SHOW -- locked, but seats and buttons still work",
 		values = {
 			buildopen = false, protection = "display",
 			plots = true, pushintruders = false,
@@ -355,7 +360,7 @@ Settings.PRESETS = {
 		},
 	},
 	lockdown = {
-		label = "LOCKDOWN -- nothing may be touched by anyone",
+		label = "LOCKDOWN -- locked hard, seats and controllers dead too",
 		values = {
 			buildopen = false, protection = "locked",
 			plots = true, pushintruders = true,
@@ -365,6 +370,7 @@ Settings.PRESETS = {
 	sandbox = {
 		label = "SANDBOX -- free build, no plots, nothing restricted",
 		values = {
+			destructible = true,
 			buildopen = true, plots = false, protection = "open",
 			fire = true, terraindamage = true, aggro = true,
 			claygun = true, firelauncher = true, extinguisher = true,

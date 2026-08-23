@@ -19,10 +19,13 @@ Protection = class( nil )
 -- catch-up on new bodies, lower if the host is struggling.
 Protection.BODIES_PER_PATROL = 128
 
--- Note destructable is false in BOTH profiles, deliberately. Nothing at a
--- building event should ever be destroyable by explosion or sledgehammer, and
--- keeping it pinned means a bug in this file can never make the world *more*
--- griefable than it already was. Vanilla's BuilderWorld makes the same call.
+-- destructable is false in every LOCKED profile and that is not negotiable: a
+-- locked world is locked. In OPEN mode it follows the `destructible` setting,
+-- because pinning it there meant explosives could never do anything even with
+-- explosives switched on -- the host asked for a sandbox and got a museum.
+--
+-- Two open profiles rather than rebuilding one per body per tick: picking
+-- between two static tables costs nothing.
 --
 -- `usable` is the one flag with a real trade-off, and stream chat from the
 -- 2026-08-22 event settled it: someone griefed by "set the bearings in the
@@ -83,6 +86,18 @@ local PROFILES = {
 	},
 }
 
+-- open, but explosives and the sledgehammer can actually break things.
+PROFILES.open_destructible = {
+	buildable = true,
+	erasable = true,
+	connectable = true,
+	paintable = true,
+	liftable = true,
+	usable = true,
+	destructable = true,
+	convertibleToDynamic = true,
+}
+
 Protection.MODES = { "open", "locked", "display", "sweep" }
 
 local function isLockedMode( mode )
@@ -114,14 +129,19 @@ local function profileFor( self, body )
 	if isLockedMode( self.mode ) then
 		return PROFILES[self.mode]
 	end
+	local openProfile = ( Settings.Get( "destructible" ) == true )
+		and PROFILES.open_destructible or PROFILES.open
 	if self.resolver then
 		local verdict = self.resolver( body )
 		-- true/false for the common two, or a profile name for anything else.
-		if verdict == true then return PROFILES.open end
+		if verdict == true then return openProfile end
 		if verdict == false then return PROFILES.locked end
 		if type( verdict ) == "string" and PROFILES[verdict] then
 			return PROFILES[verdict]
 		end
+	end
+	if self.mode == "open" then
+		return openProfile
 	end
 	return PROFILES[self.mode]
 end
