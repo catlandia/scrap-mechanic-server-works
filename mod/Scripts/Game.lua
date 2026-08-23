@@ -28,7 +28,10 @@ Game.worldScriptFilename = "$CONTENT_DATA/Scripts/World.lua"
 Game.worldScriptClass = "World"
 
 local TICKS_PER_SECOND = 40
-local TOOL_CHECK_TICKS = 10
+-- Every 2 ticks, not 10. A banned tool has to be dead on arrival, not usable
+-- for a quarter of a second first -- long enough to fire a clay gun. The cost is
+-- one getCurrentToolUuid per guest per 2 ticks, which is nothing.
+local TOOL_CHECK_TICKS = 2
 
 -- Commands that need a world. Forwarded rather than handled here.
 local WORLD_COMMANDS = {
@@ -290,6 +293,9 @@ function Game.client_onCreate( self )
 	sm.game.bindChatCommand( "/players", {}, "cl_onAdminCommand",
 		"Who is here, with session id and permanent id" )
 
+	sm.game.bindChatCommand( "/preset",
+		{ { "string", "name", true, { "build", "show", "lockdown", "sandbox" } } },
+		"cl_onAdminCommand", "Host: apply a whole set of settings at once" )
 	sm.game.bindChatCommand( "/settings", {}, "cl_onAdminCommand",
 		"Host: open the settings panel" )
 	sm.game.bindChatCommand( "/settingslist", {}, "cl_onAdminCommand",
@@ -492,6 +498,7 @@ function Game.sv_n_adminCommand( self, params, player )
 		reply( "  /players            who is here     /rules  the server rules" )
 		if isHost then
 			reply( "HOST" )
+			reply( "  /preset build|show|lockdown|sandbox" )
 			reply( "  /settings           open the settings panel" )
 			reply( "  /settingslist  /set <name> <value>" )
 			reply( "  /plots on|off  /plotbuild  /plotclear" )
@@ -522,6 +529,21 @@ function Game.sv_n_adminCommand( self, params, player )
 		reply( "  11. Fireworks " .. onoff( "fireworks" ) .. ", plasma drills " .. onoff( "plasmadrills" ) )
 		reply( "  12. Beacons " .. onoff( "beacons" ) )
 		reply( "Go over a limit and your plot locks until you trim it. Nothing is taken away." )
+
+	elseif cmd == "/preset" then
+		local name = params[2]
+		if name == nil or name == "" then
+			reply( "presets -- /preset <name>" )
+			for _, line in ipairs( Settings.Sv_PresetLines() ) do reply( line ) end
+			return
+		end
+		local ok, detail = Settings.Sv_ApplyPreset( name )
+		reply( detail )
+		if ok then
+			self.sv.blockedTools = Settings.Sv_BlockedTools()
+			self:sv_toWorld( "/settingschanged", params, player )
+			self:sv_broadcast( "Server preset: " .. detail )
+		end
 
 	elseif cmd == "/settings" then
 		self:sv_openSettingsGui( player, 1 )

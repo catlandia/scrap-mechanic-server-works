@@ -445,7 +445,10 @@ function World.sv_e_swCommand( self, params )
 
 	elseif cmd == "/plots" or cmd == "/plotgrid" or cmd == "/settingschanged" then
 		self:sv_applySettings()
-		g_swProtection:sv_setMode( g_swProtection:sv_getMode() )   -- re-sweep
+		-- A preset can change the protection mode itself, so take it from
+		-- settings rather than re-asserting whatever the world already had.
+		local wanted = Settings.Get( "protection" )
+		g_swProtection:sv_setMode( wanted or g_swProtection:sv_getMode() )
 		if cmd == "/plots" then
 			local claimed, total = g_swPlots:sv_counts()
 			self:sv_broadcast( string.format( "Plot system %s (%d of %d plots claimed).",

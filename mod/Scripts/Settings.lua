@@ -315,6 +315,89 @@ function Settings.Sv_SetQuiet( key, value )
 end
 
 
+--[[ presets ]]
+
+-- A named bundle of settings, so a host can flip the whole server between phases
+-- of an event with one command instead of a dozen. Only the keys listed change;
+-- anything not mentioned keeps its current value, so a host's own tuning is not
+-- silently thrown away.
+Settings.PRESETS = {
+	build = {
+		label = "BUILD -- an event in progress",
+		values = {
+			buildopen = true, plots = true, pushintruders = true,
+			protection = "open",
+			fire = false, terraindamage = false, aggro = false,
+			claygun = false, firelauncher = false, extinguisher = false,
+			cornades = false, beacons = false, fireworks = false,
+			plasmadrills = false, radios = false, horns = false,
+			sledgehammer = true, spudguns = true, glowsticks = true,
+			painttool = true, connecttool = true, weldtool = true, lift = true,
+			alarmlock = true, alarmdrop = 250, autosave = 10, autoremove = true,
+		},
+	},
+	show = {
+		label = "SHOW -- building is over, the city is on display",
+		values = {
+			buildopen = false, protection = "display",
+			plots = true, pushintruders = false,
+			alarmlock = true, alarmdrop = 100, autosave = 0,
+		},
+	},
+	lockdown = {
+		label = "LOCKDOWN -- nothing may be touched by anyone",
+		values = {
+			buildopen = false, protection = "locked",
+			plots = true, pushintruders = true,
+			alarmlock = true, alarmdrop = 50, autosave = 0,
+		},
+	},
+	sandbox = {
+		label = "SANDBOX -- free build, no plots, nothing restricted",
+		values = {
+			buildopen = true, plots = false, protection = "open",
+			fire = true, terraindamage = true, aggro = true,
+			claygun = true, firelauncher = true, extinguisher = true,
+			cornades = true, beacons = true, fireworks = true,
+			plasmadrills = true, radios = true, horns = true,
+			sledgehammer = true, spudguns = true, glowsticks = true,
+			painttool = true, connecttool = true, weldtool = true, lift = true,
+			maxjoints = 0, maxbots = 0, maxlights = 0,
+			alarmlock = false, autoremove = false,
+		},
+	},
+}
+
+Settings.PRESET_ORDER = { "build", "show", "lockdown", "sandbox" }
+
+function Settings.Sv_ApplyPreset( name )
+	local preset = Settings.PRESETS[string.lower( tostring( name ) )]
+	if preset == nil then
+		return false, string.format( "no preset called '%s'", tostring( name ) )
+	end
+	local changed = 0
+	for key, value in pairs( preset.values ) do
+		if Settings.values[key] ~= value then
+			Settings.values[key] = value
+			changed = changed + 1
+		end
+	end
+	Settings.Sv_ApplyAll()
+	Settings.Sv_Save()
+	sm.log.info( string.format( "[ServerWorks] preset %s applied, %d settings changed",
+		name, changed ) )
+	return true, string.format( "%s  (%d settings changed)", preset.label, changed )
+end
+
+function Settings.Sv_PresetLines()
+	local lines = {}
+	for _, key in ipairs( Settings.PRESET_ORDER ) do
+		lines[#lines + 1] = string.format( "  %-9s %s", key, Settings.PRESETS[key].label )
+	end
+	return lines
+end
+
+
 --[[ tool guard ]]
 
 -- Which tool uuids are currently forbidden, rebuilt whenever settings change.
