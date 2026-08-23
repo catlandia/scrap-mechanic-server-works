@@ -67,7 +67,7 @@ log line is stamped `HH:MM:SS (tick/frame)`.
 
 ---
 
-## 3. The three engine constraints that shaped the design
+## 3. The five engine constraints that shaped the design
 
 Everything non-obvious in this codebase comes from one of these.
 
@@ -80,22 +80,37 @@ Everything non-obvious in this codebase comes from one of these.
    world-dependent and throw from `Game.lua`. This caused three separate bugs
    before it was understood.
 
-### Two more learned the hard way
+### Three more learned the hard way
 
 4. **Survival content wins any uuid it shares with creative.** With
-   `baseGameContent: "Survival"`, uuid `8f190ce2` is `SurvivalLift`, which has no
-   blueprint handling at all — the lift silently could not spawn creations. Our
-   own toolset can take a uuid back. Same class of bug as `Sledgehammer` reading
-   `clientPublicData.perks`.
+   `baseGameContent: "Survival"`, `Sledgehammer` read `clientPublicData.perks`,
+   which only `SurvivalPlayer` populates, and threw once per client frame. Our
+   own toolset can take a uuid back.
+
+   **A caution that cost a whole version.** The same reasoning was applied to the
+   lift — uuid `8f190ce2` resolves to `SurvivalLift`, therefore the lift is
+   broken — and it was wrong. `SurvivalLift = class( Lift )` with one live method;
+   it inherits all the blueprint handling. *Survival owning a uuid is not the same
+   as survival breaking it.* Read the subclass before blaming it.
+
 5. **A creative inventory is infinite.** `enableLimitedInventory = false`, so
    removing an item from it is meaningless — it refills instantly and reports
    success forever. Banned tools must be disabled as *tools*, not confiscated as
    items.
+6. **A blueprint on the lift is a real body, flagged as a ghost.** Not a preview,
+   not a hologram — `sm.body.getAllBodies()` returns it. Anything that walks
+   every body has to skip `body:isGhost()`, or it will pin
+   `convertibleToDynamic = false` on a creation somebody is trying to place and
+   the lift will silently do nothing. This was the real lift bug, and it took
+   three attempts to find because it produces no error and no log line.
 
 ---
 
 ## 4. Architecture
 
+    Layout.lua      ALL city geometry. Pure -- no sm.* calls at all, so the
+                    Game script, the World script and the client panel share
+                    one copy and dev/test_layout.py can execute it directly.
     Game.lua        chat, identity, settings, players, all GUIs.
                     NEVER touches a body.
     World.lua       everything that touches a body: protection, plots, rules,
@@ -164,6 +179,23 @@ protection alarmdrop alarmlock autosave`
 combined bearings/pistons/suspensions per plot — independently arrived at the
 right performance metric: joints, not blocks.
 
+### Proven outside the game
+
+`lupa` embeds a real Lua interpreter, so the mod's own files can be executed
+without Scrap Mechanic. Two harnesses run the actual code, not a restatement of
+it:
+
+- `python dev/test_layout.py` — `Layout.lua` over twelve configurations, every
+  block of every piece rasterised: no block claimed twice, no gap, no fractional
+  coordinate.
+- `python dev/test_logic.py` — 22 checks over `Settings`, `Identity`,
+  `Protection` and `Plots`: who may build where, whether a ban survives a
+  restart, whether the profile sentinel still separates all five profiles,
+  whether the lift can ever land in the hazard list.
+
+Neither says anything about bodies, tools, GUIs or the network. Those are the
+engine's, and stubbing them would be a test that lies.
+
 ### Proven in game
 
 - `/lockdown` works. The anti-grief core is real.
@@ -177,8 +209,10 @@ right performance metric: joints, not blocks.
 
 ## 6. Not done, in priority order
 
-1. **The lift may still not spawn creations.** V19 gave the uuid back to creative's
-   `Lift`; unconfirmed since.
+1. **Confirm the lift spawns creations.** V24 found the real cause — the
+   protection patrol was pinning `convertibleToDynamic = false` on the ghost body
+   of the creation being placed — and made ghosts invisible to the mod. Untested
+   in game.
 2. **UI for the rest** — `/players`, `/rules`, `/banlist`, `/known` still print to
    chat. Each wants a panel.
 3. **Steam-ID ban resolution.** Lua cannot see a Steam ID; the game log records
@@ -205,9 +239,16 @@ right performance metric: joints, not blocks.
 - **A `pcall` that swallows an error silently is a bug.** Settings appeared to do
   nothing for two rounds because a world-dependent apply hook threw inside one.
   Guard, but always log once.
-- **Verify geometry in Python before the game sees it.** Every city layout has
-  been checked for overlapping cells and full coverage first; it has caught real
-  collisions twice.
+- **Verify geometry in Python before the game sees it**, and now do it by
+  running the mod's own Lua rather than a Python restatement of it.
+  `dev/test_layout.py` and `dev/test_logic.py` execute `Layout.lua`,
+  `Settings.lua`, `Identity.lua`, `Protection.lua` and `Plots.lua` through lupa's
+  real interpreter. A Python copy of the rules can agree with itself while
+  disagreeing with the game; running the actual file cannot.
+
+- **Two rules for one shape is always a bug.** The plaza was a hole punched in a
+  grid by a second piece of arithmetic, and the panel's map was a third. Make the
+  shape fall out of one construction instead of being checked by several.
 - **Check layout arithmetic before rendering a panel.** It has caught widgets
   running past the footer three times.
 - **Never log per body or per tick.** The 1.79 GB log is the reason.

@@ -10,6 +10,90 @@ was most of them.
 
 ---
 
+## V24 — the lift, the city, and a test harness that runs the mod
+
+### The lift finally has the right cause, and V19's was wrong
+
+Reported twice: *"I cant use the lift to spawn creations"*. V19 blamed survival
+owning uuid `8f190ce2` and pointed the toolset at creative's `Lift` instead.
+**That diagnosis was wrong.** `SurvivalLift = class( Lift )` with exactly one
+live method — `client_onUpdate`, calling `setBlockSprint` — and the rest of the
+file inside a `--[[ ]]` block. It inherits every piece of blueprint handling
+there is. V19 swapped a working class for an identical one.
+
+The real cause was ours. Picking a creation out of the blueprint menu does not
+hand the lift a picture of a build: **it spawns real bodies into the world,
+marked as ghosts.** Vanilla proves it — `Lift.client_onForceTool( self, bodies )`
+takes body objects and `Lift.sv_n_removeGhostBody` calls `body:destroyCreation()`
+on one. So a ghost turns up in `sm.body.getAllBodies()` like anything else, and
+the protection patrol reached it within a fraction of a second and pinned
+`convertibleToDynamic = false` on it. **A ghost that cannot convert to dynamic
+cannot become a creation** — silently, with nothing in the log.
+
+`body:isGhost()` is a real binding (`python dev/dump_api.py Body`). Ghosts are
+now invisible to everything the mod does: not protected, not counted in the
+shape census that arms the grief alarm, not captured into a snapshot, not
+counted against a plot's part budget, not caught by any of the clear commands.
+
+### The city is built from the middle outwards
+
+*"the city maker is broken since some stuff is overlaid. make sure you start
+building from the middle and going out of it."*
+
+The old builder ran a grid from a corner and then skipped the plots that hit the
+spawn plaza. Two rules for one shape. Three confirmed defects:
+
+- **every coordinate landed on a half block.** Ten plots of 20 with 1-block
+  seams is 209 across, so centring put the origin at −104.5 and every child of
+  every blueprint at `x.5`.
+- **3 of 9 vertical seams were never built.** A full-height strip that crossed
+  the plaza band was discarded whole instead of split, so the city had three
+  full-length gaps in it.
+- **rebuilding laid a second city on top of the first.** `sv_clearFloor` found
+  city bodies by `worldPosition.z <= 1.5 m`, and a plot slab with a build welded
+  onto it has its body position dragged above that. The slab survived the clear
+  and the rebuild imported another one into the same space. That is what
+  "overlaid" looks like.
+
+Now the plaza is not a hole punched in a grid — it is the **first thing on the
+axis**, sitting on the origin, with plots laid outwards from its edge in both
+directions. A plot can never overlap the plaza because it never starts inside
+one, not because something checked. Where the two plaza bands cross is spawn;
+where a band crosses plots is a grand avenue running out to the city edge.
+
+Clearing is now by **shape** against the three city uuids at deck height, which
+is exact and leaves a player's build alone.
+
+### One geometry, three callers
+
+`Layout.lua` is new and holds all of it. It is pure — no `sm.*` calls at all —
+so the Game script, the World script and the client panel all compute the city
+from the same code. `PlotsGui` used to carry a hand-copied mirror of the axis
+under a comment reading *"the panel has to lay the city out the same way the
+builder does or the map is a decoration that lies"*. It drifted, and the map
+lied. The copy is gone.
+
+Teaming now follows the seam rather than the grid: two plots may team up only
+when the ground between them is a **filler**. A road between them, or the plaza,
+means there is nothing to share — and that falls out of the segment list instead
+of being a second rule to keep in step.
+
+### The mod can now be tested without the game
+
+`lupa` embeds a real Lua interpreter, so the mod's own code can be executed
+outside Scrap Mechanic.
+
+- **`dev/test_layout.py`** runs `Layout.lua` over twelve configurations and
+  rasterises every block of every piece: no block claimed twice, no gap, no
+  fractional coordinate. This is the check that would have caught the overlay.
+- **`dev/test_logic.py`** runs `Settings`, `Identity`, `Protection` and `Plots`
+  against small honest stubs — 22 checks covering who may build where, whether a
+  ban survives a restart, whether the profile sentinel still tells all five
+  profiles apart (the V15 bug), whether the lift can ever land in the hazard list.
+
+Neither can tell you anything about bodies, tools, GUIs or the network. Those
+are still in-game work, and both files say so.
+
 ## V23 — one central pillar, roads, 2D map, /menu
 - Plots lost their pillars. The deck is static and needs no support; 100 columns
   read as clutter. The city is one raised platform on its centre.

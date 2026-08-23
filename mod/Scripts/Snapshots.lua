@@ -89,7 +89,16 @@ function Snapshots.sv_beginCapture( self, name, world, zoneOf )
 
 	-- Snapshot the creation LIST up front so the set stays consistent even if
 	-- someone keeps building while the export runs.
-	local ok, creations = pcall( sm.body.getCreationsFromBodies, sm.body.getAllBodies() )
+	-- Ghosts filtered out first: a blueprint somebody happens to be holding on
+	-- the lift is not part of the world and must not be saved into a snapshot,
+	-- where a later /restore would spawn it for real.
+	local real = {}
+	for _, body in ipairs( sm.body.getAllBodies() ) do
+		if sm.exists( body ) and not isGhostBody( body ) then
+			real[#real + 1] = body
+		end
+	end
+	local ok, creations = pcall( sm.body.getCreationsFromBodies, real )
 	if not ok then
 		return false, "could not enumerate creations"
 	end

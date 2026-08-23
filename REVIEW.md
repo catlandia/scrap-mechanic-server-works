@@ -6,13 +6,18 @@ and so the owner can ask the right questions.
 
 ## Status, stated plainly
 
-**~4,600 lines of Lua across 13 scripts. V23. Tested in game across 23 builds.**
+**~5,000 lines of Lua across 14 scripts. V24. Tested in game across 24 builds.**
 
 Proven working in a real session: `/lockdown`, the clay gun cannot fire, the city
 builds, `sm.json` persistence, explosives and fire genuinely off, mod content
 updates reaching the game.
 
-Still unconfirmed: the lift spawning creations, and every panel added after V16.
+Proven outside the game, by executing the mod's own Lua through `lupa`: the city
+geometry is a partition over twelve configurations, and 22 checks over settings,
+identity, protection profiles and plot rules. See "How to check it" below.
+
+Still unconfirmed in game: the V24 lift fix, the rebuilt city geometry, and every
+panel added after V16.
 
 The full account is in [`docs/PLAN.md`](docs/PLAN.md); every version and the bug
 it fixed is in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Most of those bugs were
@@ -21,6 +26,32 @@ useful thing to know about working on this codebase.
 
 The pass condition for any run is not "it looks like it works" — it is **the game
 log stays quiet**.
+
+## The one bug worth reading about before anything else
+
+It is the shape of every hard bug in this codebase, and it is instructive.
+
+*"I can't use the lift to spawn creations."* Reported twice. V19 diagnosed it as
+survival content owning the lift's uuid — `baseGameContent: "Survival"` means
+uuid `8f190ce2` resolves to `SurvivalLift` rather than creative's `Lift` — and
+re-declared the uuid in the mod's own toolset. The reasoning was sound, the
+citation was real, and **the diagnosis was wrong**: `SurvivalLift = class( Lift )`
+has exactly one live method and the rest of the file is commented out. It
+inherits all the blueprint handling. V19 swapped a working class for an identical
+one.
+
+The real cause was ours. Selecting a creation from the blueprint menu spawns
+**real bodies into the world, flagged as ghosts** (`Lift.client_onForceTool`
+takes body objects; `sv_n_removeGhostBody` calls `destroyCreation` on one). They
+appear in `sm.body.getAllBodies()` like anything else, and the protection patrol
+reached them within a fraction of a second and pinned
+`convertibleToDynamic = false`. A ghost that cannot convert to dynamic cannot
+become a creation.
+
+Two things to take from it. **The engine will hand you real objects where you
+expect a preview** — anything that walks every body must skip `body:isGhost()`.
+And **"survival owns this uuid" is not the same as "survival broke this"**; read
+the subclass before blaming it.
 
 ## The thing worth checking first
 
@@ -42,6 +73,8 @@ Examples you can verify in ten minutes against your own install:
 | Creation export/import round-trips at world origin | `BuilderWorld.lua:189` exports, `:130` re-imports at `vec3.zero()` |
 | Clearing a world is `shape:destroyShape()` over all bodies | `Data/Scripts/game/worlds/CreativeBaseWorld.lua:204` |
 | 1 block = 0.25 m | `Data/Scripts/game/Lift.lua:299` — `self.liftPos * 0.25` |
+| A creation on the lift is a real body flagged as a ghost | `Lift.lua:383` takes bodies, `:391` calls `destroyCreation` on one |
+| World classes carry engine flags, not just Game classes | `LuaWorldScript.cpp`'s literal list in the exe string table |
 | `sm.game` has no tickrate/timescale knob | `python dev/dump_api.py Game` |
 | Lua cannot see a Steam ID | `python dev/dump_api.py Player`; also `grep -ri steam` over all vanilla `.lua` returns nothing |
 | Custom Games use `"version": 1`, not 2 | histogram of `description.json` across 1205 workshop items |
@@ -137,11 +170,38 @@ is damage control, not correctness.
 ## How to check it
 
     python dev/check_lua.py     # compiles every script through a real Lua parser
+    python dev/test_layout.py   # runs Layout.lua; proves the city is a partition
+    python dev/test_logic.py    # runs the mod's rules; 22 checks
     python dev/sync_mod.py      # repo -> game Mods folder, preserves live data
     python dev/session_stats.py --spam    # tick/FPS + what is flooding the log
 
+The two test files are worth a look before judging anything else here, because
+they are the answer to "how would you know?". `lupa` embeds a real Lua
+interpreter, and the mod's geometry file is deliberately free of every `sm.*`
+call, so `test_layout.py` executes **the code the game runs** and rasterises
+every block of every piece it emits: no block claimed twice, no gap, no
+fractional coordinate, over twelve configurations. `test_logic.py` does the same
+for the rules, against stubs small enough to read in one screen.
+
+Neither pretends to cover bodies, tools, GUIs or the network. A stub for those
+would be a test that lies, and both files say so at the top.
+
 After any test run, the log is the verdict. A mod can look fine while throwing
 thousands of errors a second — that is exactly what happened to the 1.79 GB log.
+
+## What replaced guesswork, and what did not
+
+Three defects in the old city builder were confirmed by rasterising what it
+emitted, not by looking at it: every coordinate landed on a half block (the
+origin was −104.5), three of nine vertical seams were never built at all, and
+rebuilding laid a second city on top of the first because the clear identified
+city bodies by height and a slab welded to a build floats above the test.
+
+The replacement does not check for overlap; it cannot produce one. The plaza is
+the first thing on the axis rather than a hole punched in a grid, so a plot never
+starts inside it. Geometry lives in exactly one file, which the server builder,
+the locator and the client's map all call — the map used to be a hand-copied
+mirror under a comment warning that it must not drift, and it drifted.
 
 ## Honest summary
 
@@ -149,4 +209,7 @@ The engine research is solid and independently checkable; that part is not
 guesswork. The code is readable, commented with *why* rather than *what*, and
 fails back to vanilla rather than locking a world open or shut.
 
-It has also never executed. Until it has, treat all of it as a proposal.
+The rules can now be executed and checked without the game, which is new and is
+the thing to lean on when judging the rest: `dev/test_logic.py` and
+`dev/test_layout.py` run the mod's own Lua. Everything they do not cover —
+bodies, tools, GUIs, the network — is still only as good as the citations.

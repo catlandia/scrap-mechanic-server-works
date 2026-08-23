@@ -1,4 +1,7 @@
 dofile( "$GAME_DATA/Scripts/game/CreativeGame.lua" )
+-- Layout first: it is pure geometry with no dependencies, and both PlotsGui
+-- (client) and Plots (server) read it at load time.
+dofile( "$CONTENT_DATA/Scripts/Layout.lua" )
 dofile( "$CONTENT_DATA/Scripts/Settings.lua" )
 dofile( "$CONTENT_DATA/Scripts/Identity.lua" )
 dofile( "$CONTENT_DATA/Scripts/SettingsGui.lua" )
@@ -666,16 +669,19 @@ function Game.sv_openPlotsGui( self, player )
 		for index, owner in pairs( g_swPlots.owners ) do
 			claimed[tostring( index )] = Identity.Sv_NameOf( owner ) or owner
 		end
+		local g = g_swPlots.grid
 		cfg = {
-			plot = g_swPlots.grid.plot, gap = g_swPlots.grid.gap,
-			cols = g_swPlots.grid.cols, rows = g_swPlots.grid.rows,
-			roadevery = g_swPlots.grid.roadevery or 0,
-			roadwidth = g_swPlots.grid.roadwidth or 6,
-			spawn = Plots.SPAWN, claimed = claimed,
+			plot = g.plot, gap = g.gap, cols = g.cols, rows = g.rows,
+			roadevery = g.roadevery, roadwidth = g.roadwidth, spawn = g.spawn,
+			claimed = claimed,
+			-- so the map can paint the viewer's own plot green rather than just
+			-- "somebody's": "so that I cant alter plots that arent mine" starts
+			-- with being able to see which one is yours.
+			mine = g_swPlots:sv_plotOf( Identity.Sv_PermaOf( player ) ),
 		}
 	else
-		cfg = { plot = 20, gap = 1, cols = 10, rows = 10,
-			roadevery = 0, roadwidth = 6, spawn = 50, claimed = {} }
+		cfg = Layout.config( {} )
+		cfg.claimed = {}
 	end
 	self.network:sendToClient( player, "client_openPlotsGui", cfg )
 end

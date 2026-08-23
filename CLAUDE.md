@@ -103,6 +103,40 @@ reference and never as a performance one; that cadence is exactly what would kil
 lobby. Plot enforcement here is therefore *amortised reconciliation*, not prevention — an
 out-of-bounds block gets reverted shortly after placement, not blocked.
 
+### A body on the lift is REAL, and it is flagged as a ghost
+
+Selecting a creation from the blueprint menu spawns actual bodies into the world
+and hands them to the lift tool. `Lift.client_onForceTool( self, bodies )` takes
+body objects; `Lift.sv_n_removeGhostBody( self, body )` calls
+`body:destroyCreation()` on one (`Data/Scripts/game/Lift.lua:383, :391`). So a
+creation being placed appears in `sm.body.getAllBodies()` alongside everything
+else.
+
+**`body:isGhost()` exists** — it is in the `wrap_Body.cpp` binding list next to
+`isOnLift` and `isOnVirtualLift`. Anything that walks every body must skip
+ghosts. Ours did not, and pinned `convertibleToDynamic = false` on the ghost
+within a fraction of a second, which made the lift silently refuse to place
+anything. There was no error and nothing in the log — which is exactly why it
+took three attempts to find.
+
+### The World class carries engine flags too, not just the Game class
+
+`LuaWorldScript.cpp`'s literal list, straight out of the executable's string
+table:
+
+    terrainScript renderMode enableSurface enableAssets enableClutter
+    enableCreations enableNodes enableHarvestables enableKinematics
+    enableVoxelTerrain enableNavMesh enableBuildOnAssets enableBuildOnSurface
+    enableBuildOnLift enableBuildOnBodies horizonWater hLod defaultVoxelMaterial
+    defaultVoxelDensity worldBorder cellMinX cellMaxX cellMinY cellMaxY
+    enableRestrictions enableAmmoConsumption enableFuelConsumption enableUpgrade
+    enableAggro enableRecipes defaultInventorySize
+
+`LuaGameScript.cpp` reads only `enableLimitedInventory`. Note that
+`enableBuildOnLift` and `enableCreations` live on the **world**, and that
+`enableCreations = false` on every vanilla creative world — so it does not mean
+player blueprints.
+
 ### Lifts are a plot primitive the engine already tracks
 
 `body:getLift()`, `body:isOnLift()`, `body:isOnVirtualLift()`, `sm.player.placeLift()`,
@@ -216,7 +250,11 @@ credit it with fixing the thing that actually degraded.
     mod/Scripts/Settings.lua    every host toggle, one schema
     mod/Scripts/Snapshots.lua   world and per-plot capture and rollback
 
+    mod/Scripts/Layout.lua      ALL city geometry, pure -- no sm.* calls at all
+
     dev/check_lua.py            compiles every mod script through a real Lua parser
+    dev/test_layout.py          runs Layout.lua and proves the city is a partition
+    dev/test_logic.py           runs the mod's rules against honest stubs (22 checks)
     dev/sync_mod.py             repo -> game Mods folder (preserves live BanList.json)
     dev/session_stats.py        tick/FPS reconstruction from any game log
     dev/dump_api.py             per-module Lua bindings out of the executable
@@ -266,19 +304,24 @@ to be wrong:
    pairs those (they use Survival+SurvivalGame, or Creative+own class). If it misbehaves,
    flip to `"Creative"` — and survival parts go away with it.
 
-   **It has misbehaved twice, and both times the fix was small.** Survival content wins
-   any uuid the two modes share, so you get the *survival* version of a shared tool:
-
-   - `Sledgehammer.lua` reads `clientPublicData.perks`, which `SurvivalPlayer` sets and
-     `CreativePlayer` does not → fixed by two overrides in `Player.lua`.
-   - uuid `8f190ce2` is the **lift**, and in survival content it maps to `SurvivalLift`,
-     which has no `sm.player.placeLift` and no blueprint handling at all — so the lift
-     could not spawn creations. Fixed by re-declaring that uuid in
-     `mod/Tools/Database/ToolSets/serverworks.toolset` pointing at
-     `$GAME_DATA/Scripts/game/Lift.lua` (class `Lift`).
+   **It has misbehaved once, and the fix was small.** Survival content wins any uuid
+   the two modes share, so you get the *survival* version of a shared tool:
+   `Sledgehammer.lua` reads `clientPublicData.perks`, which `SurvivalPlayer` sets and
+   `CreativePlayer` does not, and threw once per client frame → fixed by two
+   overrides in `Player.lua`.
 
    The pattern to remember: **when a creative feature silently does nothing, check whether
    survival owns that uuid.** Our own toolset can take it back.
+
+   **And the counter-example, which cost a whole version.** uuid `8f190ce2` is the
+   lift, and survival does own it — `Survival/Tools/ToolSets/tools.json:44` maps it
+   to `SurvivalLift`. That looked like the same bug and it was not:
+   `SurvivalLift = class( Lift )` has exactly one live method (`client_onUpdate`,
+   calling `setBlockSprint`) and the whole rest of that file sits inside a
+   `--[[ ]]` block. It inherits every piece of blueprint handling there is. V19
+   swapped a working class for an identical one and changed nothing.
+   **Survival owning a uuid is not the same as survival breaking it — read the
+   subclass before blaming it.**
 2. **`sm.creation.importFromString`'s last two arguments.** Vanilla passes `true, true`
    in `BuilderWorld` and only five arguments in `MenuWorld`; the meaning is not documented
    anywhere and was not derivable from the binding names.

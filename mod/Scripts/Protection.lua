@@ -14,6 +14,47 @@
 
 Protection = class( nil )
 
+
+--[[ ghosts ]]
+
+-- THE LIFT FIX. Reported twice: "I cant use the lift to spawn creations".
+--
+-- Picking a creation out of the blueprint menu does not hand the lift a picture
+-- of a build -- it spawns REAL BODIES into the world, marked as ghosts, and
+-- hands the lift those. Vanilla proves it: Lift.client_onForceTool( self, bodies )
+-- takes body objects, and Lift.sv_n_removeGhostBody calls body:destroyCreation()
+-- on one (Data/Scripts/game/Lift.lua:383, :391).
+--
+-- Which means a ghost turns up in sm.body.getAllBodies() like anything else, and
+-- the patrol below reached it within a fraction of a second and pinned
+-- convertibleToDynamic = false and liftable = false on it -- every profile
+-- except `open` does. A ghost that cannot convert to dynamic cannot become a
+-- creation, so the placement quietly did nothing at all. No error, no log line,
+-- nothing to read: exactly what was reported.
+--
+-- The earlier diagnosis -- that survival's toolset had taken uuid 8f190ce2 and
+-- given us a lift with no blueprint handling -- was WRONG, and it is worth
+-- writing down why, because the reasoning looked sound. Survival does own the
+-- uuid. But SurvivalLift = class( Lift ) with exactly one live method
+-- (client_onUpdate, calling setBlockSprint); the rest of that file is inside a
+-- --[[ ]] block. It inherits every piece of blueprint handling there is. V19
+-- swapped a working class for an identical one and changed nothing.
+--
+-- So: ghosts are invisible to us. Not protected, not counted, not cleared.
+-- body:isGhost() is a real binding -- `python dev/dump_api.py Body`.
+function isGhostBody( body )
+	local ok, ghost = pcall( function()
+		-- isOnVirtualLift as well, because that is how vanilla itself spots a
+		-- body that is being placed rather than one that exists
+		-- (Data/Scripts/game/Lift.lua:55, BuilderGuide.lua:159).
+		return body:isGhost() or body:isOnVirtualLift()
+	end )
+	-- If either binding is missing on some future build, fail SAFE: treat the
+	-- body as real and protect it. A protected ghost is a broken lift; an
+	-- unprotected real body is a griefed event.
+	return ok and ghost == true
+end
+
 -- Tuning. 128 bodies/tick at 40 Hz sweeps ~5000 bodies/second, so a busy event
 -- world is fully re-checked a couple of times a second. Raise for faster
 -- catch-up on new bodies, lower if the host is struggling.
@@ -204,7 +245,7 @@ function Protection.sv_setMode( self, mode )
 	local changed = 0
 
 	for _, body in ipairs( bodies ) do
-		if sm.exists( body ) then
+		if sm.exists( body ) and not isGhostBody( body ) then
 			local p = profileFor( self, body )
 			if not matchesProfile( body, p ) then
 				applyProfile( body, p )
@@ -239,7 +280,10 @@ function Protection.sv_onFixedUpdate( self )
 	local last = math.min( self.cursor + Protection.BODIES_PER_PATROL - 1, n )
 	for i = self.cursor, last do
 		local body = bodies[i]
-		if sm.exists( body ) then
+		-- Ghosts are skipped for the census too, not just the profile: a
+		-- blueprint preview appearing and vanishing would swing the whole-world
+		-- shape count by the size of the creation and set off the grief alarm.
+		if sm.exists( body ) and not isGhostBody( body ) then
 			self.cycleShapes = self.cycleShapes + body:getShapeCount()
 			local p = profileFor( self, body )
 			if not matchesProfile( body, p ) then

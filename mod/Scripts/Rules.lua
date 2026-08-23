@@ -133,8 +133,11 @@ function Rules.sv_audit( self, tick, plots, getSetting )
 		return perPlot[i]
 	end
 
+	-- Ghosts excluded: a creation held on the lift is not built yet, and counting
+	-- it would put a plot over budget -- and therefore lock it -- for as long as
+	-- somebody stood there holding a blueprint.
 	for _, body in ipairs( sm.body.getAllBodies() ) do
-		if sm.exists( body ) then
+		if sm.exists( body ) and not isGhostBody( body ) then
 			local z = plots:sv_locate( body.worldPosition )
 			local index = ( z and z.kind == "plot" ) and z.index or nil
 

@@ -17,17 +17,17 @@
 -- block them from working -- so unauthorised occupants are also pushed back
 -- out. Without the push, presence enforcement is itself a griefing tool.
 --
--- Geometry is in BLOCKS. One block is 0.25 m; vanilla's own lift code converts
--- with `self.liftPos * 0.25` (Data/Scripts/game/Lift.lua).
+-- GEOMETRY IS NOT IN THIS FILE. It is in Layout.lua, which is pure -- no sm.*
+-- calls at all -- so the Game script, the World script and the client panel all
+-- compute the city from the same code, and dev/test_layout.py can execute that
+-- code outside the game and prove the result is a partition. It used to live
+-- here and in a hand-copied mirror inside PlotsGui.lua, and the copies drifted.
 
 Plots = class( nil )
 
 Plots.BLOCK = 0.25
 
--- Defaults: 10x10 plots of 20x20 blocks, one block of filler between them.
--- 21 blocks of stride x 10 = 210 blocks = 52.5 m square for the whole city,
--- which is small enough to stay inside a couple of terrain cells.
-Plots.DEFAULT = { plot = 20, gap = 1, cols = 10, rows = 10, roadevery = 0, roadwidth = 6 }
+Plots.DEFAULT = Layout.DEFAULT
 
 Plots.PUSH_INTRUDERS = true
 Plots.PUSH_COOLDOWN_TICKS = 20      -- don't fight the player's own movement every tick
@@ -58,15 +58,14 @@ function Plots.Sv_SaveFile( plots )
 end
 
 function Plots.sv_onCreate( self, saved )
-	local cfg = ( saved and saved.grid ) or Plots.DEFAULT
-	self.grid = {
-		plot = cfg.plot or Plots.DEFAULT.plot,
-		gap = cfg.gap or Plots.DEFAULT.gap,
-		cols = cfg.cols or Plots.DEFAULT.cols,
-		rows = cfg.rows or Plots.DEFAULT.rows,
-	}
-	self.grid.roadevery = cfg.roadevery or 0
-	self.grid.roadwidth = cfg.roadwidth or 6
+	local cfg = ( saved and saved.grid ) or Layout.DEFAULT
+	-- Migration. The plaza size used to be a module-level global written beside
+	-- the grid rather than inside it, so a restart rebuilt a different city than
+	-- the one the host laid out. It lives in the grid now; fold an old file in.
+	if saved and saved.spawn ~= nil and cfg.spawn == nil then
+		cfg.spawn = saved.spawn
+	end
+	self:sv_setGrid( cfg )
 	self.owners = ( saved and saved.owners ) or {}     -- plotIndex -> permaId
 	self.teams = ( saved and saved.teams ) or {}       -- plotIndex -> { otherIndex = true }
 	self.requests = {}                                  -- fromIndex -> { toIndex = true }
@@ -76,107 +75,31 @@ function Plots.sv_onCreate( self, saved )
 	self.enabled = ( saved and saved.enabled ) or false
 end
 
+-- The grid and the derived segment lists are computed ONCE and cached. sv_locate
+-- runs per player per tick and sv_bodyIsOpen runs per body per patrol slice, so
+-- rebuilding the axis inside either of them would be the one genuinely hot piece
+-- of arithmetic in the mod.
+function Plots.sv_setGrid( self, cfg )
+	self.grid = Layout.config( cfg )
+	self.layout = Layout.grid( self.grid )
+end
+
 function Plots.sv_serialise( self )
 	return { grid = self.grid, owners = self.owners, teams = self.teams,
-		enabled = self.enabled, spawn = Plots.SPAWN }
-end
-
-function Plots.sv_stride( self )
-	return self.grid.plot + self.grid.gap
-end
-
--- Blocks from world centre to the grid's corner, so the city sits on origin.
-function Plots.sv_originBlocks( self )
-	local s = self:sv_stride()
-	return -( self.grid.cols * s ) * 0.5, -( self.grid.rows * s ) * 0.5
-end
-
-
---[[ geometry ]]
---
--- The city axis is NOT a uniform stride any more. A filler is the one-block seam
--- between neighbouring plots -- shared ground once those two team up. A ROAD is a
--- proper street: wider, never shareable, never claimable. They are different
--- things and the layout has to model both, so each axis is built as an explicit
--- run of segments and positions come from a prefix sum rather than col * stride.
---
--- segment = { start, size, kind = "plot" | "filler" | "road", index }
-
-function Plots.sv_axis( self, count )
-	local g = self.grid
-	local segs, at = {}, 0
-	for i = 0, count - 1 do
-		segs[#segs + 1] = { start = at, size = g.plot, kind = "plot", index = i }
-		at = at + g.plot
-		local isRoad = ( g.roadevery or 0 ) > 0 and ( ( i + 1 ) % g.roadevery == 0 )
-		local width = isRoad and ( g.roadwidth or 6 ) or g.gap
-		if width > 0 and i < count - 1 then
-			segs[#segs + 1] = { start = at, size = width,
-				kind = isRoad and "road" or "filler", index = i }
-			at = at + width
-		end
-	end
-	return segs, at
+		enabled = self.enabled }
 end
 
 function Plots.sv_extent( self )
-	local _, w = self:sv_axis( self.grid.cols )
-	local _, h = self:sv_axis( self.grid.rows )
-	return w, h
-end
-
-function Plots.sv_originBlocks( self )
-	local w, h = self:sv_extent()
-	return -w * 0.5, -h * 0.5
-end
-
--- kept so old callers still work; the axis is authoritative now
-function Plots.sv_stride( self )
-	return self.grid.plot + self.grid.gap
-end
-
-local function segmentAt( segs, v )
-	for _, s in ipairs( segs ) do
-		if v >= s.start and v < s.start + s.size then return s end
-	end
-	return nil
+	return self.layout.width, self.layout.height
 end
 
 -- Which zone a world position falls in. nil means outside the city entirely.
 function Plots.sv_locate( self, pos )
-	local ox, oy = self:sv_originBlocks()
-	local bx = pos.x / Plots.BLOCK - ox
-	local by = pos.y / Plots.BLOCK - oy
-	local cols, w = self:sv_axis( self.grid.cols )
-	local rows, h = self:sv_axis( self.grid.rows )
-	if bx < 0 or by < 0 or bx >= w or by >= h then return nil end
-
-	local sx = segmentAt( cols, bx )
-	local sy = segmentAt( rows, by )
-	if sx == nil or sy == nil then return nil end
-
-	if sx.kind == "plot" and sy.kind == "plot" then
-		return { kind = "plot", col = sx.index, row = sy.index,
-			index = sy.index * self.grid.cols + sx.index + 1 }
-	end
-	-- a road in either direction beats a filler: roads are public, always
-	if sx.kind == "road" or sy.kind == "road" then
-		return { kind = "road", col = sx.index, row = sy.index }
-	end
-	if sx.kind == "plot" then
-		return { kind = "fillerY", col = sx.index, row = sy.index }
-	end
-	if sy.kind == "plot" then
-		return { kind = "fillerX", col = sx.index, row = sy.index }
-	end
-	return { kind = "corner", col = sx.index, row = sy.index }
+	return Layout.locate( self.layout, pos.x / Plots.BLOCK, pos.y / Plots.BLOCK )
 end
 
 function Plots.sv_indexAt( self, col, row )
-	if col < 0 or row < 0 or col >= self.grid.cols or row >= self.grid.rows then
-		return nil
-	end
-	return row * self.grid.cols + col + 1
+	return Layout.plotIndex( self.layout, col, row )
 end
 
 function Plots.sv_zoneKey( self, z )
@@ -184,7 +107,15 @@ function Plots.sv_zoneKey( self, z )
 	if z.kind == "plot" then return key_plot( z.index ) end
 	if z.kind == "fillerX" then return key_fillerX( z.col, z.row ) end
 	if z.kind == "fillerY" then return key_fillerY( z.col, z.row ) end
-	return "corner"
+	return z.kind
+end
+
+-- Where /home and the plot marker point: the middle of a plot, on the deck.
+function Plots.sv_plotWorldCentre( self, index )
+	local bx, by = Layout.plotCentre( self.layout, index )
+	if bx == nil then return nil end
+	return sm.vec3.new( bx * Plots.BLOCK, by * Plots.BLOCK,
+		( Plots.DECK_Z + 1 ) * Plots.BLOCK + 0.5 )
 end
 
 function Plots.sv_teamed( self, a, b )
@@ -194,8 +125,12 @@ end
 -- Everyone allowed to build in a zone, as a set of permaIds.
 function Plots.sv_authorised( self, z )
 	local out = {}
-	if z == nil or z.kind == "corner" or z.kind == "road" then
-		return out          -- roads belong to everyone, so nobody may build there
+	-- Everything public: roads, the avenues that run out of the plaza, the plaza
+	-- itself, and the corner squares where two seams cross. Belonging to everyone
+	-- means nobody may build there.
+	if z == nil or z.kind == "corner" or z.kind == "road"
+		or z.kind == "avenue" or z.kind == "plaza" then
+		return out
 	end
 
 	local function add( index )
@@ -291,12 +226,16 @@ function Plots.sv_pushOut( self, player, z, tick )
 		return
 	end
 
-	local s = self:sv_stride()
-	local ox, oy = self:sv_originBlocks()
-	-- Middle of the filler strip on the far side of this plot.
-	local bx = ox + z.col * s + self.grid.plot + self.grid.gap * 0.5
-	local by = oy + z.row * s + self.grid.plot * 0.5
-	local pos = sm.vec3.new( bx * Plots.BLOCK, by * Plots.BLOCK, character.worldPosition.z )
+	-- Onto the seam just outside this plot, whatever that seam turns out to be.
+	-- Asking the layout where the plot ends beats reconstructing the position
+	-- from a stride, which is what this did while a stride still existed and
+	-- which put people in the wrong place the moment roads arrived.
+	local r = Layout.plotRect( self.layout, z.col, z.row )
+	if r == nil then return end
+	local pos = sm.vec3.new(
+		( r.x + r.w + 0.5 ) * Plots.BLOCK,
+		( r.y + r.h * 0.5 ) * Plots.BLOCK,
+		character.worldPosition.z )
 
 	pcall( function() character:setWorldPosition( pos ) end )
 end
@@ -316,7 +255,13 @@ function Plots.sv_bodyIsOpen( self, body )
 	if z == nil then
 		return "sweep"        -- outside the city
 	end
-	if z.kind == "corner" then
+	-- The plaza and the avenues are the city itself, not shared standing room:
+	-- they are permanent scenery and must never become erasable, or "anywhere
+	-- you cannot build, anyone can clean" would let a guest delete spawn.
+	if z.kind == "plaza" or z.kind == "avenue" then
+		return "locked"
+	end
+	if z.kind == "corner" or z.kind == "road" then
 		return "sweep"
 	end
 	if z.kind ~= "plot" then
@@ -383,11 +328,28 @@ function Plots.sv_plotOf( self, perma )
 	return nil
 end
 
+-- Neighbours for the purpose of teaming up, which is NOT the same as being next
+-- to each other in the grid. Teaming is what turns the seam between two plots
+-- into shared ground, so it is only meaningful when that seam is a FILLER. Two
+-- plots separated by a road, or by the plaza band running through the middle of
+-- the city, have no seam to share: the ground between them is public.
+--
+-- Asking the layout for the filler rather than testing index arithmetic is what
+-- makes that fall out on its own instead of being a second rule that has to be
+-- kept in step with the first.
 function Plots.sv_adjacent( self, a, b )
 	if a == nil or b == nil then return false end
-	local ca, ra = ( a - 1 ) % self.grid.cols, math.floor( ( a - 1 ) / self.grid.cols )
-	local cb, rb = ( b - 1 ) % self.grid.cols, math.floor( ( b - 1 ) / self.grid.cols )
-	return math.abs( ca - cb ) + math.abs( ra - rb ) == 1
+	local ca, ra = Layout.plotColRow( self.layout, a )
+	local cb, rb = Layout.plotColRow( self.layout, b )
+	if ca == nil or cb == nil then return false end
+
+	if ra == rb and math.abs( ca - cb ) == 1 then
+		return Layout.fillerBetween( self.layout.cols, math.min( ca, cb ) ) ~= nil
+	end
+	if ca == cb and math.abs( ra - rb ) == 1 then
+		return Layout.fillerBetween( self.layout.rows, math.min( ra, rb ) ) ~= nil
+	end
+	return false
 end
 
 function Plots.sv_request( self, fromPerma, toPerma )
@@ -449,36 +411,39 @@ end
 
 --[[ the visible city ]]
 
--- Each plot is its OWN creation: a concrete slab on a pillar. That is the whole
--- point of the pillar -- when a player builds on their slab their blocks weld to
--- that body, so the plot and everything on it is a single creation that can be
--- exported and saved as one thing when the event ends.
---
--- Which is why each plot is imported separately rather than as one big blueprint.
--- sm.body.getCreationsFromBodies groups by creation, so a single import would
--- make the entire city one creation and per-plot snapshot and restore would
--- collapse into all-or-nothing.
---
--- The walkways are one further creation of their own. Separately imported bodies
--- do not weld to each other just by touching -- welding needs the weld tool or a
--- contiguous build action -- so the grid stays as separate pieces.
+-- Each plot is its OWN creation: a slab that a player's build welds onto, so the
+-- plot and everything on it is a single creation that can be exported and saved
+-- as one thing when the event ends. Which is why each plot is imported
+-- separately rather than as one big blueprint -- sm.body.getCreationsFromBodies
+-- groups by creation, so a single import would make the entire city one creation
+-- and per-plot snapshot and restore would collapse into all-or-nothing.
 --
 -- Blueprint children carry a `bounds`, so a 20x20 slab is ONE shape rather than
--- 400 (ChallengeMode_PotatoLevel_01.blueprint is full of examples). Positions are
--- in BLOCKS, relative to the import position.
+-- 400 (ChallengeMode_PotatoLevel_01.blueprint is full of examples). Positions
+-- are in BLOCKS relative to the import position, and the import position is
+-- always the world origin -- which is why Layout works in absolute blocks
+-- centred on zero and no offset is applied anywhere below.
 
 Plots.CONCRETE = "a6c6ce30-dd47-4587-b475-085d55c6a3b4"   -- blk_concrete1
 Plots.METAL2 = "1016cafc-9f6b-40c9-8713-9019d399783f"     -- blk_metal2
+Plots.METAL3 = "c0dfdea5-a39d-433a-b94a-299345a5df46"     -- blk_metal3
+
 Plots.CONCRETE_COLOR = "8d8f89"
 Plots.METAL2_COLOR = "68615c"
 Plots.ROAD_COLOR = "3c3c40"
-
-Plots.METAL3 = "c0dfdea5-a39d-433a-b94a-299345a5df46"     -- blk_metal3
 Plots.METAL3_COLOR = "4a4a4a"
+Plots.PLAZA_COLOR = "5a5651"
 
 Plots.DECK_Z = 4        -- blocks above ground that the city deck sits at
-Plots.PILLAR = 4        -- pillar footprint, blocks square
-Plots.SPAWN = 50        -- spawn plaza, blocks square, centred on world origin
+
+-- Every uuid the city is made of. sv_clearFloor clears by SHAPE against this
+-- set rather than by body position: a plot slab with a build welded onto it has
+-- its body position dragged up above any height test, so the old test missed it
+-- and a rebuild imported a fresh slab into the same space. That is what
+-- "some stuff is overlaid" looked like.
+Plots.CITY_UUIDS = {
+	[Plots.CONCRETE] = true, [Plots.METAL2] = true, [Plots.METAL3] = true,
+}
 
 local function child( uuid, colour, x, y, z, sx, sy, sz )
 	return {
@@ -495,99 +460,60 @@ local function blueprint( childs )
 	return { version = 4, bodies = { { childs = childs } }, joints = {} }
 end
 
--- The spawn plaza occupies the middle of the city, so the plots that would sit
--- under it are simply not built. A city with a square hole in the centre is what
--- a plaza looks like; overlapping geometry is what a bug looks like.
-function Plots.sv_spawnBounds( self )
-	local half = math.floor( Plots.SPAWN / 2 )
-	return -half, -half, half, half        -- in blocks, inclusive-exclusive
-end
+local DECK_MATERIAL = {
+	plaza = { Plots.METAL3, Plots.PLAZA_COLOR },
+	avenue = { Plots.METAL3, Plots.METAL3_COLOR },
+	road = { Plots.METAL3, Plots.ROAD_COLOR },
+	filler = { Plots.METAL2, Plots.METAL2_COLOR },
+}
 
-function Plots.sv_plotHitsSpawn( self, col, row )
-	if Plots.SPAWN <= 0 then return false end
-	local g = self.grid
-	local s = self:sv_stride()
-	local ox, oy = self:sv_originBlocks()
-	local x0, y0 = ox + col * s, oy + row * s
-	local x1, y1 = x0 + g.plot, y0 + g.plot
-	local sx0, sy0, sx1, sy1 = self:sv_spawnBounds()
-	return x0 < sx1 and x1 > sx0 and y0 < sy1 and y1 > sy0
-end
-
--- The plaza: a metal 3 plate on its own pillar, centred on the world origin.
-function Plots.sv_spawnBlueprint( self )
-	if Plots.SPAWN <= 0 then return nil end
-	local x0, y0 = self:sv_spawnBounds()
-	local pil = math.max( Plots.PILLAR, math.floor( Plots.SPAWN / 4 ) )
-	local inset = math.floor( ( Plots.SPAWN - pil ) / 2 )
-	return blueprint{
-		child( Plots.METAL3, Plots.METAL3_COLOR,
-			x0 + inset, y0 + inset, 0, pil, pil, Plots.DECK_Z ),
-		child( Plots.METAL3, Plots.METAL3_COLOR,
-			x0, y0, Plots.DECK_Z, Plots.SPAWN, Plots.SPAWN, 1 ),
-	}
-end
-
--- One plot: just the slab. Only the PLAZA has a pillar now -- the whole deck is
+-- One plot: just the slab. Only the PLAZA has a pillar -- the whole deck is
 -- static, so it needs no support, and a forest of 100 columns read as clutter
 -- rather than architecture. The city is one raised platform standing on its
 -- centre.
 function Plots.sv_plotBlueprint( self, col, row )
-	local g = self.grid
-	local cols = self:sv_axis( g.cols )
-	local rows = self:sv_axis( g.rows )
-	local ox, oy = self:sv_originBlocks()
-	local sx, sy
-	for _, seg in ipairs( cols ) do if seg.kind == "plot" and seg.index == col then sx = seg end end
-	for _, seg in ipairs( rows ) do if seg.kind == "plot" and seg.index == row then sy = seg end end
-	if sx == nil or sy == nil then return nil end
-
+	local r = Layout.plotRect( self.layout, col, row )
+	if r == nil then return nil end
 	return blueprint{
 		child( Plots.CONCRETE, Plots.CONCRETE_COLOR,
-			ox + sx.start, oy + sy.start, Plots.DECK_Z, g.plot, g.plot, 1 ),
+			r.x, r.y, Plots.DECK_Z, r.w, r.h, 1 ),
 	}
 end
 
--- Every seam in the city as one creation: fillers in metal 2, roads in metal 3
--- so a street reads as a street and not as a wide gap.
-function Plots.sv_walkwayBlueprint( self )
-	local g = self.grid
-	local cols, w = self:sv_axis( g.cols )
-	local rows, h = self:sv_axis( g.rows )
-	local ox, oy = self:sv_originBlocks()
+-- Every piece of shared ground as one creation. The pieces come from
+-- Layout.deckPieces, which is a partition by construction and is proved to be
+-- one over a dozen configurations by dev/test_layout.py -- so nothing here has
+-- to test whether a strip collides with the plaza, because nothing ever can.
+function Plots.sv_deckBlueprint( self )
 	local childs = {}
-	local sx0, sy0, sx1, sy1 = self:sv_spawnBounds()
-
-	local function clear( x, y, sw, sh )
-		if Plots.SPAWN <= 0 then return true end
-		return not ( x < sx1 and x + sw > sx0 and y < sy1 and y + sh > sy0 )
+	for _, p in ipairs( Layout.deckPieces( self.layout ) ) do
+		local m = DECK_MATERIAL[p.kind] or DECK_MATERIAL.filler
+		childs[#childs + 1] = child( m[1], m[2], p.x, p.y, Plots.DECK_Z, p.w, p.h, 1 )
 	end
-
-	local function strip( cx, cy, cw, ch, kind )
-		if not clear( ox + cx, oy + cy, cw, ch ) then return end
-		local uuid = ( kind == "road" ) and Plots.METAL3 or Plots.METAL2
-		local colour = ( kind == "road" ) and Plots.ROAD_COLOR or Plots.METAL2_COLOR
-		childs[#childs + 1] = child( uuid, colour, ox + cx, oy + cy, Plots.DECK_Z, cw, ch, 1 )
-	end
-
-	-- vertical seams run the full height, which also fills the crossings
-	for _, seg in ipairs( cols ) do
-		if seg.kind ~= "plot" then strip( seg.start, 0, seg.size, h, seg.kind ) end
-	end
-	-- horizontal seams only span the plot columns, so nothing overlaps
-	for _, seg in ipairs( rows ) do
-		if seg.kind ~= "plot" then
-			for _, c in ipairs( cols ) do
-				if c.kind == "plot" then strip( c.start, seg.start, c.size, seg.size, seg.kind ) end
-			end
-		end
-	end
-
 	if #childs == 0 then return nil end
 	return blueprint( childs )
 end
 
--- Streets and the spawn plaza are the parts of the city that must never be
+-- The single pillar the whole city stands on, under the plaza. This is the only
+-- one: "the center pillar shall be the only one, the spawn shall be the center
+-- pillar".
+function Plots.sv_pillarBlueprint( self )
+	local half = Layout.plazaHalf( self.grid )
+	if half <= 0 then return nil end
+	local size = math.max( 4, math.floor( half / 2 ) * 2 )
+	local at = -math.floor( size / 2 )
+	return blueprint{
+		child( Plots.METAL3, Plots.METAL3_COLOR, at, at, 0, size, size, Plots.DECK_Z ),
+	}
+end
+
+-- Where a player spawns and where /home sends them when they own nothing: the
+-- middle of the plaza, on top of the deck.
+function Plots.sv_spawnPoint( self )
+	return sm.vec3.new( 0, 0, ( Plots.DECK_Z + 1 ) * Plots.BLOCK + 0.5 )
+end
+
+-- Streets, avenues and the plaza are the parts of the city that must never be
 -- erased, and they are identifiable because nothing can ever be built on them: a
 -- body made entirely of metal 2 or metal 3 sitting at deck height is scenery and
 -- nothing else. Plot slabs are concrete, so they never match this.
@@ -623,9 +549,20 @@ function Plots.sv_isScenery( self, body )
 	return true
 end
 
--- Anything sitting at or below the deck is city, not a build.
-function Plots.sv_isCityBody( self, body )
-	local ok, pos = pcall( function() return body.worldPosition end )
-	if not ok or pos == nil then return false end
-	return pos.z <= ( Plots.DECK_Z + 2 ) * Plots.BLOCK
+-- Is this one of OUR shapes, sitting at deck height?
+--
+-- Clearing the city used to ask whether a BODY was low enough to be city, and
+-- that is wrong as soon as anyone builds: a plot slab welded to a build has its
+-- body position dragged up above any height test, so the slab survived the clear
+-- and the rebuild imported a second slab into the same space. Testing the shape
+-- instead is exact -- a shape's position never moves relative to its body, and
+-- the deck is exactly one block thick at a known height.
+function Plots.sv_isCityShape( self, shape )
+	local ok, u = pcall( function() return tostring( shape.shapeUuid ) end )
+	if not ok or not Plots.CITY_UUIDS[u] then return false end
+	local got, pos = pcall( function() return shape.worldPosition end )
+	if not got or pos == nil then return false end
+	-- The deck is at DECK_Z, the pillar runs from 0 up to it. Anything at or
+	-- below the deck's top surface is ours; anything above it is somebody's build.
+	return pos.z <= ( Plots.DECK_Z + 1 ) * Plots.BLOCK + 0.05
 end

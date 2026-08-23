@@ -1,4 +1,5 @@
 dofile( "$GAME_DATA/Scripts/game/worlds/CreativeFlatWorld.lua" )
+dofile( "$CONTENT_DATA/Scripts/Layout.lua" )
 dofile( "$CONTENT_DATA/Scripts/Protection.lua" )
 dofile( "$CONTENT_DATA/Scripts/Plots.lua" )
 dofile( "$CONTENT_DATA/Scripts/Rules.lua" )
@@ -64,9 +65,6 @@ function World.server_onCreate( self )
 	local savedPlots = Plots.Sv_LoadFile()
 	g_swPlots = Plots()
 	g_swPlots:sv_onCreate( savedPlots )
-	if savedPlots and savedPlots.spawn then
-		Plots.SPAWN = savedPlots.spawn
-	end
 
 	g_swProtection = Protection()
 	g_swProtection:sv_onCreate( Settings.Get( "protection" ) )
@@ -331,7 +329,7 @@ end
 function World.sv_clearPlot( self, index )
 	local removed = 0
 	for _, body in ipairs( sm.body.getAllBodies() ) do
-		if sm.exists( body ) then
+		if sm.exists( body ) and not isGhostBody( body ) then
 			local z = g_swPlots:sv_locate( body.worldPosition )
 			if z and z.kind == "plot" and z.index == index then
 				for _, shape in ipairs( body:getShapes() ) do
@@ -498,7 +496,8 @@ function World.sv_e_swCommand( self, params )
 			if not ( character and sm.exists( character ) ) then reply( "no character" ) return end
 			local origin = character.worldPosition
 			for _, body in ipairs( sm.body.getAllBodies() ) do
-				if sm.exists( body ) and ( body.worldPosition - origin ):length() <= radius then
+				if sm.exists( body ) and not isGhostBody( body )
+					and ( body.worldPosition - origin ):length() <= radius then
 					for _, shape in ipairs( body:getShapes() ) do shape:destroyShape() end
 					removed = removed + 1
 				end
@@ -506,7 +505,7 @@ function World.sv_e_swCommand( self, params )
 			reply( string.format( "cleared %d bodies within %g m", removed, radius ) )
 		elseif what == "walkways" then
 			for _, body in ipairs( sm.body.getAllBodies() ) do
-				if sm.exists( body ) then
+				if sm.exists( body ) and not isGhostBody( body ) then
 					local z = g_swPlots:sv_locate( body.worldPosition )
 					if z == nil or z.kind ~= "plot" then
 						for _, shape in ipairs( body:getShapes() ) do shape:destroyShape() end
@@ -545,16 +544,9 @@ function World.sv_e_swCommand( self, params )
 
 	elseif cmd == "/plotapply" then
 		-- Set the grid from the panel, persist it, then build in one go.
-		local cfg = params.cfg or {}
-		g_swPlots.grid = {
-			plot = math.max( 2, math.floor( cfg.plot or 20 ) ),
-			gap = math.max( 0, math.floor( cfg.gap or 1 ) ),
-			cols = math.max( 1, math.floor( cfg.cols or 10 ) ),
-			rows = math.max( 1, math.floor( cfg.rows or 10 ) ),
-			roadevery = math.max( 0, math.floor( cfg.roadevery or 0 ) ),
-			roadwidth = math.max( 1, math.floor( cfg.roadwidth or 6 ) ),
-		}
-		Plots.SPAWN = math.max( 0, math.floor( cfg.spawn or 50 ) )
+		-- Layout.config does the clamping, so the panel, the chat command and a
+		-- hand-edited Plots.json all end up with the same validated grid.
+		g_swPlots:sv_setGrid( params.cfg or {} )
 		g_swPlots.owners = {}
 		g_swPlots.teams = {}
 		g_swPlots.requests = {}
@@ -567,7 +559,7 @@ function World.sv_e_swCommand( self, params )
 
 	elseif cmd == "/plotclear" then
 		local removed = self:sv_clearFloor()
-		reply( string.format( "removed %d floor bodies", removed ) )
+		reply( string.format( "removed %d city shapes", removed ) )
 
 	elseif cmd == "/why" then
 		-- Three rounds of guessing why a lift would not work is two too many.
@@ -587,6 +579,13 @@ function World.sv_e_swCommand( self, params )
 		reply( string.format( "body at %.2f,%.2f,%.2f  shapes=%d  static=%s",
 			body.worldPosition.x, body.worldPosition.y, body.worldPosition.z,
 			body:getShapeCount(), tostring( body:isStatic() ) ) )
+		-- A GHOST is a creation being placed, not one that exists. The patrol
+		-- skips them; if this ever says ghost=true for something real, or
+		-- ghost=false while you are holding a blueprint, that is the bug.
+		reply( string.format( "  ghost=%s  onLift=%s  virtualLift=%s  protectedByUs=%s",
+			tostring( body:isGhost() ), tostring( body:isOnLift() ),
+			tostring( body:isOnVirtualLift() ),
+			tostring( not isGhostBody( body ) ) ) )
 		reply( string.format( "  zone: %s%s", z and z.kind or "outside city",
 			( z and z.kind == "plot" ) and ( " " .. z.index ) or "" ) )
 		reply( string.format( "  scenery: %s   buildopen: %s   plots: %s   mode: %s",
@@ -709,16 +708,12 @@ function World.sv_home( self, player, reply )
 		reply( "no character to move" )
 		return
 	end
-	local stride = g_swPlots:sv_stride()
-	local ox, oy = g_swPlots:sv_originBlocks()
-	local col = ( index - 1 ) % g_swPlots.grid.cols
-	local row = math.floor( ( index - 1 ) / g_swPlots.grid.cols )
-	local bx = ox + col * stride + g_swPlots.grid.plot * 0.5
-	local by = oy + row * stride + g_swPlots.grid.plot * 0.5
-	local ok = pcall( function()
-		character:setWorldPosition( sm.vec3.new( bx * Plots.BLOCK, by * Plots.BLOCK,
-			character.worldPosition.z + 1 ) )
-	end )
+	local pos = g_swPlots:sv_plotWorldCentre( index )
+	if pos == nil then
+		reply( "that plot is not on the current grid -- the city was relaid" )
+		return
+	end
+	local ok = pcall( function() character:setWorldPosition( pos ) end )
 	reply( ok and string.format( "sent you to plot %d", index ) or "teleport failed" )
 end
 
@@ -729,8 +724,11 @@ end
 -- creation, so importing the whole city in one blueprint would make it a single
 -- creation and per-plot snapshot and restore would become all-or-nothing.
 --
--- Run as a job a few plots per tick rather than 100 imports in one frame: this is
--- a setup command, but a a host running it mid-event should not get a stall.
+-- Run as a job a few plots per tick rather than 100 imports in one frame: this
+-- is a setup command, but a host running it mid-event should not get a stall.
+--
+-- The order is nearest-the-middle-first (Layout.buildOrder), so the city grows
+-- outwards from spawn while you watch it instead of sweeping in from a corner.
 function World.sv_buildFloor( self, reply )
 	if self.sw.cityJob then
 		reply( "already building" )
@@ -738,25 +736,30 @@ function World.sv_buildFloor( self, reply )
 	end
 	local removed = self:sv_clearFloor()
 	if removed > 0 then
-		reply( string.format( "cleared %d old city bodies", removed ) )
+		reply( string.format( "cleared %d old city shapes", removed ) )
 	end
 
-	local g = g_swPlots.grid
-	local queue = {}
-	local skipped = 0
-	for row = 0, g.rows - 1 do
-		for col = 0, g.cols - 1 do
-			-- plots under the spawn plaza are simply not built
-			if g_swPlots:sv_plotHitsSpawn( col, row ) then
-				skipped = skipped + 1
+	-- The middle goes down first: the pillar, then the deck, then the plots
+	-- outwards. Nothing overlaps anything, so this is purely about what the host
+	-- sees appear -- but seeing spawn appear first is how you know the centre is
+	-- where you meant it to be.
+	for _, label in ipairs( { "pillar", "deck" } ) do
+		local bp = ( label == "pillar" ) and g_swPlots:sv_pillarBlueprint()
+			or g_swPlots:sv_deckBlueprint()
+		if bp then
+			local bodies, err = self:sv_importBlueprint( bp )
+			if bodies then
+				self:sv_pinCity( bodies, false )   -- nobody builds on shared ground
 			else
-				queue[#queue + 1] = { col = col, row = row }
+				sm.log.warning( string.format( "[ServerWorks] %s import failed: %s",
+					label, tostring( err ) ) )
 			end
 		end
 	end
-	self.sw.plazaSkipped = skipped
-	self.sw.cityJob = { queue = queue, cursor = 1, built = 0, failed = 0, walkway = false }
-	reply( string.format( "building %d plots...", #queue ) )
+
+	local queue = Layout.buildOrder( g_swPlots.layout )
+	self.sw.cityJob = { queue = queue, cursor = 1, built = 0, failed = 0 }
+	reply( string.format( "building %d plots outwards from spawn...", #queue ) )
 end
 
 function World.sv_importBlueprint( self, bp )
@@ -768,7 +771,7 @@ function World.sv_importBlueprint( self, bp )
 	return bodies or {}
 end
 
-local function pinCity( bodies, buildable )
+function World.sv_pinCity( self, bodies, buildable )
 	for _, body in ipairs( bodies or {} ) do
 		if sm.exists( body ) then
 			pcall( function()
@@ -793,7 +796,7 @@ function World.sv_stepCity( self )
 		if bodies then
 			-- buildable TRUE: a plot slab exists to be built on, and the build
 			-- welding to it is what makes the plot exportable as one creation.
-			pinCity( bodies, true )
+			self:sv_pinCity( bodies, true )
 			job.built = job.built + 1
 		else
 			job.failed = job.failed + 1
@@ -805,46 +808,32 @@ function World.sv_stepCity( self )
 	job.cursor = last + 1
 
 	if job.cursor > #job.queue then
-		if not job.walkway then
-			job.walkway = true
-			for label, bp in pairs( {
-				streets = g_swPlots:sv_walkwayBlueprint(),
-				plaza = g_swPlots:sv_spawnBlueprint(),
-			} ) do
-				if bp then
-					local bodies, err = self:sv_importBlueprint( bp )
-					if bodies then
-						pinCity( bodies, false )   -- nobody builds on shared ground
-					else
-						sm.log.warning( string.format( "[ServerWorks] %s import failed: %s",
-							label, tostring( err ) ) )
-					end
-				end
-			end
-		end
 		local g = g_swPlots.grid
+		local w, h = g_swPlots:sv_extent()
 		sm.log.info( string.format( "[ServerWorks] city built: %d plots, %d failed",
 			job.built, job.failed ) )
 		self:sv_broadcast( string.format(
-			"City built: %d plots of %d blocks on pillars, %d block streets, %dx%d spawn plaza.%s",
-			job.built, g.plot, g.gap, Plots.SPAWN, Plots.SPAWN,
+			"City built: %d plots of %d blocks, %.0f x %.0f m across, %d block plaza at spawn.%s",
+			job.built, g.plot, w * Plots.BLOCK, h * Plots.BLOCK, g.spawn,
 			job.failed > 0 and string.format( " %d failed.", job.failed ) or "" ) )
-		if ( self.sw.plazaSkipped or 0 ) > 0 then
-			self:sv_broadcast( string.format( "%d plots left out for the plaza.",
-				self.sw.plazaSkipped ) )
-		end
 		self.sw.cityJob = nil
 	end
 end
 
+-- Clear by SHAPE, not by body. A plot slab with somebody's build welded onto it
+-- is part of that build's body, so destroying the body would delete their work
+-- and testing the body's height missed it entirely -- which is how a rebuild
+-- ended up laying a second city on top of the first.
 function World.sv_clearFloor( self )
 	local removed = 0
 	for _, body in ipairs( sm.body.getAllBodies() ) do
-		if sm.exists( body ) and g_swPlots:sv_isCityBody( body ) then
+		if sm.exists( body ) and not isGhostBody( body ) then
 			for _, shape in ipairs( body:getShapes() ) do
-				shape:destroyShape()
+				if sm.exists( shape ) and g_swPlots:sv_isCityShape( shape ) then
+					shape:destroyShape()
+					removed = removed + 1
+				end
 			end
-			removed = removed + 1
 		end
 	end
 	return removed
