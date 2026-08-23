@@ -8,9 +8,17 @@ The one thing NOT overwritten is BanList.json. That file is written by the
 running game and is the live ban list -- clobbering it on every sync would throw
 away bans the moment you edited a script.
 
+MEASURED 2026-08-23: the game keeps a Cache/ directory INSIDE the mod folder
+containing a compiled copy of every script (Cache/Raw/<name>_<hash>.rco) and of
+data files it reads (Cache/Data/*.dco). On this machine every .rco was stamped
+22:47:36 while every .lua had been rewritten at 23:18-23:26 -- the cache had not
+been rebuilt across repeated script changes. That is the most likely explanation
+for "the fixes did not apply", and --clean-cache is the lever to test it.
+
 Usage:
-    python dev/sync_mod.py            # copy repo -> Mods
-    python dev/sync_mod.py --status   # show what is installed, copy nothing
+    python dev/sync_mod.py                 # copy repo -> Mods, leave cache alone
+    python dev/sync_mod.py --clean-cache   # also delete the game's mod cache
+    python dev/sync_mod.py --status        # show what is installed, copy nothing
 """
 import filecmp
 import json
@@ -58,6 +66,15 @@ def main():
         return
 
     dest.mkdir(parents=True, exist_ok=True)
+
+    if "--clean-cache" in sys.argv:
+        cache = dest / "Cache"
+        if cache.is_dir():
+            n = sum(1 for f in cache.rglob("*") if f.is_file())
+            shutil.rmtree(cache)
+            print(f"  wiped Cache/ ({n} files) -- the game rebuilds it on next launch")
+        else:
+            print("  no Cache/ to wipe")
 
     copied = skipped = same = 0
     for f in sorted(SRC.rglob("*")):
