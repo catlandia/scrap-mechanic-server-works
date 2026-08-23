@@ -48,6 +48,13 @@ Settings.values = {}
 -- set: there is NO flamethrower tool in vanilla Scrap Mechanic. If one is
 -- wanted it is coming from a Blocks-and-Parts mod and its uuid has to be added
 -- here by hand.
+-- HAZARD tools are blocked for EVERYONE, host included. The host bypass exists
+-- so whoever runs the event can place and clear things -- it was never meant to
+-- hand them a clay gun. Reported: "the clay gun still works", from the host.
+local HAZARD = {
+	claygun = true, firelauncher = true, cornades = true, extinguisher = true,
+}
+
 local TOOLS = {
 	-- default OFF
 	claygun = {
@@ -417,10 +424,24 @@ end
 --[[ tool guard ]]
 
 -- Which tool uuids are currently forbidden, rebuilt whenever settings change.
+-- Returns two tables: everything blocked, and the subset the host does not get
+-- a pass on.
 function Settings.Sv_BlockedTools()
 	local blocked = {}
 	for name, uuids in pairs( TOOLS ) do
 		if Settings.Get( name ) == false then
+			for _, uuid in ipairs( uuids ) do
+				blocked[tostring( uuid )] = name
+			end
+		end
+	end
+	return blocked
+end
+
+function Settings.Sv_HazardTools()
+	local blocked = {}
+	for name, uuids in pairs( TOOLS ) do
+		if HAZARD[name] and Settings.Get( name ) == false then
 			for _, uuid in ipairs( uuids ) do
 				blocked[tostring( uuid )] = name
 			end

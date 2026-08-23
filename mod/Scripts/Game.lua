@@ -2,6 +2,7 @@ dofile( "$GAME_DATA/Scripts/game/CreativeGame.lua" )
 dofile( "$CONTENT_DATA/Scripts/Settings.lua" )
 dofile( "$CONTENT_DATA/Scripts/Identity.lua" )
 dofile( "$CONTENT_DATA/Scripts/SettingsGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/PlotsGui.lua" )
 -- IndexWidgets and friends. BasePlayer pulls this in too, but relying on load
 -- order for a global is how you get a nil at the worst moment.
 dofile( "$SURVIVAL_DATA/Scripts/util.lua" )
@@ -40,6 +41,7 @@ local WORLD_COMMANDS = {
 	["/restore"] = true, ["/purge"] = true, ["/plot"] = true,
 	["/plots"] = true, ["/plotgrid"] = true, ["/home"] = true,
 	["/plotbuild"] = true, ["/plotclear"] = true, ["/why"] = true,
+	["/plotapply"] = true,
 }
 
 -- Commands a guest may use. Everything else is host-only.
@@ -112,6 +114,7 @@ function Game.server_onCreate( self )
 	self.sv.nextToolCheck = 0
 	self.sv.nextBanReload = 0
 	self.sv.blockedTools = Settings.Sv_BlockedTools()
+	self.sv.hazardTools = Settings.Sv_HazardTools()
 	self.sv.pendingRestore = nil
 end
 
@@ -122,6 +125,10 @@ end
 function Game.sv_createNewPlayer( self, world, x, y, player )
 	sm.event.sendToWorld( self.sv.saved.world, "sv_e_spawnNewCharacter",
 		{ player = player, x = 0, y = 0 } )
+end
+
+function Game.sv_toolPayload( self )
+	return { all = self.sv.blockedTools, hazard = self.sv.hazardTools }
 end
 
 function Game.sv_world( self )
@@ -187,16 +194,17 @@ function Game.sv_checkToolGuard( self, tick )
 	local blocked = self.sv.blockedTools
 	if next( blocked ) == nil then return end
 
-	-- The host runs the event and needs every tool, including the banned ones.
 	local host = sm.player.getHostPlayer()
-	local guests = {}
+	local guests, hosts = {}, {}
 	for _, p in ipairs( sm.player.getAllPlayers() ) do
-		if p ~= host then guests[#guests + 1] = p end
+		if p == host then hosts[#hosts + 1] = p else guests[#guests + 1] = p end
 	end
 
-	Settings.Sv_CheckTools( guests, blocked, function( player, name )
+	local drop = function( player, name )
 		self.network:sendToClient( player, "client_dropTool", name )
-	end )
+	end
+	Settings.Sv_CheckTools( guests, blocked, drop )
+	Settings.Sv_CheckTools( hosts, self.sv.hazardTools or {}, drop )
 end
 
 function Game.sv_flushKicks( self )
@@ -233,7 +241,7 @@ function Game.server_onPlayerJoined( self, player, newPlayer )
 		return
 	end
 
-	self.network:sendToClient( player, "client_setBlockedTools", self.sv.blockedTools )
+	self.network:sendToClient( player, "client_setBlockedTools", self:sv_toolPayload() )
 	self.network:sendToClient( player, "client_welcome", {
 		perma = rec.perma,
 		plots = Settings.Get( "plots" ) == true,
@@ -277,17 +285,21 @@ end
 -- actually is. The server poll stays as a backstop, but a server round trip is
 -- too slow to stop a tool that only needs one click -- which is why the clay gun
 -- was still getting a shot off.
-function Game.client_setBlockedTools( self, list )
+function Game.client_setBlockedTools( self, data )
 	if self.cl == nil then self.cl = {} end
-	self.cl.blockedTools = list or {}
+	self.cl.blockedTools = ( data and data.all ) or {}
+	self.cl.hazardTools = ( data and data.hazard ) or {}
 end
 
 function Game.client_onFixedUpdate( self, dt )
 	CreativeGame.client_onFixedUpdate( self, dt )
 
-	local blocked = self.cl and self.cl.blockedTools
+	-- The host still gets every BUILD tool, but not the hazards. The bypass was
+	-- so whoever runs the event can place and clear things; it was never meant to
+	-- hand them a clay gun.
+	local blocked = self.cl and
+		( sm.isHost and self.cl.hazardTools or self.cl.blockedTools )
 	if blocked == nil or next( blocked ) == nil then return end
-	if sm.isHost then return end        -- the host runs the event, they get everything
 
 	local ok, uuid = pcall( function()
 		return sm.localPlayer.getPlayer():getCurrentToolUuid()
@@ -351,6 +363,8 @@ function Game.client_onCreate( self )
 		"cl_onAdminCommand", "Host: change a setting, e.g. /set fire off" )
 	sm.game.bindChatCommand( "/plots", { { "string", "onoff", true, { "on", "off" } } },
 		"cl_onAdminCommand", "Host: shortcut for /set plots on|off" )
+	sm.game.bindChatCommand( "/plotmenu", {}, "cl_onAdminCommand",
+		"Host: lay out the city, see what the numbers mean, then build it" )
 	sm.game.bindChatCommand( "/why", {}, "cl_onAdminCommand",
 		"Host: point at a build and ask why it is locked" )
 	sm.game.bindChatCommand( "/plotbuild", {}, "cl_onAdminCommand",
@@ -426,7 +440,8 @@ function Game.sv_n_settingsGuiClick( self, data, player )
 		local ok, detail = Settings.Sv_ApplyPreset( data.preset )
 		if ok then
 			self.sv.blockedTools = Settings.Sv_BlockedTools()
-			self.network:sendToClients( "client_setBlockedTools", self.sv.blockedTools )
+			self.sv.hazardTools = Settings.Sv_HazardTools()
+			self.network:sendToClients( "client_setBlockedTools", self:sv_toolPayload() )
 			self:sv_toWorld( "/settingschanged", {}, player )
 			self:sv_broadcast( "Server preset: " .. detail )
 		else
@@ -535,6 +550,74 @@ function Game.cl_closeSettingsGui( self )
 end
 
 
+--[[ city layout panel ]]
+
+function Game.sv_openPlotsGui( self, player )
+	-- Read the live grid back out of the world; the Game script does not own it.
+	local cfg = ( g_swPlots and {
+		plot = g_swPlots.grid.plot, gap = g_swPlots.grid.gap,
+		cols = g_swPlots.grid.cols, rows = g_swPlots.grid.rows,
+		spawn = Plots.SPAWN,
+	} ) or { plot = 20, gap = 1, cols = 10, rows = 10, spawn = 50 }
+	self.network:sendToClient( player, "client_openPlotsGui", cfg )
+end
+
+function Game.client_openPlotsGui( self, cfg )
+	if self.cl == nil then self.cl = {} end
+	self.cl.plotCfg = cfg
+	if self.cl.plotsGui == nil or not sm.exists( self.cl.plotsGui ) then
+		self.cl.plotsGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
+	end
+	self.cl.plotsGui:render( PlotsGui.Build( cfg ) )
+end
+
+function Game.cl_onPlotsGuiClick( self, widgetName, data )
+	if type( data ) ~= "table" or self.cl == nil then return end
+	local cfg = self.cl.plotCfg
+	if cfg == nil then return end
+
+	if data.action == "step" then
+		cfg[data.key] = PlotsGui.Step( data.key, cfg[data.key], data.dir )
+		self.cl.plotsGui:render( PlotsGui.Build( cfg ) )       -- local, instant
+		return
+	end
+	if data.action == "reset" then
+		self.cl.plotCfg = { plot = 20, gap = 1, cols = 10, rows = 10, spawn = 50 }
+		self.cl.plotsGui:render( PlotsGui.Build( self.cl.plotCfg ) )
+		return
+	end
+	if data.action == "close" then
+		self:cl_closePlotsGui()
+		return
+	end
+	-- build and clear are the server's business
+	self.network:sendToServer( "sv_n_plotsGuiAction", { action = data.action, cfg = cfg } )
+	self:cl_closePlotsGui()
+end
+
+function Game.cl_onPlotsGuiClose( self, widgetName )
+	self:cl_closePlotsGui()
+end
+
+function Game.cl_closePlotsGui( self )
+	if self.cl == nil then return end
+	local gui = self.cl.plotsGui
+	self.cl.plotsGui = nil
+	if gui and sm.exists( gui ) then
+		pcall( function() gui:close() end )
+	end
+end
+
+function Game.sv_n_plotsGuiAction( self, data, player )
+	if player ~= sm.player.getHostPlayer() then return end
+	if data.action == "clear" then
+		self:sv_toWorld( "/plotclear", {}, player )
+	elseif data.action == "build" then
+		self:sv_toWorld( "/plotapply", {}, player, { cfg = data.cfg } )
+	end
+end
+
+
 --[[ command dispatch ]]
 
 function Game.sv_n_adminCommand( self, params, player )
@@ -588,6 +671,7 @@ function Game.sv_n_adminCommand( self, params, player )
 			reply( "  /preset build|show|lockdown|sandbox" )
 			reply( "  /settings           open the settings panel" )
 			reply( "  /settingslist  /set <name> <value>" )
+			reply( "  /plotmenu           lay the city out, then build it" )
 			reply( "  /plots on|off  /plotbuild  /plotclear" )
 			reply( "  /plotgrid <plot> <gap> <cols> <rows>" )
 			reply( "  /lockdown [display]  /unlock  /protection  /buildtime N  /autosave N" )
@@ -629,10 +713,14 @@ function Game.sv_n_adminCommand( self, params, player )
 		reply( detail )
 		if ok then
 			self.sv.blockedTools = Settings.Sv_BlockedTools()
-			self.network:sendToClients( "client_setBlockedTools", self.sv.blockedTools )
+			self.sv.hazardTools = Settings.Sv_HazardTools()
+			self.network:sendToClients( "client_setBlockedTools", self:sv_toolPayload() )
 			self:sv_toWorld( "/settingschanged", params, player )
 			self:sv_broadcast( "Server preset: " .. detail )
 		end
+
+	elseif cmd == "/plotmenu" then
+		self:sv_openPlotsGui( player )
 
 	elseif cmd == "/settings" then
 		self:sv_openSettingsGui( player, "safety", 1 )
@@ -646,7 +734,8 @@ function Game.sv_n_adminCommand( self, params, player )
 		reply( detail )
 		if ok then
 			self.sv.blockedTools = Settings.Sv_BlockedTools()
-			self.network:sendToClients( "client_setBlockedTools", self.sv.blockedTools )
+			self.sv.hazardTools = Settings.Sv_HazardTools()
+			self.network:sendToClients( "client_setBlockedTools", self:sv_toolPayload() )
 			self:sv_toWorld( "/settingschanged", params, player )
 			self:sv_broadcast( "Server setting changed: " .. detail )
 		end

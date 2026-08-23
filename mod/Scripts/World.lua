@@ -61,8 +61,12 @@ function World.server_onCreate( self )
 	g_swSnapshots = Snapshots()
 	g_swSnapshots:sv_onCreate()
 
+	local savedPlots = Plots.Sv_LoadFile()
 	g_swPlots = Plots()
-	g_swPlots:sv_onCreate( Plots.Sv_LoadFile() )
+	g_swPlots:sv_onCreate( savedPlots )
+	if savedPlots and savedPlots.spawn then
+		Plots.SPAWN = savedPlots.spawn
+	end
 
 	g_swProtection = Protection()
 	g_swProtection:sv_onCreate( Settings.Get( "protection" ) )
@@ -486,6 +490,23 @@ function World.sv_e_swCommand( self, params )
 			self:sv_broadcast( string.format( "Plot system %s (%d of %d plots claimed).",
 				g_swPlots.enabled and "ON" or "OFF", claimed, total ) )
 		end
+
+	elseif cmd == "/plotapply" then
+		-- Set the grid from the panel, persist it, then build in one go.
+		local cfg = params.cfg or {}
+		g_swPlots.grid = {
+			plot = math.max( 2, math.floor( cfg.plot or 20 ) ),
+			gap = math.max( 0, math.floor( cfg.gap or 1 ) ),
+			cols = math.max( 1, math.floor( cfg.cols or 10 ) ),
+			rows = math.max( 1, math.floor( cfg.rows or 10 ) ),
+		}
+		Plots.SPAWN = math.max( 0, math.floor( cfg.spawn or 50 ) )
+		g_swPlots.owners = {}
+		g_swPlots.teams = {}
+		g_swPlots.requests = {}
+		Plots.Sv_SaveFile( g_swPlots )
+		self:sv_broadcast( "City layout changed. All plot claims cleared." )
+		self:sv_buildFloor( reply )
 
 	elseif cmd == "/plotbuild" then
 		self:sv_buildFloor( reply )

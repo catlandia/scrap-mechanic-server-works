@@ -75,7 +75,8 @@ function Plots.sv_onCreate( self, saved )
 end
 
 function Plots.sv_serialise( self )
-	return { grid = self.grid, owners = self.owners, teams = self.teams, enabled = self.enabled }
+	return { grid = self.grid, owners = self.owners, teams = self.teams,
+		enabled = self.enabled, spawn = Plots.SPAWN }
 end
 
 function Plots.sv_stride( self )
