@@ -67,6 +67,11 @@ function World.server_onCreate( self )
 	g_swProtection:sv_onCreate( Settings.Get( "protection" ) )
 
 	g_swProtection:sv_setResolver( function( body )
+		-- The city floor is scenery, not a build. Always locked, whatever mode the
+		-- server is in, so nobody can erase the ground out from under a plot.
+		if g_swPlots:sv_isFloorBody( body ) then
+			return "locked"
+		end
 		-- Rule 3: nothing is buildable at all until the host opens building.
 		if Settings.Get( "buildopen" ) == false then
 			return false
@@ -447,6 +452,13 @@ function World.sv_e_swCommand( self, params )
 				g_swPlots.enabled and "ON" or "OFF", claimed, total ) )
 		end
 
+	elseif cmd == "/plotbuild" then
+		self:sv_buildFloor( reply )
+
+	elseif cmd == "/plotclear" then
+		local removed = self:sv_clearFloor()
+		reply( string.format( "removed %d floor bodies", removed ) )
+
 	elseif cmd == "/plot" then
 		self:sv_plotCommand( args, player, reply )
 
@@ -566,4 +578,70 @@ function World.sv_home( self, player, reply )
 			character.worldPosition.z + 1 ) )
 	end )
 	reply( ok and string.format( "sent you to plot %d", index ) or "teleport failed" )
+end
+
+
+--[[ the city floor ]]
+
+function World.sv_buildFloor( self, reply )
+	local existing = self:sv_clearFloor()
+	if existing > 0 then
+		reply( string.format( "cleared %d old floor bodies", existing ) )
+	end
+
+	local ok, blueprint = pcall( function() return g_swPlots:sv_floorBlueprint() end )
+	if not ok then
+		reply( "could not build the blueprint: " .. tostring( blueprint ) )
+		return
+	end
+
+	local wrote, str = pcall( sm.json.writeJsonString, blueprint )
+	if not wrote then
+		reply( "could not serialise the blueprint: " .. tostring( str ) )
+		return
+	end
+
+	local placed, bodies = pcall( sm.creation.importFromString, self.world, str,
+		sm.vec3.zero(), sm.quat.identity(), true, true )
+	if not placed then
+		reply( "import failed: " .. tostring( bodies ) )
+		sm.log.warning( "[ServerWorks] floor import failed: " .. tostring( bodies ) )
+		return
+	end
+
+	-- Pin it immediately rather than waiting for the patrol to come round: the
+	-- floor should never be liftable or erasable for even one cycle.
+	local n = 0
+	for _, body in ipairs( bodies or {} ) do
+		if sm.exists( body ) then
+			pcall( function()
+				body:setConvertibleToDynamic( false )
+				body:setErasable( false )
+				body:setLiftable( false )
+				body:setBuildable( true )     -- you must be able to build ON the floor
+				body:setDestructable( false )
+			end )
+			n = n + 1
+		end
+	end
+
+	local g = g_swPlots.grid
+	local childs = #blueprint.bodies[1].childs
+	sm.log.info( string.format( "[ServerWorks] floor built: %d shapes, %d bodies", childs, n ) )
+	self:sv_broadcast( string.format(
+		"City floor built: %dx%d plots of %d blocks, %d block lines. %d shapes.",
+		g.cols, g.rows, g.plot, g.gap, childs ) )
+end
+
+function World.sv_clearFloor( self )
+	local removed = 0
+	for _, body in ipairs( sm.body.getAllBodies() ) do
+		if sm.exists( body ) and g_swPlots:sv_isFloorBody( body ) then
+			for _, shape in ipairs( body:getShapes() ) do
+				shape:destroyShape()
+			end
+			removed = removed + 1
+		end
+	end
+	return removed
 end

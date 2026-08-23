@@ -389,3 +389,85 @@ function Plots.sv_counts( self )
 	for _ in pairs( self.owners ) do claimed = claimed + 1 end
 	return claimed, self.grid.cols * self.grid.rows
 end
+
+
+--[[ the visible floor ]]
+
+-- Until now a plot was pure arithmetic -- invisible, so nobody could see where
+-- their ground ended. This builds the grid out of actual blocks: concrete for
+-- the plots, metal 2 for the lines between them.
+--
+-- Built as a BLUEPRINT and imported, not block by block. Blueprint children carry
+-- a `bounds`, so one 20x20 plot is a SINGLE shape rather than 400
+-- (ChallengeMode_PotatoLevel_01.blueprint is full of examples). A 10x10 city is
+-- ~210 shapes instead of ~44,000, which is the difference between a floor that
+-- renders and one that ends the event before it starts.
+--
+-- Format is version 4: { version, bodies = { { childs = { ... } } } }, child =
+-- { bounds, color, pos, shapeId, xaxis, zaxis }. Positions are in BLOCKS and are
+-- relative to the import position, so importing at vec3.zero() means a child's
+-- pos is its block coordinate in the world.
+
+Plots.CONCRETE = "a6c6ce30-dd47-4587-b475-085d55c6a3b4"   -- blk_concrete1
+Plots.METAL2 = "1016cafc-9f6b-40c9-8713-9019d399783f"     -- blk_metal2
+Plots.CONCRETE_COLOR = "8d8f89"
+Plots.METAL2_COLOR = "68615c"
+
+-- The floor occupies z 0 to 1 block. Players build on top of it, so anything at
+-- or below this height is floor and never a build -- which is what lets the
+-- protection resolver recognise it without tracking body ids across a reload.
+Plots.FLOOR_Z = 0
+Plots.FLOOR_BAND = 0.2       -- metres
+
+local function child( uuid, colour, x, y, z, sx, sy, sz )
+	return {
+		bounds = { x = sx, y = sy, z = sz },
+		color = colour,
+		pos = { x = x, y = y, z = z },
+		shapeId = uuid,
+		xaxis = 1,
+		zaxis = 3,
+	}
+end
+
+-- One creation containing the whole city floor.
+function Plots.sv_floorBlueprint( self )
+	local g = self.grid
+	local s = self:sv_stride()
+	local ox, oy = self:sv_originBlocks()
+	local childs = {}
+
+	for row = 0, g.rows - 1 do
+		for col = 0, g.cols - 1 do
+			-- the plot itself
+			childs[#childs + 1] = child( Plots.CONCRETE, Plots.CONCRETE_COLOR,
+				ox + col * s, oy + row * s, Plots.FLOOR_Z, g.plot, g.plot, 1 )
+
+			-- the line after this plot on the Y side, only as wide as the plot so
+			-- it never overlaps the full-length strips below
+			if g.gap > 0 then
+				childs[#childs + 1] = child( Plots.METAL2, Plots.METAL2_COLOR,
+					ox + col * s, oy + row * s + g.plot, Plots.FLOOR_Z, g.plot, g.gap, 1 )
+			end
+		end
+		-- the line after each column, running the full height of the city, which
+		-- also fills the crossings
+		if g.gap > 0 then
+			for col = 0, g.cols - 1 do
+				childs[#childs + 1] = child( Plots.METAL2, Plots.METAL2_COLOR,
+					ox + col * s + g.plot, oy + row * s, Plots.FLOOR_Z, g.gap, s, 1 )
+			end
+		end
+	end
+
+	return { version = 4, bodies = { { childs = childs } }, joints = {} }
+end
+
+-- Is this body part of the floor? Position rather than identity, deliberately:
+-- body ids do not survive a reload, and the floor is the only thing that sits in
+-- the bottom fifth of a metre.
+function Plots.sv_isFloorBody( self, body )
+	local ok, pos = pcall( function() return body.worldPosition end )
+	if not ok or pos == nil then return false end
+	return pos.z <= Plots.FLOOR_Z * Plots.BLOCK + Plots.FLOOR_BAND
+end

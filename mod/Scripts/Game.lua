@@ -36,6 +36,7 @@ local WORLD_COMMANDS = {
 	["/buildtime"] = true, ["/snapshot"] = true, ["/snapshots"] = true,
 	["/restore"] = true, ["/purge"] = true, ["/plot"] = true,
 	["/plots"] = true, ["/plotgrid"] = true, ["/home"] = true,
+	["/plotbuild"] = true, ["/plotclear"] = true,
 }
 
 -- Commands a guest may use. Everything else is host-only.
@@ -298,6 +299,10 @@ function Game.client_onCreate( self )
 		"cl_onAdminCommand", "Host: change a setting, e.g. /set fire off" )
 	sm.game.bindChatCommand( "/plots", { { "string", "onoff", true, { "on", "off" } } },
 		"cl_onAdminCommand", "Host: shortcut for /set plots on|off" )
+	sm.game.bindChatCommand( "/plotbuild", {}, "cl_onAdminCommand",
+		"Host: build the visible city floor -- concrete plots, metal 2 lines" )
+	sm.game.bindChatCommand( "/plotclear", {}, "cl_onAdminCommand",
+		"Host: remove the city floor" )
 	sm.game.bindChatCommand( "/plotgrid",
 		{ { "number", "plotBlocks", false }, { "number", "gapBlocks", false },
 		  { "number", "cols", false }, { "number", "rows", false } },
@@ -489,7 +494,8 @@ function Game.sv_n_adminCommand( self, params, player )
 			reply( "HOST" )
 			reply( "  /settings           open the settings panel" )
 			reply( "  /settingslist  /set <name> <value>" )
-			reply( "  /plots on|off  /plotgrid <plot> <gap> <cols> <rows>" )
+			reply( "  /plots on|off  /plotbuild  /plotclear" )
+			reply( "  /plotgrid <plot> <gap> <cols> <rows>" )
 			reply( "  /lockdown [display]  /unlock  /protection  /buildtime N  /autosave N" )
 			reply( "  /snapshot [name]  /snapshots  /restore <name> [plot]" )
 			reply( "  /purge here <m> | /purge plot <n> | /purge walkways" )
