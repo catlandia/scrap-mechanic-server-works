@@ -1,6 +1,10 @@
 dofile( "$GAME_DATA/Scripts/game/CreativeGame.lua" )
 dofile( "$CONTENT_DATA/Scripts/Settings.lua" )
 dofile( "$CONTENT_DATA/Scripts/Identity.lua" )
+dofile( "$CONTENT_DATA/Scripts/SettingsGui.lua" )
+-- IndexWidgets and friends. BasePlayer pulls this in too, but relying on load
+-- order for a global is how you get a nil at the worst moment.
+dofile( "$SURVIVAL_DATA/Scripts/util.lua" )
 
 -- The Game script. Chat, identity, settings, players.
 --
@@ -36,7 +40,7 @@ local WORLD_COMMANDS = {
 
 -- Commands a guest may use. Everything else is host-only.
 local PLAYER_COMMANDS = {
-	["/sw"] = true, ["/plot"] = true, ["/players"] = true,
+	["/sw"] = true, ["/swhelp"] = true, ["/plot"] = true, ["/players"] = true,
 	["/rules"] = true, ["/home"] = true,
 }
 
@@ -267,8 +271,13 @@ function Game.client_onCreate( self )
 
 	-- NOT "/help". The engine reserves it -- measured, first run:
 	--   ERROR: Command name '/help' is reserved
+	-- NOT "/help". The engine reserves that name and bindChatCommand refuses it --
+	-- measured, first run: "Command name '/help' is reserved". /swhelp is the
+	-- mod's own help, kept separate from the game's so neither shadows the other.
 	sm.game.bindChatCommand( "/sw", {}, "cl_onAdminCommand",
 		"Server Works: how this server works and what you can type" )
+	sm.game.bindChatCommand( "/swhelp", {}, "cl_onAdminCommand",
+		"Server Works help -- same as /sw" )
 	sm.game.bindChatCommand( "/rules", {}, "cl_onAdminCommand",
 		"The server rules and the numbers currently in force" )
 	sm.game.bindChatCommand( "/home", {}, "cl_onAdminCommand",
@@ -281,7 +290,9 @@ function Game.client_onCreate( self )
 		"Who is here, with session id and permanent id" )
 
 	sm.game.bindChatCommand( "/settings", {}, "cl_onAdminCommand",
-		"Host: show every server setting and what it does" )
+		"Host: open the settings panel" )
+	sm.game.bindChatCommand( "/settingslist", {}, "cl_onAdminCommand",
+		"Host: print settings to chat instead of opening the panel" )
 	sm.game.bindChatCommand( "/set",
 		{ { "string", "setting", false }, { "string", "value", false } },
 		"cl_onAdminCommand", "Host: change a setting, e.g. /set fire off" )
@@ -331,6 +342,101 @@ function Game.cl_onAdminCommand( self, params )
 end
 
 
+--[[ settings panel ]]
+
+-- The panel is client side, but settings live on the server, so the values are
+-- shipped over rather than read locally. Every click round-trips: the client
+-- asks, the server decides and saves, the server sends the new values back and
+-- the panel re-renders. That keeps a guest's client from ever being the
+-- authority on what the server allows.
+function Game.sv_openSettingsGui( self, player, page )
+	local values = {}
+	for _, row in ipairs( Settings.SCHEMA ) do
+		values[row.key] = Settings.Get( row.key )
+	end
+	self.network:sendToClient( player, "client_openSettingsGui",
+		{ values = values, page = page } )
+end
+
+function Game.sv_n_settingsGuiClick( self, data, player )
+	if player ~= sm.player.getHostPlayer() then
+		return
+	end
+
+	if data.action == "cycle" then
+		local row
+		for _, r in ipairs( Settings.SCHEMA ) do
+			if r.key == data.key then row = r end
+		end
+		if row then
+			local current = Settings.Get( row.key )
+			local nextValue = SettingsGui.NextValue( row, current )
+			if nextValue ~= current then
+				local raw = ( row.kind == "bool" ) and ( nextValue and "on" or "off" )
+					or tostring( nextValue )
+				local ok, detail = Settings.Sv_Set( row.key, raw )
+				if ok then
+					self.sv.blockedTools = Settings.Sv_BlockedTools()
+					self:sv_toWorld( "/settingschanged", {}, player )
+					self:sv_broadcast( "Server setting changed: " .. detail )
+				end
+			end
+		end
+	end
+
+	self:sv_openSettingsGui( player, data.page or 1 )
+end
+
+function Game.client_openSettingsGui( self, data )
+	if self.cl == nil then self.cl = {} end
+	self.cl.settingsValues = data.values
+	self.cl.settingsPage = data.page or 1
+
+	if self.cl.settingsGui and sm.exists( self.cl.settingsGui ) then
+		self.cl.settingsGui:close()
+		self.cl.settingsGui:destroy()
+	end
+
+	local root = SettingsGui.Build( data.values, self.cl.settingsPage )
+	self.cl.settingsGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
+	self.cl.settingsGui:render( root )
+	self.cl.settingsGui:open()
+end
+
+function Game.cl_onSettingsGuiClick( self, data )
+	if data.action == "close" then
+		self:cl_closeSettingsGui()
+		return
+	end
+
+	if data.action == "page" then
+		local pages = SettingsGui.PageCount()
+		local page = data.page
+		if page < 1 then page = pages elseif page > pages then page = 1 end
+		self.cl.settingsPage = page
+		local root = SettingsGui.Build( self.cl.settingsValues, page )
+		self.cl.settingsGui:render( root )
+		return
+	end
+
+	-- A value change has to go to the server; the client does not decide.
+	self.network:sendToServer( "sv_n_settingsGuiClick",
+		{ action = data.action, key = data.key, page = self.cl.settingsPage } )
+end
+
+function Game.cl_onSettingsGuiClose( self )
+	self:cl_closeSettingsGui()
+end
+
+function Game.cl_closeSettingsGui( self )
+	if self.cl and self.cl.settingsGui and sm.exists( self.cl.settingsGui ) then
+		self.cl.settingsGui:close()
+		self.cl.settingsGui:destroy()
+		self.cl.settingsGui = nil
+	end
+end
+
+
 --[[ command dispatch ]]
 
 function Game.sv_n_adminCommand( self, params, player )
@@ -371,7 +477,7 @@ function Game.sv_n_adminCommand( self, params, player )
 		return
 	end
 
-	if cmd == "/sw" then
+	if cmd == "/sw" or cmd == "/swhelp" then
 		reply( "SERVER WORKS" )
 		reply( "  /plot claim         claim the plot you are stood on" )
 		reply( "  /plot info          who owns this ground" )
@@ -381,7 +487,8 @@ function Game.sv_n_adminCommand( self, params, player )
 		reply( "  /players            who is here     /rules  the server rules" )
 		if isHost then
 			reply( "HOST" )
-			reply( "  /settings  /set <name> <value>" )
+			reply( "  /settings           open the settings panel" )
+			reply( "  /settingslist  /set <name> <value>" )
 			reply( "  /plots on|off  /plotgrid <plot> <gap> <cols> <rows>" )
 			reply( "  /lockdown [display]  /unlock  /protection  /buildtime N  /autosave N" )
 			reply( "  /snapshot [name]  /snapshots  /restore <name> [plot]" )
@@ -411,6 +518,9 @@ function Game.sv_n_adminCommand( self, params, player )
 		reply( "Go over a limit and your plot locks until you trim it. Nothing is taken away." )
 
 	elseif cmd == "/settings" then
+		self:sv_openSettingsGui( player, 1 )
+
+	elseif cmd == "/settingslist" then
 		reply( "settings -- /set <name> <value>" )
 		for _, line in ipairs( Settings.Sv_Lines() ) do reply( line ) end
 

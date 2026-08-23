@@ -1,83 +1,43 @@
-# The stale-cache test — read before launching
+# Where things stand
 
-State: **V3 installed. nugdupS added. Cache deliberately NOT cleared**, so the test
-below is still valid. Do not run `sync_mod.py --clean-cache` until after step 1.
+**V4 installed.** nugdupS confirmed visible in the creative menu, so **mod content does
+reach the game** — the stale-cache theory is disproved and can be dropped.
 
-## The evidence that started this
+That leaves the lift problem as a V2/V3 bug, not a stale mod.
 
-The game keeps a `Cache/` directory **inside the mod folder**:
+## First thing to check: why lifts do not work
 
-    Mods/Server Works/Cache/Raw/game_5ED431A4C9D4E4CE.rco
-                            /world_A5584BCA34E02E16.rco
-                            /protection_72D8B5C91EF3D6FE.rco   ... one per script
-                      /Data/players_1C36AD040C62F3B6.dco
+Type `/protection` in chat.
 
-Measured 2026-08-23:
-
-| file | script written | its cache entry |
+| response | meaning | fix |
 |---|---|---|
-| Game.lua | 23:26:35 | **22:47:36** |
-| World.lua | 23:26:54 | **22:47:36** |
-| Player.lua | 23:26:54 | **22:47:36** |
-| Settings.lua | 23:26:54 | **22:47:36** |
+| `protection: locked` | The world came up locked. `liftable = false` is part of that profile, along with buildable, erasable, paintable and connectable. | `/unlock` — should restore lifts immediately |
+| `protection: open` | Not the lock. Check `buildopen` in `Mods/Server Works/Settings.json`; if false, the resolver in `World.server_onCreate` returns false for every body in the world | `/set buildopen on` |
+| no response at all | The world script is not running | read the log |
 
-Every cache entry is stamped 22:47:36. Every script is newer. The cache was never
-rebuilt across repeated script rewrites — including the whole V2 refactor. If the game
-loads from that cache, no edit since 22:47 has ever run, which is exactly the reported
-symptom and matches the owner's theory.
+If it was `locked`, the cause is the `protection` value now persisted in `Settings.json`
+— new in V2. A run that ended locked comes back locked by design, which is correct
+behaviour for an event but surprising on a test world.
 
-Not yet proof: the `.rco` files might be a build artefact the game ignores at runtime.
-The test below settles it.
-
-## The test
-
-**nugdupS** is a copy of the Spud Gun with a new uuid
-(`748b6656-84b2-440f-8f4c-8cc7deeba63c`), added as new mod content in
-`mod/Tools/Database/`. It behaves exactly like a Spud Gun. It exists only to be
-*visible*: a brand new item in the creative menu is unambiguous in a way a script
-change never is.
-
-### Step 1 — launch as-is, do not clear anything
-
-Search the creative inventory for **nugdupS**.
-
-- **Missing** → mod content is not reaching the game. Theory confirmed. Go to step 2.
-- **Present** → content updates fine, and the "lifts don't work" problem is a bug in
-  V2, not a stale mod. Skip to "If it was not the cache".
-
-Also check the thumbnail in the Custom Game list — it should read **V3**. If it reads
-V1 or V2, that is the same failure showing in a second place.
-
-### Step 2 — clear the cache and relaunch
-
-    python dev/sync_mod.py --clean-cache
-
-Launch again and look for nugdupS.
-
-- **Now present** → the mod cache was the whole problem. `--clean-cache` becomes part
-  of every sync from then on, and the V2 fixes have never actually been tested.
-- **Still missing** → the cache is innocent and something else is stopping content
-  reaching the game. Next suspects: whether a Custom Game auto-discovers
-  `$CONTENT_DATA/Tools/Database/toolsets.tooldb` at all, and whether the item needs a
-  shapeset entry as well as a toolset entry.
-
-`sync_mod.py` now also warns on its own whenever `Cache/` is older than the files it
-just copied.
-
-## If it was not the cache
-
-Then V2 ran and lifts are broken by V2. In game, type `/protection`.
-
-- Reports `locked` → the world came up locked; `liftable = false` is part of that
-  profile. `/unlock` should immediately restore lifts. Cause is a stale `protection`
-  value in `Mods/Server Works/Settings.json`, which is new in V2.
-- No response at all → the world script is not running; read the log.
-- Reports `open` → look at `buildopen` in Settings.json. If false, the resolver in
-  `World.server_onCreate` returns false for every body in the world.
-
-## Either way
+## Then confirm the new code is actually live
 
     python dev/session_stats.py --spam
 
-`[ServerWorks] world ready` is a V2/V3-only log line. If it is absent, the new code
+`[ServerWorks] world ready` is a V2-and-later log line. Absent means the new scripts
 never ran, whatever the reason.
+
+## What is new in V4
+
+- **Settings panel.** `/settings` opens a real GUI instead of printing to chat.
+  Click a value to change it; numbers cycle through presets. `/settingslist` still
+  prints to chat and `/set <name> <value>` still takes exact numbers.
+- **`/swhelp`** — the mod's own help, separate from the game's `/help` (which the
+  engine reserves and refuses to let a mod bind). `/sw` does the same thing.
+
+## Still unverified
+
+Nothing in V4 has been run. The settings panel is the biggest untested piece: the
+json GUI format has no documentation beyond `Data/Gui/JsonGuis/PopUp_YN.gui`, so the
+skin names and the widget tree are inference. If `/settings` errors or opens blank,
+the panel is at fault, not the settings themselves — use `/settingslist` and `/set`
+meanwhile.
