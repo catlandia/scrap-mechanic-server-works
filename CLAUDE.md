@@ -265,6 +265,20 @@ to be wrong:
 1. **`baseGameContent: "Survival"` + a `CreativeGame` subclass.** No Workshop Custom Game
    pairs those (they use Survival+SurvivalGame, or Creative+own class). If it misbehaves,
    flip to `"Creative"` — and survival parts go away with it.
+
+   **It has misbehaved twice, and both times the fix was small.** Survival content wins
+   any uuid the two modes share, so you get the *survival* version of a shared tool:
+
+   - `Sledgehammer.lua` reads `clientPublicData.perks`, which `SurvivalPlayer` sets and
+     `CreativePlayer` does not → fixed by two overrides in `Player.lua`.
+   - uuid `8f190ce2` is the **lift**, and in survival content it maps to `SurvivalLift`,
+     which has no `sm.player.placeLift` and no blueprint handling at all — so the lift
+     could not spawn creations. Fixed by re-declaring that uuid in
+     `mod/Tools/Database/ToolSets/serverworks.toolset` pointing at
+     `$GAME_DATA/Scripts/game/Lift.lua` (class `Lift`).
+
+   The pattern to remember: **when a creative feature silently does nothing, check whether
+   survival owns that uuid.** Our own toolset can take it back.
 2. **`sm.creation.importFromString`'s last two arguments.** Vanilla passes `true, true`
    in `BuilderWorld` and only five arguments in `MenuWorld`; the meaning is not documented
    anywhere and was not derivable from the binding names.
