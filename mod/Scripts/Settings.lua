@@ -184,6 +184,8 @@ Settings.SCHEMA = {
 	  help = "rule 5: allow radios (they cannot be muted, only banned)" },
 	{ key = "horns", kind = "bool", default = false,
 	  help = "rule 7: allow horns -- the noise pollution lever" },
+	{ key = "cleanupdebris", kind = "bool", default = true,
+	  help = "vacuum up the debris an explosion leaves behind" },
 	{ key = "autoremove", kind = "bool", default = false,
 	  help = "delete banned parts automatically instead of only warning" },
 

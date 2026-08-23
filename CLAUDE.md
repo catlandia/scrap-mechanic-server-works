@@ -161,6 +161,15 @@ What a mod *can* do is shrink what has to be simulated:
 - **The client side cannot be helped.** Twenty players each rendering twenty plots is draw
   calls, and no binding touches the renderer. Only spatial separation and budgets mitigate it.
 
+**One lead worth chasing: `PhysicsQuality`.** The name is in the executable's string
+table and `sm.game.getSettingValue( "PhysicsQuality" )` reads it. There is no setter, so
+a mod cannot change it — but the host runs the physics for everyone, so the *host's*
+value governs the whole server, and it is not in `settings.json` until it is changed
+from the default. `/protection` now prints it. This is the closest thing to a
+simulation knob found so far and it has not been measured: get a value, change it in
+the host's options, and re-run `dev/session_stats.py` on both sessions before believing
+anything about it.
+
 There is no Lua profiler binding — but the game log is one. Every line is stamped
 `HH:MM:SS (tick/frame)`: the first counter advances at the simulation rate, the second at
 the render rate, so dividing each by wall-clock recovers server tick rate and client FPS

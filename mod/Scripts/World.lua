@@ -125,6 +125,17 @@ end
 --[[ explosions and fire ]]
 
 function World.server_onExplosion( self, center, destructionLevel, radius )
+	-- An explosion cannot be cancelled -- server_onExplosion is a notification and
+	-- the bang has already happened. What it leaves behind CAN be taken away:
+	-- sm.debris.createBlackHole vacuums loose debris, which is the actual
+	-- complaint about cornades. Vanilla drives it from the plasma drill
+	-- (PlasmaDrill.lua:619), so the argument order is copied from there rather
+	-- than guessed.
+	if Settings.Get( "cleanupdebris" ) ~= false then
+		pcall( sm.debris.createBlackHole, center, ( radius or 3 ) * 1.5, 60,
+			center, -10, 2 )
+	end
+
 	if g_swProtectTerrain then
 		-- server_onExplosion is a notification, not a veto: the explosion has
 		-- already happened. What can still be declined is the terrain damage,
@@ -356,6 +367,14 @@ function World.sv_e_swCommand( self, params )
 
 	elseif cmd == "/protection" then
 		reply( g_swProtection:sv_status() )
+		-- PhysicsQuality is a real engine setting (the name is in the executable's
+		-- string table) and sm.game.getSettingValue can read it. There is no
+		-- setter, so a mod cannot change it -- but the HOST runs the physics for
+		-- everyone, so the host's value governs the whole server. Worth being able
+		-- to see before blaming the mod for a slow event.
+		local okq, quality = pcall( sm.game.getSettingValue, "PhysicsQuality" )
+		reply( string.format( "host PhysicsQuality: %s  (host-side, set it in the game options)",
+			okq and tostring( quality ) or "unreadable" ) )
 		reply( string.format( "shapes in world: %s",
 			tostring( g_swProtection:sv_census() or "counting..." ) ) )
 		local claimed, total = g_swPlots:sv_counts()
@@ -464,6 +483,38 @@ function World.sv_e_swCommand( self, params )
 	elseif cmd == "/plotclear" then
 		local removed = self:sv_clearFloor()
 		reply( string.format( "removed %d floor bodies", removed ) )
+
+	elseif cmd == "/why" then
+		-- Three rounds of guessing why a lift would not work is two too many.
+		-- Look at whatever the host is pointing at and say exactly what the
+		-- protection system thinks of it.
+		local character = player:getCharacter()
+		if not ( character and sm.exists( character ) ) then reply( "no character" ) return end
+		local from = character.worldPosition + sm.vec3.new( 0, 0, 0.6 )
+		local hit, result = sm.physics.raycast( from,
+			from + character:getDirection() * 12, character )
+		if not hit or result.type ~= "body" then
+			reply( "point at a build and try again (nothing hit within 12 m)" )
+			return
+		end
+		local body = result:getBody()
+		local z = g_swPlots:sv_locate( body.worldPosition )
+		reply( string.format( "body at %.2f,%.2f,%.2f  shapes=%d  static=%s",
+			body.worldPosition.x, body.worldPosition.y, body.worldPosition.z,
+			body:getShapeCount(), tostring( body:isStatic() ) ) )
+		reply( string.format( "  zone: %s%s", z and z.kind or "outside city",
+			( z and z.kind == "plot" ) and ( " " .. z.index ) or "" ) )
+		reply( string.format( "  scenery: %s   buildopen: %s   plots: %s   mode: %s",
+			tostring( g_swPlots:sv_isScenery( body ) ),
+			tostring( Settings.Get( "buildopen" ) ),
+			tostring( g_swPlots.enabled ),
+			g_swProtection:sv_getMode() ) )
+		reply( string.format( "  buildable=%s erasable=%s liftable=%s paintable=%s",
+			tostring( body:isBuildable() ), tostring( body:isErasable() ),
+			tostring( body:isLiftable() ), tostring( body:isPaintable() ) ) )
+		reply( string.format( "  connectable=%s usable=%s destructable=%s dynamicOK=%s",
+			tostring( body:isConnectable() ), tostring( body:isUsable() ),
+			tostring( body:isDestructable() ), tostring( body:isConvertibleToDynamic() ) ) )
 
 	elseif cmd == "/plot" then
 		self:sv_plotCommand( args, player, reply )

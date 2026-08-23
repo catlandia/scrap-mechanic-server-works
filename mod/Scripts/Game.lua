@@ -39,7 +39,7 @@ local WORLD_COMMANDS = {
 	["/buildtime"] = true, ["/snapshot"] = true, ["/snapshots"] = true,
 	["/restore"] = true, ["/purge"] = true, ["/plot"] = true,
 	["/plots"] = true, ["/plotgrid"] = true, ["/home"] = true,
-	["/plotbuild"] = true, ["/plotclear"] = true,
+	["/plotbuild"] = true, ["/plotclear"] = true, ["/why"] = true,
 }
 
 -- Commands a guest may use. Everything else is host-only.
@@ -351,6 +351,8 @@ function Game.client_onCreate( self )
 		"cl_onAdminCommand", "Host: change a setting, e.g. /set fire off" )
 	sm.game.bindChatCommand( "/plots", { { "string", "onoff", true, { "on", "off" } } },
 		"cl_onAdminCommand", "Host: shortcut for /set plots on|off" )
+	sm.game.bindChatCommand( "/why", {}, "cl_onAdminCommand",
+		"Host: point at a build and ask why it is locked" )
 	sm.game.bindChatCommand( "/plotbuild", {}, "cl_onAdminCommand",
 		"Host: build the visible city floor -- concrete plots, metal 2 lines" )
 	sm.game.bindChatCommand( "/plotclear", {}, "cl_onAdminCommand",
@@ -590,6 +592,7 @@ function Game.sv_n_adminCommand( self, params, player )
 			reply( "  /lockdown [display]  /unlock  /protection  /buildtime N  /autosave N" )
 			reply( "  /snapshot [name]  /snapshots  /restore <name> [plot]" )
 			reply( "  /purge here <m> | /purge plot <n> | /purge walkways" )
+			reply( "  /why                point at a build, ask why it is locked" )
 			reply( "  /ban <who>  /unban <who>  /banlist  /known  /kick <who>" )
 			reply( "  /allow <who>  /unallow <who>  /allowlist" )
 		end

@@ -539,6 +539,16 @@ function Plots.sv_isScenery( self, body )
 	if not ok or pos == nil then return false end
 	if pos.z > ( Plots.DECK_Z + 2 ) * Plots.BLOCK then return false end
 
+	-- Must be a flat plate exactly one block thick sitting at deck height. A
+	-- player's build rises above the deck, so its AABB gives it away instantly.
+	-- Without this, anyone building out of metal near the ground had their
+	-- creation classed as scenery and locked -- which is what stops a lift.
+	local hasBox, aabbMin, aabbMax = pcall( function() return body:getWorldAabb() end )
+	if hasBox and aabbMax then
+		local ceiling = ( Plots.DECK_Z + 1 ) * Plots.BLOCK + 0.05
+		if aabbMax.z > ceiling then return false end
+	end
+
 	local got, shapes = pcall( function() return body:getShapes() end )
 	if not got or shapes == nil or #shapes == 0 then return false end
 	for _, shape in ipairs( shapes ) do
