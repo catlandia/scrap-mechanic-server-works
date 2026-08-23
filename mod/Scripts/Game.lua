@@ -233,6 +233,7 @@ function Game.server_onPlayerJoined( self, player, newPlayer )
 		return
 	end
 
+	self.network:sendToClient( player, "client_setBlockedTools", self.sv.blockedTools )
 	self.network:sendToClient( player, "client_welcome", {
 		perma = rec.perma,
 		plots = Settings.Get( "plots" ) == true,
@@ -270,6 +271,42 @@ end
 
 function Game.client_showMessage( self, text )
 	sm.gui.chatMessage( text )
+end
+
+-- The blocked list is pushed to clients so the check can happen where the tool
+-- actually is. The server poll stays as a backstop, but a server round trip is
+-- too slow to stop a tool that only needs one click -- which is why the clay gun
+-- was still getting a shot off.
+function Game.client_setBlockedTools( self, list )
+	if self.cl == nil then self.cl = {} end
+	self.cl.blockedTools = list or {}
+end
+
+function Game.client_onFixedUpdate( self, dt )
+	CreativeGame.client_onFixedUpdate( self, dt )
+
+	local blocked = self.cl and self.cl.blockedTools
+	if blocked == nil or next( blocked ) == nil then return end
+	if sm.isHost then return end        -- the host runs the event, they get everything
+
+	local ok, uuid = pcall( function()
+		return sm.localPlayer.getPlayer():getCurrentToolUuid()
+	end )
+	if not ok or uuid == nil then return end
+
+	local name = blocked[tostring( uuid )]
+	if name == nil then
+		self.cl.lastBlockedWarn = nil
+		return
+	end
+
+	pcall( sm.tool.forceTool, nil )
+
+	-- One message per pickup, not one per tick.
+	if self.cl.lastBlockedWarn ~= name then
+		self.cl.lastBlockedWarn = name
+		sm.gui.chatMessage( string.format( "The %s is disabled on this server.", name ) )
+	end
 end
 
 function Game.client_dropTool( self, name )
@@ -387,6 +424,7 @@ function Game.sv_n_settingsGuiClick( self, data, player )
 		local ok, detail = Settings.Sv_ApplyPreset( data.preset )
 		if ok then
 			self.sv.blockedTools = Settings.Sv_BlockedTools()
+			self.network:sendToClients( "client_setBlockedTools", self.sv.blockedTools )
 			self:sv_toWorld( "/settingschanged", {}, player )
 			self:sv_broadcast( "Server preset: " .. detail )
 		else
@@ -423,10 +461,11 @@ function Game.client_openSettingsGui( self, data )
 	self.cl.settingsGroup = data.group or "safety"
 	self.cl.settingsPage = data.page or 1
 
-	if self.cl.settingsGui and sm.exists( self.cl.settingsGui ) then
-		self.cl.settingsGui:close()
-		self.cl.settingsGui:destroy()
-	end
+	-- close() only. A json GUI has no destroy() -- MEASURED, every reopen threw
+	--   ERROR: Unknown member 'destroy' in userdata   Game.lua:428
+	-- and the throw left the panel unopenable for the rest of the session.
+	-- Vanilla only ever calls close() (CreativePlayer.cl_e_unstuckYes).
+	self:cl_closeSettingsGui()
 
 	local root = SettingsGui.Build( data.values, self.cl.settingsGroup, self.cl.settingsPage )
 	self.cl.settingsGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
@@ -473,10 +512,13 @@ function Game.cl_onSettingsGuiClose( self )
 end
 
 function Game.cl_closeSettingsGui( self )
-	if self.cl and self.cl.settingsGui and sm.exists( self.cl.settingsGui ) then
-		self.cl.settingsGui:close()
-		self.cl.settingsGui:destroy()
-		self.cl.settingsGui = nil
+	if self.cl == nil then return end
+	local gui = self.cl.settingsGui
+	-- Cleared BEFORE closing: close() fires onClose, which calls back into here,
+	-- and without this the second pass would close an already-closing GUI.
+	self.cl.settingsGui = nil
+	if gui and sm.exists( gui ) then
+		pcall( function() gui:close() end )
 	end
 end
 
@@ -574,6 +616,7 @@ function Game.sv_n_adminCommand( self, params, player )
 		reply( detail )
 		if ok then
 			self.sv.blockedTools = Settings.Sv_BlockedTools()
+			self.network:sendToClients( "client_setBlockedTools", self.sv.blockedTools )
 			self:sv_toWorld( "/settingschanged", params, player )
 			self:sv_broadcast( "Server preset: " .. detail )
 		end
@@ -590,6 +633,7 @@ function Game.sv_n_adminCommand( self, params, player )
 		reply( detail )
 		if ok then
 			self.sv.blockedTools = Settings.Sv_BlockedTools()
+			self.network:sendToClients( "client_setBlockedTools", self.sv.blockedTools )
 			self:sv_toWorld( "/settingschanged", params, player )
 			self:sv_broadcast( "Server setting changed: " .. detail )
 		end
