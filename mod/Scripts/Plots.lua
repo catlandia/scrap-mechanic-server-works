@@ -391,33 +391,33 @@ function Plots.sv_counts( self )
 end
 
 
---[[ the visible floor ]]
+--[[ the visible city ]]
 
--- Until now a plot was pure arithmetic -- invisible, so nobody could see where
--- their ground ended. This builds the grid out of actual blocks: concrete for
--- the plots, metal 2 for the lines between them.
+-- Each plot is its OWN creation: a concrete slab on a pillar. That is the whole
+-- point of the pillar -- when a player builds on their slab their blocks weld to
+-- that body, so the plot and everything on it is a single creation that can be
+-- exported and saved as one thing when the event ends.
 --
--- Built as a BLUEPRINT and imported, not block by block. Blueprint children carry
--- a `bounds`, so one 20x20 plot is a SINGLE shape rather than 400
--- (ChallengeMode_PotatoLevel_01.blueprint is full of examples). A 10x10 city is
--- ~210 shapes instead of ~44,000, which is the difference between a floor that
--- renders and one that ends the event before it starts.
+-- Which is why each plot is imported separately rather than as one big blueprint.
+-- sm.body.getCreationsFromBodies groups by creation, so a single import would
+-- make the entire city one creation and per-plot snapshot and restore would
+-- collapse into all-or-nothing.
 --
--- Format is version 4: { version, bodies = { { childs = { ... } } } }, child =
--- { bounds, color, pos, shapeId, xaxis, zaxis }. Positions are in BLOCKS and are
--- relative to the import position, so importing at vec3.zero() means a child's
--- pos is its block coordinate in the world.
+-- The walkways are one further creation of their own. Separately imported bodies
+-- do not weld to each other just by touching -- welding needs the weld tool or a
+-- contiguous build action -- so the grid stays as separate pieces.
+--
+-- Blueprint children carry a `bounds`, so a 20x20 slab is ONE shape rather than
+-- 400 (ChallengeMode_PotatoLevel_01.blueprint is full of examples). Positions are
+-- in BLOCKS, relative to the import position.
 
 Plots.CONCRETE = "a6c6ce30-dd47-4587-b475-085d55c6a3b4"   -- blk_concrete1
 Plots.METAL2 = "1016cafc-9f6b-40c9-8713-9019d399783f"     -- blk_metal2
 Plots.CONCRETE_COLOR = "8d8f89"
 Plots.METAL2_COLOR = "68615c"
 
--- The floor occupies z 0 to 1 block. Players build on top of it, so anything at
--- or below this height is floor and never a build -- which is what lets the
--- protection resolver recognise it without tracking body ids across a reload.
-Plots.FLOOR_Z = 0
-Plots.FLOOR_BAND = 0.2       -- metres
+Plots.DECK_Z = 4        -- blocks above ground that the city deck sits at
+Plots.PILLAR = 4        -- pillar footprint, blocks square
 
 local function child( uuid, colour, x, y, z, sx, sy, sz )
 	return {
@@ -430,44 +430,77 @@ local function child( uuid, colour, x, y, z, sx, sy, sz )
 	}
 end
 
--- One creation containing the whole city floor.
-function Plots.sv_floorBlueprint( self )
+local function blueprint( childs )
+	return { version = 4, bodies = { { childs = childs } }, joints = {} }
+end
+
+-- One plot: pillar plus slab, contiguous, so it imports as a single body that a
+-- player's build will weld onto.
+function Plots.sv_plotBlueprint( self, col, row )
 	local g = self.grid
+	local s = self:sv_stride()
+	local ox, oy = self:sv_originBlocks()
+	local px = ox + col * s
+	local py = oy + row * s
+	local inset = math.max( 0, math.floor( ( g.plot - Plots.PILLAR ) / 2 ) )
+
+	return blueprint{
+		child( Plots.CONCRETE, Plots.CONCRETE_COLOR,
+			px + inset, py + inset, 0, Plots.PILLAR, Plots.PILLAR, Plots.DECK_Z ),
+		child( Plots.CONCRETE, Plots.CONCRETE_COLOR,
+			px, py, Plots.DECK_Z, g.plot, g.plot, 1 ),
+	}
+end
+
+-- All the walkway strips as one creation. Static, so it does not need holding up.
+function Plots.sv_walkwayBlueprint( self )
+	local g = self.grid
+	if g.gap <= 0 then return nil end
 	local s = self:sv_stride()
 	local ox, oy = self:sv_originBlocks()
 	local childs = {}
 
 	for row = 0, g.rows - 1 do
 		for col = 0, g.cols - 1 do
-			-- the plot itself
-			childs[#childs + 1] = child( Plots.CONCRETE, Plots.CONCRETE_COLOR,
-				ox + col * s, oy + row * s, Plots.FLOOR_Z, g.plot, g.plot, 1 )
-
-			-- the line after this plot on the Y side, only as wide as the plot so
-			-- it never overlaps the full-length strips below
-			if g.gap > 0 then
-				childs[#childs + 1] = child( Plots.METAL2, Plots.METAL2_COLOR,
-					ox + col * s, oy + row * s + g.plot, Plots.FLOOR_Z, g.plot, g.gap, 1 )
-			end
-		end
-		-- the line after each column, running the full height of the city, which
-		-- also fills the crossings
-		if g.gap > 0 then
-			for col = 0, g.cols - 1 do
-				childs[#childs + 1] = child( Plots.METAL2, Plots.METAL2_COLOR,
-					ox + col * s + g.plot, oy + row * s, Plots.FLOOR_Z, g.gap, s, 1 )
-			end
+			-- the line after this plot on the Y side, plot-width only so it never
+			-- overlaps the full-height strips below
+			childs[#childs + 1] = child( Plots.METAL2, Plots.METAL2_COLOR,
+				ox + col * s, oy + row * s + g.plot, Plots.DECK_Z, g.plot, g.gap, 1 )
+			-- the line after each column, full cell height, filling the crossings
+			childs[#childs + 1] = child( Plots.METAL2, Plots.METAL2_COLOR,
+				ox + col * s + g.plot, oy + row * s, Plots.DECK_Z, g.gap, s, 1 )
 		end
 	end
-
-	return { version = 4, bodies = { { childs = childs } }, joints = {} }
+	return blueprint( childs )
 end
 
--- Is this body part of the floor? Position rather than identity, deliberately:
--- body ids do not survive a reload, and the floor is the only thing that sits in
--- the bottom fifth of a metre.
-function Plots.sv_isFloorBody( self, body )
+-- Walkways are the one part of the city that must never be erased, and they are
+-- identifiable because nothing can ever be built on them: a body made entirely of
+-- metal 2 sitting at deck height is a walkway and nothing else.
+--
+-- The plot slabs deliberately are NOT protected this way. A player's build welds
+-- onto its slab, so the slab is part of their creation and follows the ordinary
+-- plot rules -- which is exactly what makes the whole plot exportable as one
+-- piece. The cost is that an owner can erase their own floor; /plotbuild puts it
+-- back.
+function Plots.sv_isWalkway( self, body )
 	local ok, pos = pcall( function() return body.worldPosition end )
 	if not ok or pos == nil then return false end
-	return pos.z <= Plots.FLOOR_Z * Plots.BLOCK + Plots.FLOOR_BAND
+	if pos.z > ( Plots.DECK_Z + 2 ) * Plots.BLOCK then return false end
+
+	local got, shapes = pcall( function() return body:getShapes() end )
+	if not got or shapes == nil or #shapes == 0 then return false end
+	for _, shape in ipairs( shapes ) do
+		if tostring( shape.shapeUuid ) ~= Plots.METAL2 then
+			return false
+		end
+	end
+	return true
+end
+
+-- Anything sitting at or below the deck is city, not a build.
+function Plots.sv_isCityBody( self, body )
+	local ok, pos = pcall( function() return body.worldPosition end )
+	if not ok or pos == nil then return false end
+	return pos.z <= ( Plots.DECK_Z + 2 ) * Plots.BLOCK
 end

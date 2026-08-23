@@ -55,6 +55,7 @@ function World.server_onCreate( self )
 		nextAutoSnapshot = nil,
 		patrolFaulted = false,
 		rulesFaulted = false,
+		cityJob = nil,
 	}
 
 	g_swSnapshots = Snapshots()
@@ -67,9 +68,10 @@ function World.server_onCreate( self )
 	g_swProtection:sv_onCreate( Settings.Get( "protection" ) )
 
 	g_swProtection:sv_setResolver( function( body )
-		-- The city floor is scenery, not a build. Always locked, whatever mode the
-		-- server is in, so nobody can erase the ground out from under a plot.
-		if g_swPlots:sv_isFloorBody( body ) then
+		-- Walkways are scenery and can never be built on, so they are always
+		-- locked -- otherwise the "sweep" profile that keeps litter clearable off
+		-- shared ground would let anyone delete the streets too.
+		if g_swPlots:sv_isWalkway( body ) then
 			return "locked"
 		end
 		-- Rule 3: nothing is buildable at all until the host opens building.
@@ -164,6 +166,7 @@ function World.server_onFixedUpdate( self )
 	end
 
 	self:sv_stepSnapshots()
+	pcall( function() self:sv_stepCity() end )
 	self:sv_checkRules( tick )
 	self:sv_checkGriefAlarm( tick )
 	self:sv_checkTimers( tick )
@@ -584,62 +587,108 @@ function World.sv_home( self, player, reply )
 end
 
 
---[[ the city floor ]]
+--[[ the city ]]
 
+-- One import per plot, deliberately. sm.body.getCreationsFromBodies groups by
+-- creation, so importing the whole city in one blueprint would make it a single
+-- creation and per-plot snapshot and restore would become all-or-nothing.
+--
+-- Run as a job a few plots per tick rather than 100 imports in one frame: this is
+-- a setup command, but a a host running it mid-event should not get a stall.
 function World.sv_buildFloor( self, reply )
-	local existing = self:sv_clearFloor()
-	if existing > 0 then
-		reply( string.format( "cleared %d old floor bodies", existing ) )
-	end
-
-	local ok, blueprint = pcall( function() return g_swPlots:sv_floorBlueprint() end )
-	if not ok then
-		reply( "could not build the blueprint: " .. tostring( blueprint ) )
+	if self.sw.cityJob then
+		reply( "already building" )
 		return
 	end
-
-	local wrote, str = pcall( sm.json.writeJsonString, blueprint )
-	if not wrote then
-		reply( "could not serialise the blueprint: " .. tostring( str ) )
-		return
+	local removed = self:sv_clearFloor()
+	if removed > 0 then
+		reply( string.format( "cleared %d old city bodies", removed ) )
 	end
 
+	local g = g_swPlots.grid
+	local queue = {}
+	for row = 0, g.rows - 1 do
+		for col = 0, g.cols - 1 do
+			queue[#queue + 1] = { col = col, row = row }
+		end
+	end
+	self.sw.cityJob = { queue = queue, cursor = 1, built = 0, failed = 0, walkway = false }
+	reply( string.format( "building %d plots...", #queue ) )
+end
+
+function World.sv_importBlueprint( self, bp )
+	local wrote, str = pcall( sm.json.writeJsonString, bp )
+	if not wrote then return nil, str end
 	local placed, bodies = pcall( sm.creation.importFromString, self.world, str,
 		sm.vec3.zero(), sm.quat.identity(), true, true )
-	if not placed then
-		reply( "import failed: " .. tostring( bodies ) )
-		sm.log.warning( "[ServerWorks] floor import failed: " .. tostring( bodies ) )
-		return
-	end
+	if not placed then return nil, bodies end
+	return bodies or {}
+end
 
-	-- Pin it immediately rather than waiting for the patrol to come round: the
-	-- floor should never be liftable or erasable for even one cycle.
-	local n = 0
+local function pinCity( bodies, buildable )
 	for _, body in ipairs( bodies or {} ) do
 		if sm.exists( body ) then
 			pcall( function()
 				body:setConvertibleToDynamic( false )
-				body:setErasable( false )
-				body:setLiftable( false )
-				body:setBuildable( true )     -- you must be able to build ON the floor
 				body:setDestructable( false )
+				body:setLiftable( false )
+				body:setBuildable( buildable )
 			end )
-			n = n + 1
 		end
 	end
+end
 
-	local g = g_swPlots.grid
-	local childs = #blueprint.bodies[1].childs
-	sm.log.info( string.format( "[ServerWorks] floor built: %d shapes, %d bodies", childs, n ) )
-	self:sv_broadcast( string.format(
-		"City floor built: %dx%d plots of %d blocks, %d block lines. %d shapes.",
-		g.cols, g.rows, g.plot, g.gap, childs ) )
+function World.sv_stepCity( self )
+	local job = self.sw.cityJob
+	if job == nil then return end
+
+	local last = math.min( job.cursor + 3, #job.queue )
+	for i = job.cursor, last do
+		local cell = job.queue[i]
+		local bodies, err = self:sv_importBlueprint(
+			g_swPlots:sv_plotBlueprint( cell.col, cell.row ) )
+		if bodies then
+			-- buildable TRUE: a plot slab exists to be built on, and the build
+			-- welding to it is what makes the plot exportable as one creation.
+			pinCity( bodies, true )
+			job.built = job.built + 1
+		else
+			job.failed = job.failed + 1
+			if job.failed == 1 then
+				sm.log.warning( "[ServerWorks] plot import failed: " .. tostring( err ) )
+			end
+		end
+	end
+	job.cursor = last + 1
+
+	if job.cursor > #job.queue then
+		if not job.walkway then
+			job.walkway = true
+			local bp = g_swPlots:sv_walkwayBlueprint()
+			if bp then
+				local bodies, err = self:sv_importBlueprint( bp )
+				if bodies then
+					pinCity( bodies, false )     -- nobody builds on the streets
+				else
+					sm.log.warning( "[ServerWorks] walkway import failed: " .. tostring( err ) )
+				end
+			end
+		end
+		local g = g_swPlots.grid
+		sm.log.info( string.format( "[ServerWorks] city built: %d plots, %d failed",
+			job.built, job.failed ) )
+		self:sv_broadcast( string.format(
+			"City built: %d plots of %d blocks on pillars, %d block streets.%s",
+			job.built, g.plot, g.gap,
+			job.failed > 0 and string.format( " %d failed.", job.failed ) or "" ) )
+		self.sw.cityJob = nil
+	end
 end
 
 function World.sv_clearFloor( self )
 	local removed = 0
 	for _, body in ipairs( sm.body.getAllBodies() ) do
-		if sm.exists( body ) and g_swPlots:sv_isFloorBody( body ) then
+		if sm.exists( body ) and g_swPlots:sv_isCityBody( body ) then
 			for _, shape in ipairs( body:getShapes() ) do
 				shape:destroyShape()
 			end
