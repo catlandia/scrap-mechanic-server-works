@@ -188,10 +188,16 @@ it:
 - `python dev/test_layout.py` — `Layout.lua` over twelve configurations, every
   block of every piece rasterised: no block claimed twice, no gap, no fractional
   coordinate.
-- `python dev/test_logic.py` — 22 checks over `Settings`, `Identity`,
-  `Protection` and `Plots`: who may build where, whether a ban survives a
-  restart, whether the profile sentinel still separates all five profiles,
-  whether the lift can ever land in the hazard list.
+- `python dev/test_logic.py` — 26 checks over `Settings`, `Identity`,
+  `Protection`, `Plots` and the three GUI builders: who may build where, whether
+  a ban survives a restart, whether the profile sentinel still separates all five
+  profiles, whether the lift can ever land in the hazard list, and whether every
+  panel still fits on screen with no button buried under another.
+- `python dev/check_uuids.py` — every uuid the mod names, resolved against the
+  installed game's own shape and tool databases and printed with the name the
+  game shows for it. A wrong uuid does not throw in Scrap Mechanic; it is a
+  silent no-op, which is how a flamethrower stayed switched on by default.
+- `python dev/check_all.py` runs all four.
 
 Neither says anything about bodies, tools, GUIs or the network. Those are the
 engine's, and stubbing them would be a test that lies.

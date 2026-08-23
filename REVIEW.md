@@ -169,9 +169,11 @@ is damage control, not correctness.
 
 ## How to check it
 
+    python dev/check_all.py     # all four of the below, about ten seconds
     python dev/check_lua.py     # compiles every script through a real Lua parser
+    python dev/check_uuids.py   # every uuid the mod names, against the install
     python dev/test_layout.py   # runs Layout.lua; proves the city is a partition
-    python dev/test_logic.py    # runs the mod's rules; 22 checks
+    python dev/test_logic.py    # runs the mod's rules and panel layouts; 26 checks
     python dev/sync_mod.py      # repo -> game Mods folder, preserves live data
     python dev/session_stats.py --spam    # tick/FPS + what is flooding the log
 

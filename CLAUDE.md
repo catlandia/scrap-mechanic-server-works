@@ -252,9 +252,11 @@ credit it with fixing the thing that actually degraded.
 
     mod/Scripts/Layout.lua      ALL city geometry, pure -- no sm.* calls at all
 
+    dev/check_all.py            all four checks below; --sync installs afterwards
     dev/check_lua.py            compiles every mod script through a real Lua parser
+    dev/check_uuids.py          every uuid the mod names, against the install
     dev/test_layout.py          runs Layout.lua and proves the city is a partition
-    dev/test_logic.py           runs the mod's rules against honest stubs (22 checks)
+    dev/test_logic.py           runs the mod's rules and panel layouts (26 checks)
     dev/sync_mod.py             repo -> game Mods folder (preserves live BanList.json)
     dev/session_stats.py        tick/FPS reconstruction from any game log
     dev/dump_api.py             per-module Lua bindings out of the executable
@@ -356,6 +358,10 @@ Every one of those is guarded with `pcall` and logs once rather than per tick.
   premise is performance; an unverified perf claim is worse than no claim.
 - **`print()` does not reach the game log; `sm.log.info` does.** Every `[Lua]` line in
   `Logs/game-*.log` comes from `sm.log.info`. Absent log output proves nothing on its own.
+- **Run `python dev/check_all.py` before playing.** It is four checks and ten
+  seconds, and two of them execute the mod's own Lua through `lupa` rather than a
+  Python restatement of it. A pass does not mean the mod works — nothing there
+  touches a body, a tool or the network — but a failure is always real.
 - **Verify against the game, not against memory.** The wiki and the training data both lag
   this build. If a fact matters, find it in the install or the workshop corpus and write down
   where it was found — as this file does.

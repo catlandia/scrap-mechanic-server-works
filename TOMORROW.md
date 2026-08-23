@@ -72,11 +72,16 @@ their position in the grid.
 
 ## Already verified, without the game
 
-    python dev/check_lua.py      14/14 files compile through a real Lua parser
-    python dev/test_layout.py    12 city configurations, every block rasterised
-    python dev/test_logic.py     22 checks over settings, bans, profiles, plots
+    python dev/check_all.py --sync
 
-Run all three before any test session. They execute the mod's own Lua rather than
+That runs all four and installs afterwards:
+
+    check_lua.py      14/14 files compile through a real Lua parser
+    check_uuids.py    65 uuids, all resolving against the installed game
+    test_layout.py    12 city configurations, every block rasterised
+    test_logic.py     26 checks over settings, bans, profiles, plots and panels
+
+Run it before any test session. They execute the mod's own Lua rather than
 a Python restatement of it, so a pass means the rules themselves are sound —
 what remains is everything that touches a body, a tool, a GUI or the network.
 

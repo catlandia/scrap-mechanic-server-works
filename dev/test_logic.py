@@ -495,6 +495,146 @@ def grid_survives_a_save_and_load():
     assert fresh_plots["owners"][3] == "A", "plot ownership was lost on reload"
 
 
+# -------------------------------------------------------------------- gui ---
+#
+# A json GUI is a plain nested table of rectangles, so its layout can be checked
+# without rendering anything. This is worth doing because it is a bug this
+# project keeps having: a panel is widened, a row count changes, and something
+# ends up under the footer or off the edge where nobody can click it. Three
+# times so far, each found by hand.
+#
+# What is NOT checked: whether a skin exists, whether a font is real, whether the
+# thing looks any good. Only geometry -- which is the part that has actually gone
+# wrong.
+
+FOOTER_H = 44          # the strip along the bottom the close/confirm row lives in
+
+
+def walk(node, out, depth=0):
+    """Flatten a widget tree to (name, x, y, w, h, type, depth, clickable)."""
+    name = node["Name"] if "Name" in node else "?"
+    x, y = node["x"] or 0, node["y"] or 0
+    w, h = node["width"] or 0, node["height"] or 0
+    out.append(dict(name=name, x=x, y=y, w=w, h=h,
+                    type=node["Type"], depth=depth,
+                    click=node["onClick"] is not None))
+    kids = node["Childs"]
+    if kids is not None:
+        for k in kids.values():
+            walk(k, out, depth + 1)
+    return out
+
+
+def panel_fits(label, root, W, H):
+    items = walk(root, [])
+    assert len(items) > 3, f"{label}: only {len(items)} widgets, the panel is empty"
+    for it in items[1:]:                        # [0] is the root itself
+        assert it["x"] >= 0 and it["y"] >= 0, (
+            f"{label}: {it['name']} starts off the panel at ({it['x']},{it['y']})")
+        assert it["x"] + it["w"] <= W, (
+            f"{label}: {it['name']} runs {it['x'] + it['w'] - W}px past the right edge")
+        assert it["y"] + it["h"] <= H, (
+            f"{label}: {it['name']} runs {it['y'] + it['h'] - H}px past the bottom")
+    return items
+
+
+def no_button_is_buried(label, items, H):
+    """Every clickable thing must be reachable: on the panel, and not overlapping
+    another clickable thing. A button under another button cannot be pressed."""
+    buttons = [i for i in items if i["click"]]
+    assert buttons, f"{label}: no clickable widget at all"
+    for a, b in ((a, b) for i, a in enumerate(buttons) for b in buttons[i + 1:]):
+        overlap = (a["x"] < b["x"] + b["w"] and a["x"] + a["w"] > b["x"]
+                   and a["y"] < b["y"] + b["h"] and a["y"] + a["h"] > b["y"])
+        assert not overlap, (
+            f"{label}: buttons {a['name']!r} and {b['name']!r} overlap -- one of "
+            f"them cannot be pressed")
+
+
+def gui_lua():
+    lua = fresh("Layout.lua", "Settings.lua", "SettingsGui.lua",
+                "PlotsGui.lua", "MenuGui.lua")
+    lua.globals().Settings.Sv_Load(False)
+    return lua
+
+
+def the_menu_panel_fits():
+    lua = gui_lua()
+    for host in (True, False):
+        root = lua.globals().MenuGui.Build(host)
+        label = f"menu ({'host' if host else 'guest'})"
+        items = panel_fits(label, root, lua.globals().MenuGui.W, lua.globals().MenuGui.H)
+        no_button_is_buried(label, items, lua.globals().MenuGui.H)
+
+
+def the_settings_panel_fits_on_every_page():
+    lua = gui_lua()
+    G = lua.globals().SettingsGui
+    values = lua.table_from({row["key"]: row["default"]
+                             for row in lua.globals().Settings.SCHEMA.values()})
+    groups = [g["key"] for g in G.GROUPS.values()] if G.GROUPS is not None else []
+    assert groups, "SettingsGui has no groups"
+    for group in groups:
+        pages = int(G.PageCount(group))
+        assert pages >= 1, f"group {group!r} reports {pages} pages"
+        for page in range(1, pages + 1):
+            root = G.Build(values, group, page)
+            label = f"settings {group} p{page}/{pages}"
+            items = panel_fits(label, root, G.W, G.H)
+            no_button_is_buried(label, items, G.H)
+
+
+def the_city_panel_fits_at_every_setting():
+    # Every value the panel can be stepped to, not just the default -- the map
+    # and the summary are both sized from the numbers.
+    lua = gui_lua()
+    G = lua.globals().PlotsGui
+    base = {"plot": 20, "gap": 1, "cols": 10, "rows": 10,
+            "roadevery": 0, "roadwidth": 6, "spawn": 50}
+    tried = 0
+    for field in G.FIELDS.values():
+        key = field["key"]
+        for step in field["steps"].values():
+            cfg = dict(base)
+            cfg[key] = step
+            cfg["claimed"] = {}
+            root = G.Build(lua.table_from({k: (lua.table_from(v) if isinstance(v, dict) else v)
+                                           for k, v in cfg.items()}))
+            label = f"city panel {key}={step}"
+            items = panel_fits(label, root, G.W, G.H)
+            no_button_is_buried(label, items, G.H)
+            tried += 1
+    assert tried >= 30, f"only exercised {tried} combinations"
+
+
+def the_city_map_never_leaves_its_box():
+    # The map is drawn from real geometry scaled into a fixed square. A wide,
+    # shallow city (few rows, many columns) is the case that used to push cells
+    # outside the box.
+    lua = gui_lua()
+    G = lua.globals().PlotsGui
+    MAP = 380
+    x0, y0 = G.W - 28 - MAP, 108
+    for cfg in ({"cols": 20, "rows": 2}, {"cols": 2, "rows": 20},
+                {"cols": 1, "rows": 1}, {"cols": 20, "rows": 20, "spawn": 120}):
+        full = {"plot": 20, "gap": 1, "cols": 10, "rows": 10, "roadevery": 0,
+                "roadwidth": 6, "spawn": 50, "claimed": {}}
+        full.update(cfg)
+        kids = lua.eval("{}")
+        G.AddMap(kids, lua.table_from({k: (lua.table_from(v) if isinstance(v, dict) else v)
+                                       for k, v in full.items()}), x0, y0, MAP)
+        for w in kids.values():
+            if not str(w["Name"]).startswith(("md", "mp")):
+                continue        # background and key text sit outside on purpose
+            assert w["x"] >= x0 - 1 and w["y"] >= y0 - 1, (
+                f"map cell {w['Name']} at ({w['x']},{w['y']}) is above/left of the box "
+                f"({x0},{y0}) for {cfg}")
+            assert w["x"] + w["width"] <= x0 + MAP + 1, (
+                f"map cell {w['Name']} runs past the right of the box for {cfg}")
+            assert w["y"] + w["height"] <= y0 + MAP + 1, (
+                f"map cell {w['Name']} runs past the bottom of the box for {cfg}")
+
+
 def main():
     check("settings: schema is internally consistent", settings_schema_is_sane)
     check("settings: presets only name real keys", settings_presets_only_name_real_keys)
@@ -526,6 +666,13 @@ def main():
     check("plots: junk outside the city stays clearable", outside_the_city_is_sweepable)
     check("plots: the grid and its claims survive a restart", grid_survives_a_save_and_load)
 
+    check("gui: the menu fits, for host and guest", the_menu_panel_fits)
+    check("gui: every settings page fits and nothing is buried",
+          the_settings_panel_fits_on_every_page)
+    check("gui: the city panel fits at every value it can be stepped to",
+          the_city_panel_fits_at_every_setting)
+    check("gui: the city map stays inside its box", the_city_map_never_leaves_its_box)
+
     width = max(len(n) for n in PASS + [n for n, _ in FAIL])
     for name in PASS:
         print(f"  ok    {name}")
@@ -535,9 +682,9 @@ def main():
     if FAIL:
         print(f"{len(FAIL)} of {len(PASS) + len(FAIL)} checks FAILED")
         return 1
-    print(f"all {len(PASS)} checks pass")
     print("this covers the rules, not the engine -- bodies, tools, GUIs and the "
           "network still have to be exercised in game")
+    print(f"all {len(PASS)} checks pass")
     return 0
 
 
