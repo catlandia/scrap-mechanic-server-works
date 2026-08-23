@@ -27,7 +27,7 @@ Plots.BLOCK = 0.25
 -- Defaults: 10x10 plots of 20x20 blocks, one block of filler between them.
 -- 21 blocks of stride x 10 = 210 blocks = 52.5 m square for the whole city,
 -- which is small enough to stay inside a couple of terrain cells.
-Plots.DEFAULT = { plot = 20, gap = 1, cols = 10, rows = 10 }
+Plots.DEFAULT = { plot = 20, gap = 1, cols = 10, rows = 10, roadevery = 0, roadwidth = 6 }
 
 Plots.PUSH_INTRUDERS = true
 Plots.PUSH_COOLDOWN_TICKS = 20      -- don't fight the player's own movement every tick
@@ -65,6 +65,8 @@ function Plots.sv_onCreate( self, saved )
 		cols = cfg.cols or Plots.DEFAULT.cols,
 		rows = cfg.rows or Plots.DEFAULT.rows,
 	}
+	self.grid.roadevery = cfg.roadevery or 0
+	self.grid.roadwidth = cfg.roadwidth or 6
 	self.owners = ( saved and saved.owners ) or {}     -- plotIndex -> permaId
 	self.teams = ( saved and saved.teams ) or {}       -- plotIndex -> { otherIndex = true }
 	self.requests = {}                                  -- fromIndex -> { toIndex = true }
@@ -89,32 +91,85 @@ function Plots.sv_originBlocks( self )
 	return -( self.grid.cols * s ) * 0.5, -( self.grid.rows * s ) * 0.5
 end
 
+
+--[[ geometry ]]
+--
+-- The city axis is NOT a uniform stride any more. A filler is the one-block seam
+-- between neighbouring plots -- shared ground once those two team up. A ROAD is a
+-- proper street: wider, never shareable, never claimable. They are different
+-- things and the layout has to model both, so each axis is built as an explicit
+-- run of segments and positions come from a prefix sum rather than col * stride.
+--
+-- segment = { start, size, kind = "plot" | "filler" | "road", index }
+
+function Plots.sv_axis( self, count )
+	local g = self.grid
+	local segs, at = {}, 0
+	for i = 0, count - 1 do
+		segs[#segs + 1] = { start = at, size = g.plot, kind = "plot", index = i }
+		at = at + g.plot
+		local isRoad = ( g.roadevery or 0 ) > 0 and ( ( i + 1 ) % g.roadevery == 0 )
+		local width = isRoad and ( g.roadwidth or 6 ) or g.gap
+		if width > 0 and i < count - 1 then
+			segs[#segs + 1] = { start = at, size = width,
+				kind = isRoad and "road" or "filler", index = i }
+			at = at + width
+		end
+	end
+	return segs, at
+end
+
+function Plots.sv_extent( self )
+	local _, w = self:sv_axis( self.grid.cols )
+	local _, h = self:sv_axis( self.grid.rows )
+	return w, h
+end
+
+function Plots.sv_originBlocks( self )
+	local w, h = self:sv_extent()
+	return -w * 0.5, -h * 0.5
+end
+
+-- kept so old callers still work; the axis is authoritative now
+function Plots.sv_stride( self )
+	return self.grid.plot + self.grid.gap
+end
+
+local function segmentAt( segs, v )
+	for _, s in ipairs( segs ) do
+		if v >= s.start and v < s.start + s.size then return s end
+	end
+	return nil
+end
+
 -- Which zone a world position falls in. nil means outside the city entirely.
 function Plots.sv_locate( self, pos )
-	local s = self:sv_stride()
 	local ox, oy = self:sv_originBlocks()
 	local bx = pos.x / Plots.BLOCK - ox
 	local by = pos.y / Plots.BLOCK - oy
+	local cols, w = self:sv_axis( self.grid.cols )
+	local rows, h = self:sv_axis( self.grid.rows )
+	if bx < 0 or by < 0 or bx >= w or by >= h then return nil end
 
-	if bx < 0 or by < 0 or bx >= self.grid.cols * s or by >= self.grid.rows * s then
-		return nil
+	local sx = segmentAt( cols, bx )
+	local sy = segmentAt( rows, by )
+	if sx == nil or sy == nil then return nil end
+
+	if sx.kind == "plot" and sy.kind == "plot" then
+		return { kind = "plot", col = sx.index, row = sy.index,
+			index = sy.index * self.grid.cols + sx.index + 1 }
 	end
-
-	local col = math.floor( bx / s )
-	local row = math.floor( by / s )
-	local inX = ( bx - col * s ) < self.grid.plot
-	local inY = ( by - row * s ) < self.grid.plot
-
-	if inX and inY then
-		return { kind = "plot", col = col, row = row, index = row * self.grid.cols + col + 1 }
-	elseif inX then
-		return { kind = "fillerY", col = col, row = row }    -- strip toward row+1
-	elseif inY then
-		return { kind = "fillerX", col = col, row = row }    -- strip toward col+1
+	-- a road in either direction beats a filler: roads are public, always
+	if sx.kind == "road" or sy.kind == "road" then
+		return { kind = "road", col = sx.index, row = sy.index }
 	end
-	-- Where two filler strips cross, four plots meet at once. Never buildable:
-	-- there is no sensible owner and it keeps the walkways clear.
-	return { kind = "corner", col = col, row = row }
+	if sx.kind == "plot" then
+		return { kind = "fillerY", col = sx.index, row = sy.index }
+	end
+	if sy.kind == "plot" then
+		return { kind = "fillerX", col = sx.index, row = sy.index }
+	end
+	return { kind = "corner", col = sx.index, row = sy.index }
 end
 
 function Plots.sv_indexAt( self, col, row )
@@ -139,8 +194,8 @@ end
 -- Everyone allowed to build in a zone, as a set of permaIds.
 function Plots.sv_authorised( self, z )
 	local out = {}
-	if z == nil or z.kind == "corner" then
-		return out
+	if z == nil or z.kind == "corner" or z.kind == "road" then
+		return out          -- roads belong to everyone, so nobody may build there
 	end
 
 	local function add( index )
@@ -416,6 +471,7 @@ Plots.CONCRETE = "a6c6ce30-dd47-4587-b475-085d55c6a3b4"   -- blk_concrete1
 Plots.METAL2 = "1016cafc-9f6b-40c9-8713-9019d399783f"     -- blk_metal2
 Plots.CONCRETE_COLOR = "8d8f89"
 Plots.METAL2_COLOR = "68615c"
+Plots.ROAD_COLOR = "3c3c40"
 
 Plots.METAL3 = "c0dfdea5-a39d-433a-b94a-299345a5df46"     -- blk_metal3
 Plots.METAL3_COLOR = "4a4a4a"
@@ -472,55 +528,61 @@ function Plots.sv_spawnBlueprint( self )
 	}
 end
 
--- One plot: pillar plus slab, contiguous, so it imports as a single body that a
--- player's build will weld onto.
+-- One plot: just the slab. Only the PLAZA has a pillar now -- the whole deck is
+-- static, so it needs no support, and a forest of 100 columns read as clutter
+-- rather than architecture. The city is one raised platform standing on its
+-- centre.
 function Plots.sv_plotBlueprint( self, col, row )
 	local g = self.grid
-	local s = self:sv_stride()
+	local cols = self:sv_axis( g.cols )
+	local rows = self:sv_axis( g.rows )
 	local ox, oy = self:sv_originBlocks()
-	local px = ox + col * s
-	local py = oy + row * s
-	local inset = math.max( 0, math.floor( ( g.plot - Plots.PILLAR ) / 2 ) )
+	local sx, sy
+	for _, seg in ipairs( cols ) do if seg.kind == "plot" and seg.index == col then sx = seg end end
+	for _, seg in ipairs( rows ) do if seg.kind == "plot" and seg.index == row then sy = seg end end
+	if sx == nil or sy == nil then return nil end
 
 	return blueprint{
 		child( Plots.CONCRETE, Plots.CONCRETE_COLOR,
-			px + inset, py + inset, 0, Plots.PILLAR, Plots.PILLAR, Plots.DECK_Z ),
-		child( Plots.CONCRETE, Plots.CONCRETE_COLOR,
-			px, py, Plots.DECK_Z, g.plot, g.plot, 1 ),
+			ox + sx.start, oy + sy.start, Plots.DECK_Z, g.plot, g.plot, 1 ),
 	}
 end
 
--- All the walkway strips as one creation. Static, so it does not need holding up.
+-- Every seam in the city as one creation: fillers in metal 2, roads in metal 3
+-- so a street reads as a street and not as a wide gap.
 function Plots.sv_walkwayBlueprint( self )
 	local g = self.grid
-	if g.gap <= 0 then return nil end
-	local s = self:sv_stride()
+	local cols, w = self:sv_axis( g.cols )
+	local rows, h = self:sv_axis( g.rows )
 	local ox, oy = self:sv_originBlocks()
 	local childs = {}
-
 	local sx0, sy0, sx1, sy1 = self:sv_spawnBounds()
-	local function clear( x, y, w, h )
+
+	local function clear( x, y, sw, sh )
 		if Plots.SPAWN <= 0 then return true end
-		return not ( x < sx1 and x + w > sx0 and y < sy1 and y + h > sy0 )
+		return not ( x < sx1 and x + sw > sx0 and y < sy1 and y + sh > sy0 )
 	end
 
-	for row = 0, g.rows - 1 do
-		for col = 0, g.cols - 1 do
-			-- the line after this plot on the Y side, plot-width only so it never
-			-- overlaps the full-height strips below
-			local ax, ay = ox + col * s, oy + row * s + g.plot
-			if clear( ax, ay, g.plot, g.gap ) then
-				childs[#childs + 1] = child( Plots.METAL2, Plots.METAL2_COLOR,
-					ax, ay, Plots.DECK_Z, g.plot, g.gap, 1 )
-			end
-			-- the line after each column, full cell height, filling the crossings
-			local bx, by = ox + col * s + g.plot, oy + row * s
-			if clear( bx, by, g.gap, s ) then
-				childs[#childs + 1] = child( Plots.METAL2, Plots.METAL2_COLOR,
-					bx, by, Plots.DECK_Z, g.gap, s, 1 )
+	local function strip( cx, cy, cw, ch, kind )
+		if not clear( ox + cx, oy + cy, cw, ch ) then return end
+		local uuid = ( kind == "road" ) and Plots.METAL3 or Plots.METAL2
+		local colour = ( kind == "road" ) and Plots.ROAD_COLOR or Plots.METAL2_COLOR
+		childs[#childs + 1] = child( uuid, colour, ox + cx, oy + cy, Plots.DECK_Z, cw, ch, 1 )
+	end
+
+	-- vertical seams run the full height, which also fills the crossings
+	for _, seg in ipairs( cols ) do
+		if seg.kind ~= "plot" then strip( seg.start, 0, seg.size, h, seg.kind ) end
+	end
+	-- horizontal seams only span the plot columns, so nothing overlaps
+	for _, seg in ipairs( rows ) do
+		if seg.kind ~= "plot" then
+			for _, c in ipairs( cols ) do
+				if c.kind == "plot" then strip( c.start, seg.start, c.size, seg.size, seg.kind ) end
 			end
 		end
 	end
+
 	if #childs == 0 then return nil end
 	return blueprint( childs )
 end

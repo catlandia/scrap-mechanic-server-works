@@ -4,6 +4,7 @@ dofile( "$CONTENT_DATA/Scripts/Identity.lua" )
 dofile( "$CONTENT_DATA/Scripts/SettingsGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/PlotsGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/GuardedTools.lua" )
+dofile( "$CONTENT_DATA/Scripts/MenuGui.lua" )
 -- IndexWidgets and friends. BasePlayer pulls this in too, but relying on load
 -- order for a global is how you get a nil at the worst moment.
 dofile( "$SURVIVAL_DATA/Scripts/util.lua" )
@@ -48,7 +49,7 @@ local WORLD_COMMANDS = {
 -- Commands a guest may use. Everything else is host-only.
 local PLAYER_COMMANDS = {
 	["/sw"] = true, ["/swhelp"] = true, ["/plot"] = true, ["/players"] = true,
-	["/rules"] = true, ["/home"] = true,
+	["/rules"] = true, ["/home"] = true, ["/menu"] = true,
 }
 
 -- How many words a player name may contain. bindChatCommand splits arguments on
@@ -408,6 +409,8 @@ function Game.client_onCreate( self )
 		"cl_onAdminCommand", "Host: change a setting, e.g. /set fire off" )
 	sm.game.bindChatCommand( "/plots", { { "string", "onoff", true, { "on", "off" } } },
 		"cl_onAdminCommand", "Host: shortcut for /set plots on|off" )
+	sm.game.bindChatCommand( "/menu", {}, "cl_onAdminCommand",
+		"Open the Server Works menu" )
 	sm.game.bindChatCommand( "/plotmenu", {}, "cl_onAdminCommand",
 		"Host: lay out the city, see what the numbers mean, then build it" )
 	sm.game.bindChatCommand( "/why", {}, "cl_onAdminCommand",
@@ -598,15 +601,82 @@ function Game.cl_closeSettingsGui( self )
 end
 
 
+--[[ hub menu ]]
+
+-- One place to reach everything, because remembering eight slash commands is not
+-- a user interface. A guest is only shown what a guest may open, so nobody is
+-- offered a button that answers "Host only."
+function Game.sv_openMenu( self, player )
+	self.network:sendToClient( player, "client_openMenu",
+		{ host = ( player == sm.player.getHostPlayer() ) } )
+end
+
+function Game.client_openMenu( self, data )
+	if self.cl == nil then self.cl = {} end
+	if self.cl.menuGui == nil or not sm.exists( self.cl.menuGui ) then
+		self.cl.menuGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
+	end
+	self.cl.menuGui:render( MenuGui.Build( data.host ) )
+end
+
+function Game.cl_onMenuClick( self, widgetName, data )
+	if type( data ) ~= "table" then return end
+	self:cl_closeMenu()
+	if data.action == "close" then return end
+	self.network:sendToServer( "sv_n_menuOpen", { what = data.action } )
+end
+
+function Game.cl_onMenuClose( self, widgetName )
+	self:cl_closeMenu()
+end
+
+function Game.cl_closeMenu( self )
+	if self.cl == nil then return end
+	local gui = self.cl.menuGui
+	self.cl.menuGui = nil
+	if gui and sm.exists( gui ) then pcall( function() gui:close() end ) end
+end
+
+function Game.sv_n_menuOpen( self, data, player )
+	local isHost = ( player == sm.player.getHostPlayer() )
+	local what = data.what
+	if what == "settings" and isHost then
+		self:sv_openSettingsGui( player, "safety", 1 )
+	elseif what == "city" and isHost then
+		self:sv_openPlotsGui( player )
+	elseif what == "rules" then
+		self:sv_n_adminCommand( { "/rules" }, player )
+	elseif what == "help" then
+		self:sv_n_adminCommand( { "/sw" }, player )
+	elseif what == "players" then
+		self:sv_n_adminCommand( { "/players" }, player )
+	elseif what == "plot" then
+		self:sv_toWorld( "/plot", { "/plot", "info" }, player )
+	end
+end
+
+
 --[[ city layout panel ]]
 
 function Game.sv_openPlotsGui( self, player )
 	-- Read the live grid back out of the world; the Game script does not own it.
-	local cfg = ( g_swPlots and {
-		plot = g_swPlots.grid.plot, gap = g_swPlots.grid.gap,
-		cols = g_swPlots.grid.cols, rows = g_swPlots.grid.rows,
-		spawn = Plots.SPAWN,
-	} ) or { plot = 20, gap = 1, cols = 10, rows = 10, spawn = 50 }
+	local cfg
+	if g_swPlots then
+		local claimed = {}
+		for index, owner in pairs( g_swPlots.owners ) do
+			claimed[tostring( index )] = Identity.Sv_NameOf( owner ) or owner
+		end
+		cfg = {
+			plot = g_swPlots.grid.plot, gap = g_swPlots.grid.gap,
+			cols = g_swPlots.grid.cols, rows = g_swPlots.grid.rows,
+			roadevery = g_swPlots.grid.roadevery or 0,
+			roadwidth = g_swPlots.grid.roadwidth or 6,
+			spawn = Plots.SPAWN, claimed = claimed,
+		}
+	else
+		cfg = { plot = 20, gap = 1, cols = 10, rows = 10,
+			roadevery = 0, roadwidth = 6, spawn = 50, claimed = {} }
+	end
 	self.network:sendToClient( player, "client_openPlotsGui", cfg )
 end
 
@@ -630,7 +700,9 @@ function Game.cl_onPlotsGuiClick( self, widgetName, data )
 		return
 	end
 	if data.action == "reset" then
-		self.cl.plotCfg = { plot = 20, gap = 1, cols = 10, rows = 10, spawn = 50 }
+		self.cl.plotCfg = { plot = 20, gap = 1, cols = 10, rows = 10,
+			roadevery = 0, roadwidth = 6, spawn = 50,
+			claimed = self.cl.plotCfg and self.cl.plotCfg.claimed or {} }
 		self.cl.plotsGui:render( PlotsGui.Build( self.cl.plotCfg ) )
 		return
 	end
@@ -770,6 +842,9 @@ function Game.sv_n_adminCommand( self, params, player )
 			self:sv_toWorld( "/settingschanged", params, player )
 			self:sv_broadcast( "Server preset: " .. detail )
 		end
+
+	elseif cmd == "/menu" then
+		self:sv_openMenu( player )
 
 	elseif cmd == "/plotmenu" then
 		self:sv_openPlotsGui( player )

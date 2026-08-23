@@ -551,6 +551,8 @@ function World.sv_e_swCommand( self, params )
 			gap = math.max( 0, math.floor( cfg.gap or 1 ) ),
 			cols = math.max( 1, math.floor( cfg.cols or 10 ) ),
 			rows = math.max( 1, math.floor( cfg.rows or 10 ) ),
+			roadevery = math.max( 0, math.floor( cfg.roadevery or 0 ) ),
+			roadwidth = math.max( 1, math.floor( cfg.roadwidth or 6 ) ),
 		}
 		Plots.SPAWN = math.max( 0, math.floor( cfg.spawn or 50 ) )
 		g_swPlots.owners = {}
