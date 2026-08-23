@@ -351,14 +351,22 @@ function World.sv_e_swEventPhase( self, params )
 			Settings.Sv_SetQuiet( "protection", "locked" )
 			sm.log.info( "[ServerWorks] event ended, world locked -- " .. tostring( detail ) )
 		end
-		g_swSnapshots:sv_beginCapture( "eventend", self.world, self:sv_plotOfBody() )
+		g_swSnapshots:sv_beginCapture( Snapshots.Name( "eventend" ), self.world, self:sv_plotOfBody() )
 		return
 	end
 
-	-- prep, build and off all just want the current settings applied to every
-	-- body. sv_setMode does a full immediate sweep, which is what makes the
-	-- whistle instant rather than arriving over the next few seconds.
-	g_swProtection:sv_setMode( g_swProtection:sv_getMode() )
+	-- Every other phase sets the mode explicitly -- Event.PROTECTION says which --
+	-- because re-applying "whatever mode is current" is what left the world
+	-- locked after an event had ended once. sv_setMode does a full immediate
+	-- sweep, which is what makes the whistle instant rather than arriving over
+	-- the next few seconds.
+	local mode = Event.PROTECTION[phase] or "open"
+	local ok, detail = g_swProtection:sv_setMode( mode )
+	if ok then
+		Settings.Sv_SetQuiet( "protection", mode )
+		sm.log.info( string.format( "[ServerWorks] event %s -> protection %s (%s)",
+			tostring( phase ), mode, tostring( detail ) ) )
+	end
 end
 
 function World.sv_e_swCommand( self, params )
@@ -423,8 +431,11 @@ function World.sv_e_swCommand( self, params )
 			{ minutes = tonumber( args[2] ) or 0, player = player } )
 
 	elseif cmd == "/snapshot" then
+		-- Always stamped, so two manual saves an hour apart are told apart by
+		-- the list rather than by memory.
 		local name = args[2]
 		if name == nil or name == "" then name = "manual" end
+		name = Snapshots.Name( name )
 		local ok, detail = g_swSnapshots:sv_beginCapture( name, self.world, self:sv_plotOfBody() )
 		reply( ok and detail or ( "Failed: " .. tostring( detail ) ) )
 
@@ -694,7 +705,7 @@ function World.sv_openMyPlot( self, player )
 		team = team,
 		cfg = {
 			plot = g.plot, gap = g.gap, cols = g.cols, rows = g.rows,
-			roadevery = g.roadevery, roadwidth = g.roadwidth, spawn = g.spawn,
+			roadevery = g.roadevery, roadwidth = g.roadwidth, plazacells = g.plazacells,
 			claimed = claimed, mine = mine, team = teamSet,
 		},
 	} } )
@@ -978,7 +989,8 @@ function World.sv_stepCity( self )
 			job.built, job.failed ) )
 		self:sv_broadcast( string.format(
 			"City built: %d plots of %d blocks, %.0f x %.0f m across, %d block plaza at spawn.%s",
-			job.built, g.plot, w * Plots.BLOCK, h * Plots.BLOCK, g.spawn,
+			job.built, g.plot, w * Plots.BLOCK, h * Plots.BLOCK,
+			g_swPlots.layout.plaza and g_swPlots.layout.plaza.w or 0,
 			job.failed > 0 and string.format( " %d failed.", job.failed ) or "" ) )
 		self.sw.cityJob = nil
 	end

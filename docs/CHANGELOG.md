@@ -10,6 +10,103 @@ was most of them.
 
 ---
 
+## V28 — the plaza stops being a wasteland, and the clock actually works
+
+### "I cant build when prep time is out"
+
+A real bug with a sharp cause. `Protection.profileFor` short-circuits:
+
+    if isLockedMode( self.mode ) then return PROFILES[self.mode] end
+
+The phases were only setting `buildopen` and then re-applying *whatever mode
+happened to be current*. So once an event ENDED — which sets the mode to
+`locked` and saves it — every later event ran with the world still locked, and
+`buildopen` was never consulted again.
+
+The event owns the mode explicitly now, in one table:
+
+| phase | mode | what it means |
+|---|---|---|
+| prep | `display` | can't build. **Nothing else changes** — seats, buttons, every other rule |
+| build | `open` | the event |
+| buffer | `display` | building closed, nothing frozen yet |
+| ended | `locked` | + full snapshot |
+| off | `open` | the host has the controls back |
+
+That table is also the answer to *"the prep time just doesnt allow you to build.
+it maintains other rules"* — `display` is exactly buildable-false and
+usable-true.
+
+### The buffer phase
+
+    off  →  prep  →  build  →  buffer  →  ended
+
+Optional and off by default. Building has closed but the world is not sealed:
+time to walk round, take pictures and judge before anything becomes permanent.
+
+### The plaza was a band. Now it is a square.
+
+**REPORTED:** *"there are these huge chuncks metal three whcih is wasted space
+and looks ugly"*, with a screenshot of decking to the horizon.
+
+V24 made the plaza a *segment* on both axes so a plot could never start inside
+it. That fixed the overlap and created this: a segment on an axis is a **band
+across the entire city**, so a 50-block plaza also meant a 50-block avenue
+running the full width *and* the full height.
+
+The plaza is a block of grid **cells** now. The axis is an ordinary uniform run
+of plots and seams; the plots under the plaza simply aren't built; every street
+is normal width. The whole run is then translated so the plaza's middle lands on
+the origin, which keeps spawn at 0,0 with no coordinate going fractional.
+
+Default 10×10 with a 2-cell plaza: **96 plots and a 41×41 square**, instead of
+100 plots and a cross of decking. `dev/test_layout.py` now asserts that *nothing
+on either axis is a plaza segment* — the band bug, asserted away — and that the
+plaza is never more than 40% of the city.
+
+Plots the plaza covers cannot be claimed or teamed with: `Layout.plotIndex`
+returns nil for them, which is the one choke point everything downstream already
+goes through.
+
+### UI instead of typing
+
+*"everything needs to have a nice UI since I dont want to type commands to find
+what I need to start the event."*
+
+**`EventGui`** — `/menu` → EVENT CLOCK. The three durations as steppers (no way
+to type "6O minutes"), and every control a running event has: pause, resume,
+skip ahead, ±5 minutes, stop. It says what will happen before you press start.
+
+### Deleting the city asks twice, and the second ask moves
+
+*"the remove city button shall have double confirmation... it says are you sure
+you want to delete the city? and lists what is on it... another pop up will
+happen and it will say LAST CHANCE TO CANCEL."*
+
+Two things make it more than a nag:
+
+1. **It lists what is actually out there**, counted from the live world: how many
+   plots, how many claimed, how many blocks built, by how many people. "Are you
+   sure" is answered by reflex; "12,406 blocks built by 9 people" is answered by
+   reading.
+2. **The buttons swap sides between the two steps.** YES on step two sits where
+   CANCEL sat on step one, so double-clicking through by muscle memory lands on
+   cancel. There is a check asserting exactly that.
+
+### Backups say when they were taken
+
+*"the backups need to be the full world backups. just to be sure with exact date
+and minutes writen."*
+
+Every capture already took the whole world — `sv_beginCapture` enumerates every
+creation there is. What was missing was telling them apart. Now:
+
+    auto2-2026-08-24_2247
+    eventend-2026-08-24_2312
+    manual-2026-08-24_2250
+
+Alphabetical order is chronological order, which is what makes the list readable.
+
 ## V26 — the event clock, and four bugs off a screenshot
 
 ### The event has a shape now

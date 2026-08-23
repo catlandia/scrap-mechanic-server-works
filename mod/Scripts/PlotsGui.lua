@@ -48,9 +48,9 @@ PlotsGui.FIELDS = {
 	{ key = "roadwidth", label = "ROAD WIDTH",
 	  help = "how wide a road is, in blocks",
 	  steps = { 2, 4, 6, 8, 12 } },
-	{ key = "spawn", label = "SPAWN PLAZA",
-	  help = "metal 3 plate at the centre, in blocks square. 0 for none",
-	  steps = { 0, 20, 30, 50, 80, 120 } },
+	{ key = "plazacells", label = "SPAWN PLAZA",
+	  help = "how many plots across the central square is. 0 for none",
+	  steps = { 0, 1, 2, 3, 4 } },
 }
 
 local function widget( t )
@@ -111,7 +111,6 @@ function PlotsGui.AddMap( kids, cfg, x, y, size )
 
 	local SHADE = {
 		plaza = "1 0.74 0.35 1",
-		avenue = "0.34 0.35 0.38 1",
 		road = "0.30 0.31 0.34 1",
 		filler = "0.42 0.40 0.38 1",
 	}

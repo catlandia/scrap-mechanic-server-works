@@ -87,6 +87,7 @@ EventHud.COLOURS = {
 	off = "0.62 0.65 0.72 1",
 	prep = "1 0.74 0.35 1",       -- amber: get ready
 	build = "0.30 0.86 0.42 1",   -- green: go
+	buffer = "1 0.62 0.25 1",     -- amber again: hands off, nothing frozen yet
 	ended = "0.95 0.35 0.35 1",   -- red: stop
 	panic = "0.98 0.30 0.24 1",   -- the last five minutes
 }
@@ -171,8 +172,10 @@ function EventHud.Build( state, screenW, screenH )
 		"SM_LabelTiny", colour, "Left" )
 
 	local clock = Event.Clock( state.remaining )
-	if phase == "off" or phase == "ended" then
-		clock = phase == "ended" and "TIME" or "--:--"
+	if phase == "off" then
+		clock = "--:--"
+	elseif phase == "ended" then
+		clock = "TIME"
 	end
 	kids[#kids + 1] = text( "HudClock", clock, ox + 16, oy + 24, EventHud.W - 28, 34,
 		"SM_HeaderSmall_Medium", LABEL, "Left" )

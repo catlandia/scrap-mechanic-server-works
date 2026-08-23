@@ -140,6 +140,21 @@ toolset now adds `5cc12f03`, which is the case that works.
 
 The general rule: **before blaming a script, check the uuid is even loaded.**
 
+### Protection modes short-circuit, so anything that closes building must set one
+
+`Protection.profileFor` begins:
+
+    if isLockedMode( self.mode ) then return PROFILES[self.mode] end
+
+A locked mode never reaches the resolver, so `buildopen`, plot ownership and
+everything else stop being consulted. Setting `buildopen = false` is **not** how
+you close building if the mode might already be locked — and it will be, because
+`/lockdown` and the end of an event both set it and both persist it.
+
+`Event.PROTECTION` maps every phase to a mode explicitly for this reason. `prep`
+uses `display` (buildable false, usable true), which is the profile that means
+"you cannot build and nothing else changes".
+
 ### The game does not ship whole fonts
 
 Scrap Mechanic builds a **limited glyph atlas per font** from the strings it
@@ -339,7 +354,9 @@ credit it with fixing the thing that actually degraded.
     mod/Scripts/Snapshots.lua   world and per-plot capture and rollback
 
     mod/Scripts/Layout.lua      ALL city geometry, pure -- no sm.* calls at all
-    mod/Scripts/Event.lua       the event clock: prep -> build -> ended, wall clock
+    mod/Scripts/Event.lua       the clock: prep -> build -> buffer -> ended
+    mod/Scripts/EventGui.lua    the host panel for it, so nothing needs typing
+    mod/Scripts/ConfirmGui.lua  two doors in front of anything destructive
     mod/Scripts/EventHud.lua    top-right timer + handover to the warehouse timer
     mod/Scripts/MyPlotGui.lua   the panel players use: claim, find, team, leave
     mod/Scripts/PlotMarker.lua  "find my plot", on the game's own compass HUD

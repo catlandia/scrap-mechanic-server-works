@@ -58,14 +58,9 @@ function Plots.Sv_SaveFile( plots )
 end
 
 function Plots.sv_onCreate( self, saved )
-	local cfg = ( saved and saved.grid ) or Layout.DEFAULT
-	-- Migration. The plaza size used to be a module-level global written beside
-	-- the grid rather than inside it, so a restart rebuilt a different city than
-	-- the one the host laid out. It lives in the grid now; fold an old file in.
-	if saved and saved.spawn ~= nil and cfg.spawn == nil then
-		cfg.spawn = saved.spawn
-	end
-	self:sv_setGrid( cfg )
+	-- Layout.config handles migrating an old grid, including the plaza, which
+	-- used to be a width in blocks and is now a count of cells.
+	self:sv_setGrid( ( saved and saved.grid ) or Layout.DEFAULT )
 	self.owners = ( saved and saved.owners ) or {}     -- plotIndex -> permaId
 	self.teams = ( saved and saved.teams ) or {}       -- plotIndex -> { otherIndex = true }
 	self.requests = {}                                  -- fromIndex -> { toIndex = true }
@@ -198,11 +193,9 @@ end
 -- Everyone allowed to build in a zone, as a set of permaIds.
 function Plots.sv_authorised( self, z )
 	local out = {}
-	-- Everything public: roads, the avenues that run out of the plaza, the plaza
-	-- itself, and the corner squares where two seams cross. Belonging to everyone
-	-- means nobody may build there.
-	if z == nil or z.kind == "corner" or z.kind == "road"
-		or z.kind == "avenue" or z.kind == "plaza" then
+	-- Everything public: roads, the plaza, and the corner squares where two
+	-- seams cross. Belonging to everyone means nobody may build there.
+	if z == nil or z.kind == "corner" or z.kind == "road" or z.kind == "plaza" then
 		return out
 	end
 
@@ -334,10 +327,10 @@ function Plots.sv_bodyIsOpen( self, body )
 	if z == nil then
 		return "sweep"        -- outside the city
 	end
-	-- The plaza and the avenues are the city itself, not shared standing room:
-	-- they are permanent scenery and must never become erasable, or "anywhere
-	-- you cannot build, anyone can clean" would let a guest delete spawn.
-	if z.kind == "plaza" or z.kind == "avenue" then
+	-- The plaza is the city itself, not shared standing room: it is permanent
+	-- scenery and must never become erasable, or "anywhere you cannot build,
+	-- anyone can clean" would let a guest delete spawn.
+	if z.kind == "plaza" then
 		return "locked"
 	end
 	if z.kind == "corner" or z.kind == "road" then
@@ -372,6 +365,9 @@ end
 --[[ claims and teams ]]
 
 function Plots.sv_claim( self, index, perma )
+	if not Layout.plotExists( self.layout, index ) then
+		return false, "there is no plot there -- that is the plaza"
+	end
 	if self.owners[index] ~= nil then
 		return false, ( self.owners[index] == perma )
 			and "you already own this plot"
@@ -419,6 +415,9 @@ end
 -- kept in step with the first.
 function Plots.sv_adjacent( self, a, b )
 	if a == nil or b == nil then return false end
+	-- A plot the plaza sits on does not exist, so nothing is next to it.
+	if not ( Layout.plotExists( self.layout, a )
+		and Layout.plotExists( self.layout, b ) ) then return false end
 	local ca, ra = Layout.plotColRow( self.layout, a )
 	local cb, rb = Layout.plotColRow( self.layout, b )
 	if ca == nil or cb == nil then return false end
@@ -582,7 +581,6 @@ end
 
 local DECK_MATERIAL = {
 	plaza = { Plots.METAL3, Plots.PLAZA_COLOR },
-	avenue = { Plots.METAL3, Plots.METAL3_COLOR },
 	road = { Plots.METAL3, Plots.ROAD_COLOR },
 	filler = { Plots.METAL2, Plots.METAL2_COLOR },
 }
@@ -618,12 +616,15 @@ end
 -- one: "the center pillar shall be the only one, the spawn shall be the center
 -- pillar".
 function Plots.sv_pillarBlueprint( self )
-	local half = Layout.plazaHalf( self.grid )
-	if half <= 0 then return nil end
-	local size = math.max( 4, math.floor( half / 2 ) * 2 )
+	local p = self.layout.plaza
+	if p == nil then return nil end
+	local size = math.max( 4, math.floor( math.min( p.w, p.h ) / 4 ) * 2 )
+	local cx = p.x + math.floor( p.w / 2 )
+	local cy = p.y + math.floor( p.h / 2 )
 	local at = -math.floor( size / 2 )
 	return blueprint{
-		child( Plots.METAL3, Plots.METAL3_COLOR, at, at, 0, size, size, Plots.DECK_Z ),
+		child( Plots.METAL3, Plots.METAL3_COLOR,
+			cx + at, cy + at, 0, size, size, Plots.DECK_Z ),
 	}
 end
 

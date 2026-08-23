@@ -10,6 +10,8 @@ dofile( "$CONTENT_DATA/Scripts/GuardedTools.lua" )
 dofile( "$CONTENT_DATA/Scripts/MenuGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/Event.lua" )
 dofile( "$CONTENT_DATA/Scripts/EventHud.lua" )
+dofile( "$CONTENT_DATA/Scripts/EventGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/ConfirmGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/MyPlotGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/PlotMarker.lua" )
 -- IndexWidgets and friends. BasePlayer pulls this in too, but relying on load
@@ -324,8 +326,12 @@ end
 -- control back stops the event -- two things quietly fighting over one setting
 -- is worse than one of them plainly winning.
 function Game.sv_applyEventPhase( self, phase )
-	local open = ( phase == "build" )
+	local open = ( phase == "build" or phase == "off" )
 	Settings.Sv_SetQuiet( "buildopen", open )
+	-- And the protection MODE, explicitly. Setting buildopen alone was the bug:
+	-- profileFor short-circuits on a locked mode and never reaches the resolver,
+	-- so an event that had once ENDED left the world locked forever.
+	Settings.Sv_SetQuiet( "protection", Event.PROTECTION[phase] or "open" )
 
 	local world = self:sv_world()
 	if world and sm.exists( world ) then
@@ -339,8 +345,12 @@ function Game.sv_applyEventPhase( self, phase )
 	elseif phase == "build" then
 		self:sv_broadcast( string.format( "BUILD TIME -- %s on the clock. Go.",
 			Event.Clock( g_swEvent:sv_remaining() ) ) )
+	elseif phase == "buffer" then
+		self:sv_broadcast( string.format(
+			"TIME. Building is closed -- %s to look around before anything is locked.",
+			Event.Clock( g_swEvent:sv_remaining() ) ) )
 	elseif phase == "ended" then
-		self:sv_broadcast( "TIME. Builds are locked and everything has been saved." )
+		self:sv_broadcast( "Builds are locked and everything has been saved." )
 	elseif phase == "off" then
 		self:sv_broadcast( "The event clock has been stopped." )
 	end
@@ -978,6 +988,8 @@ function Game.sv_n_menuOpen( self, data, player )
 		self:sv_openSettingsGui( player, "safety", 1 )
 	elseif what == "city" and isHost then
 		self:sv_openPlotsGui( player )
+	elseif what == "event" then
+		self:sv_openEventGui( player )
 	elseif what == "myplot" then
 		self:sv_toWorld( "/myplot", {}, player )
 	elseif what == "rules" then
@@ -1005,7 +1017,7 @@ function Game.sv_openPlotsGui( self, player )
 		local g = g_swPlots.grid
 		cfg = {
 			plot = g.plot, gap = g.gap, cols = g.cols, rows = g.rows,
-			roadevery = g.roadevery, roadwidth = g.roadwidth, spawn = g.spawn,
+			roadevery = g.roadevery, roadwidth = g.roadwidth, plazacells = g.plazacells,
 			claimed = claimed,
 			-- so the map can paint the viewer's own plot green rather than just
 			-- "somebody's": "so that I cant alter plots that arent mine" starts
@@ -1089,9 +1101,155 @@ end
 
 -- The world assembles the state and hands it back through here, because a world
 -- script has no network of its own.
+function Game.sv_e_swCityCensus( self, params )
+	if params.player == nil or not sm.exists( params.player ) then return end
+	local lines = {}
+	for _, l in pairs( params.lines or {} ) do lines[#lines + 1] = l end
+	self:sv_askConfirm( params.player, "clearcity",
+		"DELETE THE WHOLE CITY?", lines )
+end
+
 function Game.sv_e_swMyPlot( self, params )
 	if params.player == nil or not sm.exists( params.player ) then return end
 	self.network:sendToClient( params.player, "client_openMyPlotGui", params.state )
+end
+
+--[[ event panel ]]
+
+function Game.sv_openEventGui( self, player )
+	if player ~= sm.player.getHostPlayer() then
+		self.network:sendToClient( player, "client_showMessage", "Host only." )
+		return
+	end
+	if g_swEvent == nil then return end
+	self.network:sendToClient( player, "client_openEventGui", {
+		phase = g_swEvent.phase,
+		remaining = g_swEvent:sv_remaining(),
+		paused = g_swEvent:sv_paused(),
+		prep = g_swEvent.prepMinutes,
+		build = g_swEvent.buildMinutes,
+		buffer = g_swEvent.bufferMinutes,
+	} )
+end
+
+function Game.client_openEventGui( self, state )
+	if self.cl == nil then self.cl = {} end
+	self.cl.eventCfg = state
+	if self.cl.eventGui == nil or not sm.exists( self.cl.eventGui ) then
+		self.cl.eventGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
+	end
+	self.cl.eventGui:render( EventGui.Build( state ) )
+end
+
+function Game.cl_closeEventGui( self )
+	if self.cl and self.cl.eventGui and sm.exists( self.cl.eventGui ) then
+		self.cl.eventGui:close()
+	end
+end
+
+function Game.cl_onEventGuiClose( self )
+	self:cl_closeEventGui()
+end
+
+function Game.cl_onEventGuiClick( self, widgetName, data )
+	if type( data ) ~= "table" or self.cl == nil then return end
+	local cfg = self.cl.eventCfg
+	if cfg == nil then return end
+
+	-- Stepping a duration is local and instant: nothing has happened on the
+	-- server yet, so there is nothing to round trip.
+	if data.action == "step" then
+		cfg[data.key] = EventGui.Step( data.key, cfg[data.key] or 0, data.dir )
+		self.cl.eventGui:render( EventGui.Build( cfg ) )
+		return
+	end
+	if data.action == "close" then
+		self:cl_closeEventGui()
+		return
+	end
+	self.network:sendToServer( "sv_n_eventGuiAction",
+		{ action = data.action, n = data.n,
+		  prep = cfg.prep, build = cfg.build, buffer = cfg.buffer } )
+	self:cl_closeEventGui()
+end
+
+function Game.sv_n_eventGuiAction( self, data, player )
+	if player ~= sm.player.getHostPlayer() then return end
+	if g_swEvent == nil or type( data ) ~= "table" then return end
+	local function reply( text )
+		self.network:sendToClient( player, "client_showMessage", text )
+	end
+
+	if data.action == "start" then
+		local _, phase = g_swEvent:sv_start( data.prep, data.build, nil, data.buffer )
+		Event.Sv_SaveFile( g_swEvent )
+		self:sv_applyEventPhase( phase )
+		self:sv_pushEvent()
+		reply( string.format( "event started: %g prep, %g build, %g buffer",
+			data.prep or 0, data.build or 0, data.buffer or 0 ) )
+	else
+		local params = { "/event", data.action }
+		if data.action == "add" then params[3] = data.n end
+		self:sv_eventCommand( params, reply )
+	end
+end
+
+
+--[[ confirmations ]]
+
+-- Anything that destroys work goes through here twice. See ConfirmGui.lua for
+-- why the buttons swap sides between the two steps.
+function Game.sv_askConfirm( self, player, what, title, lines )
+	self.network:sendToClient( player, "client_openConfirm",
+		{ step = 1, what = what, title = title, lines = lines } )
+end
+
+function Game.client_openConfirm( self, state )
+	if self.cl == nil then self.cl = {} end
+	self.cl.confirm = state
+	if self.cl.confirmGui == nil or not sm.exists( self.cl.confirmGui ) then
+		self.cl.confirmGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
+	end
+	self.cl.confirmGui:render( ConfirmGui.Build( state ) )
+end
+
+function Game.cl_closeConfirm( self )
+	if self.cl and self.cl.confirmGui and sm.exists( self.cl.confirmGui ) then
+		self.cl.confirmGui:close()
+	end
+	if self.cl then self.cl.confirm = nil end
+end
+
+function Game.cl_onConfirmClose( self )
+	self:cl_closeConfirm()
+end
+
+function Game.cl_onConfirmClick( self, widgetName, data )
+	if type( data ) ~= "table" or self.cl == nil or self.cl.confirm == nil then return end
+	local c = self.cl.confirm
+	if data.action ~= "yes" then
+		self:cl_closeConfirm()
+		sm.gui.chatMessage( "Cancelled. Nothing was deleted." )
+		return
+	end
+	if ( c.step or 1 ) < 2 then
+		-- The first yes does not count, which is the whole point.
+		c.step = 2
+		self.cl.confirmGui:render( ConfirmGui.Build( c ) )
+		return
+	end
+	self:cl_closeConfirm()
+	self.network:sendToServer( "sv_n_confirmed", { what = c.what } )
+end
+
+function Game.sv_n_confirmed( self, data, player )
+	if player ~= sm.player.getHostPlayer() then return end
+	if type( data ) ~= "table" then return end
+	if data.what == "clearcity" then
+		self:sv_toWorld( "/plotclear", {}, player )
+	elseif data.what == "buildcity" then
+		self:sv_toWorld( "/plotapply", {}, player, { cfg = self.cl and nil } )
+	end
 end
 
 function Game.cl_onPlotsGuiClick( self, widgetName, data )
@@ -1136,7 +1294,9 @@ end
 function Game.sv_n_plotsGuiAction( self, data, player )
 	if player ~= sm.player.getHostPlayer() then return end
 	if data.action == "clear" then
-		self:sv_toWorld( "/plotclear", {}, player )
+		-- Two doors, and the first one lists what is actually out there. The
+		-- world has to count it, so the ask happens from there.
+		self:sv_toWorld( "/citycensus", {}, player )
 	elseif data.action == "build" then
 		self:sv_toWorld( "/plotapply", {}, player, { cfg = data.cfg } )
 	end

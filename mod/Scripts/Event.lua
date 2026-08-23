@@ -5,12 +5,17 @@
 -- was the whole of it: no before, no after, and nothing anybody could look at to
 -- find out how long was left.
 --
---     off  ->  prep  ->  build  ->  ended
+--     off  ->  prep  ->  build  ->  buffer  ->  ended
 --
---   prep    people arrive and CLAIM a plot. Nobody can build yet.
+--   prep    people arrive and CLAIM a plot. Nobody can build yet, and that is
+--           the ONLY thing prep changes -- every other rule the server enforces
+--           still applies, seats and buttons still work, nothing is frozen.
 --   build   the event. Building open, on your own plot.
---   ended   time is up. The world locks and everything is snapshotted, which is
---           the same thing /buildtime did, kept because it is right.
+--   buffer  optional, and off by default. Building has closed but the world is
+--           not sealed yet: time to walk round, take pictures, judge, and stop
+--           panicking before anything becomes permanent.
+--   ended   the world locks and everything is snapshotted, which is what
+--           /buildtime always did and is kept because it is right.
 --
 -- Claiming during prep rather than at the whistle is the point of having a prep
 -- phase at all: twenty people racing to claim ground at the same moment as they
@@ -50,6 +55,7 @@ Event.PANIC_SECONDS = 5 * 60
 
 Event.DEFAULT_PREP = 10
 Event.DEFAULT_BUILD = 60
+Event.DEFAULT_BUFFER = 0
 
 local function clockNow()
 	local ok, t = pcall( os.time )
@@ -62,6 +68,7 @@ function Event.sv_onCreate( self, saved )
 	self.pausedLeft = nil        -- seconds remaining, while paused
 	self.prepMinutes = Event.DEFAULT_PREP
 	self.buildMinutes = Event.DEFAULT_BUILD
+	self.bufferMinutes = Event.DEFAULT_BUFFER
 	self.announced = {}          -- which "N minutes left" calls have gone out
 
 	if type( saved ) == "table" then
@@ -70,6 +77,7 @@ function Event.sv_onCreate( self, saved )
 		self.pausedLeft = saved.pausedLeft
 		self.prepMinutes = saved.prepMinutes or Event.DEFAULT_PREP
 		self.buildMinutes = saved.buildMinutes or Event.DEFAULT_BUILD
+		self.bufferMinutes = saved.bufferMinutes or Event.DEFAULT_BUFFER
 		self.announced = saved.announced or {}
 	end
 end
@@ -78,6 +86,7 @@ function Event.sv_serialise( self )
 	return {
 		phase = self.phase, deadline = self.deadline, pausedLeft = self.pausedLeft,
 		prepMinutes = self.prepMinutes, buildMinutes = self.buildMinutes,
+		bufferMinutes = self.bufferMinutes,
 		announced = self.announced,
 	}
 end
@@ -100,7 +109,7 @@ end
 --[[ state ]]
 
 function Event.sv_running( self )
-	return self.phase == "prep" or self.phase == "build"
+	return self.phase == "prep" or self.phase == "build" or self.phase == "buffer"
 end
 
 function Event.sv_paused( self )
@@ -130,12 +139,15 @@ end
 
 --[[ transitions ]]
 
-function Event.sv_start( self, prepMinutes, buildMinutes, now )
+function Event.sv_start( self, prepMinutes, buildMinutes, now, bufferMinutes )
 	now = now or clockNow()
 	prepMinutes = math.max( 0, tonumber( prepMinutes ) or self.prepMinutes )
 	buildMinutes = math.max( 1, tonumber( buildMinutes ) or self.buildMinutes )
 	self.prepMinutes = prepMinutes
 	self.buildMinutes = buildMinutes
+	if bufferMinutes ~= nil then
+		self.bufferMinutes = math.max( 0, tonumber( bufferMinutes ) or 0 )
+	end
 	self.pausedLeft = nil
 	self.announced = {}
 
@@ -204,7 +216,12 @@ function Event.sv_skip( self, now )
 		self.pausedLeft = nil
 		self.announced = {}
 		return true, "build"
-	elseif self.phase == "build" then
+	elseif self.phase == "build" and self.bufferMinutes > 0 then
+		self.phase = "buffer"
+		self.deadline = now + self.bufferMinutes * 60
+		self.pausedLeft = nil
+		return true, "buffer"
+	elseif self.phase == "build" or self.phase == "buffer" then
 		self.phase = "ended"
 		self.deadline = nil
 		self.pausedLeft = nil
@@ -228,6 +245,12 @@ function Event.sv_advance( self, now )
 		self.deadline = ( now or clockNow() ) + self.buildMinutes * 60
 		self.announced = {}
 		return "build"
+	end
+
+	if self.phase == "build" and self.bufferMinutes > 0 then
+		self.phase = "buffer"
+		self.deadline = ( now or clockNow() ) + self.bufferMinutes * 60
+		return "buffer"
 	end
 
 	self.phase = "ended"
@@ -275,15 +298,41 @@ Event.LABELS = {
 	off = "NO EVENT",
 	prep = "PREP",
 	build = "BUILD",
+	buffer = "TIME UP",
 	ended = "ENDED",
+}
+
+-- Which protection mode each phase puts the world in. This table is the fix for
+-- a real bug: the phases used to only set `buildopen` and then re-apply whatever
+-- protection mode happened to be current. But profileFor() short-circuits --
+--
+--     if isLockedMode( self.mode ) then return PROFILES[self.mode] end
+--
+-- -- so once an event ENDED and set the mode to "locked", starting a new one
+-- left it locked and buildopen was never consulted again. REPORTED as "I cant
+-- build when prep time is out". The event owns the mode now, explicitly.
+--
+--   prep    display: buildable false, but usable TRUE. "the prep time just
+--           doesnt allow you to build. it maintains other rules."
+--   build   open, and buildopen true
+--   buffer  display again: building has closed, nothing is frozen yet
+--   ended   locked, and snapshotted
+--   off     open, and the host has the controls back
+Event.PROTECTION = {
+	off = "open",
+	prep = "display",
+	build = "open",
+	buffer = "display",
+	ended = "locked",
 }
 
 -- What the top-right HUD says under the clock. Short, because it is read at a
 -- glance while somebody is holding a weld tool.
 Event.HINTS = {
 	off = "build freely",
-	prep = "claim a plot -- building opens soon",
+	prep = "claim your plot -- no building yet",
 	build = "build on your own plot",
+	buffer = "building closed -- look around",
 	ended = "builds are locked",
 }
 

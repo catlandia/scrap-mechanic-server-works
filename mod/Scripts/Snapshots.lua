@@ -187,9 +187,39 @@ function Snapshots.sv_finishCapture( self )
 		job.failed > 0 and string.format( " (%d failed)", job.failed ) or "" )
 end
 
+-- REQUESTED: "the backups need to be the full world backups. just to be sure
+-- with exact date and minutes writen."
+--
+-- Every capture already takes the WHOLE world -- sv_beginCapture enumerates
+-- every creation there is, not the plots -- so what was missing was being able
+-- to tell one from another. A rotating "auto3" tells you nothing about when it
+-- was taken or what was happening.
+--
+-- os.date is available here for the same reason os.time is; Identity.lua has
+-- been stamping the ban list with it since the beginning.
+--
+--   auto-2026-08-24_2247      the rotation, but readable
+--   eventend-2026-08-24_2312  what happened, and when
+--
+-- Sorted alphabetically these also sort chronologically, which is what makes
+-- /snapshots readable at a glance.
+function Snapshots.Stamp()
+	local ok, when = pcall( os.date, "%Y-%m-%d_%H%M" )
+	if ok and type( when ) == "string" then return when end
+	-- No clock: fall back to the tick count so two snapshots still differ.
+	local got, tick = pcall( sm.game.getCurrentTick )
+	return "t" .. tostring( got and tick or 0 )
+end
+
+function Snapshots.Name( prefix )
+	return string.format( "%s-%s", prefix or "manual", Snapshots.Stamp() )
+end
+
+-- The rotation still bounds how many auto saves pile up, but each one now says
+-- when it was taken.
 function Snapshots.sv_autoName( self )
 	self.autoSlot = ( self.autoSlot % Snapshots.AUTO_SLOTS ) + 1
-	return "auto" .. self.autoSlot
+	return Snapshots.Name( "auto" .. self.autoSlot )
 end
 
 

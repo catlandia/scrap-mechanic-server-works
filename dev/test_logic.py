@@ -387,20 +387,38 @@ def one_plot_each():
 
 
 def teaming_needs_a_shared_filler():
-    # cols=10 with a plaza in the middle: plots 0..4 are left of it, 5..9 right.
-    # 5 and 6 are neighbours across a filler; 4 and 5 are neighbours in the grid
-    # but the plaza runs between them, so they share nothing and cannot team.
-    lua, plots = plots_lua({"cols": 10, "rows": 10, "spawn": 50, "roadevery": 0})
+    # 10x10 with a 2-cell plaza: the plaza takes cells 4 and 5 on both axes, so
+    # in row 0 that is plot indices 5 and 6 -- and those plots DO NOT EXIST.
+    lua, plots = plots_lua({"cols": 10, "rows": 10, "plazacells": 2, "roadevery": 0})
     P = lua.globals().Plots
-    # Plot index n sits at column (n-1) % cols. With ten columns the plaza runs
-    # between column 4 and column 5, so in row 0 that is between plot 5 and plot 6.
-    assert P.sv_adjacent(plots, 6, 7) is True, "6 and 7 share a filler and should be neighbours"
+    L = lua.globals().Layout
     assert P.sv_adjacent(plots, 3, 4) is True, "3 and 4 share a filler and should be neighbours"
-    assert P.sv_adjacent(plots, 6, 16) is True, "6 and 16 are neighbours down the rows"
+    assert P.sv_adjacent(plots, 7, 8) is True, "7 and 8 share a filler and should be neighbours"
+    assert P.sv_adjacent(plots, 1, 11) is True, "1 and 11 are neighbours down the rows"
     assert P.sv_adjacent(plots, 3, 5) is False, "3 and 5 are not neighbours at all"
-    assert P.sv_adjacent(plots, 5, 6) is False, (
-        "plots either side of the plaza were allowed to team up -- the ground "
-        "between them is the plaza, not a shared filler")
+    # The plaza is a 2x2 BLOCK of cells at (4,4)-(5,5), so the plots it swallows
+    # are 45, 46, 55 and 56 -- not a stripe through row 0. Nothing can be next to
+    # a plot that does not exist.
+    for gone in (45, 46, 55, 56):
+        assert L.plotExists(plots["layout"], gone) is False, (
+            f"plot {gone} should be under the plaza")
+    assert P.sv_adjacent(plots, 35, 45) is False, (
+        "a plot under the plaza was treated as a neighbour")
+    assert P.sv_adjacent(plots, 45, 46) is False, (
+        "two plots under the plaza were allowed to team up")
+    # the plots that ring the plaza are still ordinary neighbours of each other
+    assert P.sv_adjacent(plots, 44, 34) is True, "44 and 34 are neighbours down the rows"
+
+
+def the_plaza_cannot_be_claimed():
+    lua, plots = plots_lua({"cols": 10, "rows": 10, "plazacells": 2})
+    P = lua.globals().Plots
+    ok, msg = P.sv_claim(plots, 45, "A")
+    assert plots["owners"][45] is None, "somebody claimed a plot under the plaza"
+    assert "plaza" in str(msg).lower(), f"the refusal should say why, got {msg!r}"
+    # and an ordinary plot still works
+    P.sv_claim(plots, 1, "A")
+    assert plots["owners"][1] == "A"
 
 
 def teaming_is_refused_across_a_road():
@@ -418,7 +436,7 @@ def teaming_is_refused_across_a_road():
 
 
 def the_filler_becomes_shared_only_after_teaming():
-    lua, plots = plots_lua({"cols": 10, "rows": 10, "spawn": 50},
+    lua, plots = plots_lua({"cols": 10, "rows": 10, "plazacells": 2},
                            owners={7: "A", 8: "B"})
     P = lua.globals().Plots
     # plots 7 and 8 are columns 6 and 7 of row 0, with a filler between them
@@ -433,15 +451,15 @@ def the_filler_becomes_shared_only_after_teaming():
 
 
 def public_ground_belongs_to_nobody():
-    lua, plots = plots_lua({"cols": 10, "rows": 10, "spawn": 50}, owners={1: "A"})
+    lua, plots = plots_lua({"cols": 10, "rows": 10, "plazacells": 2}, owners={1: "A"})
     P = lua.globals().Plots
-    for kind in ("plaza", "avenue", "road", "corner"):
+    for kind in ("plaza", "road", "corner"):
         z = lua.table_from({"kind": kind, "col": 0, "row": 0})
         assert dict(P.sv_authorised(plots, z)) == {}, f"{kind} is buildable by someone"
 
 
 def spawn_is_the_middle_of_the_map():
-    lua, plots = plots_lua({"cols": 10, "rows": 10, "spawn": 50})
+    lua, plots = plots_lua({"cols": 10, "rows": 10, "plazacells": 2})
     P = lua.globals().Plots
     z = P.sv_locate(plots, lua.table_from({"x": 0.0, "y": 0.0, "z": 1.0}))
     assert z is not None and z["kind"] == "plaza", (
@@ -449,7 +467,7 @@ def spawn_is_the_middle_of_the_map():
 
 
 def an_unclaimed_empty_plot_stays_open():
-    lua, plots = plots_lua({"cols": 10, "rows": 10, "spawn": 50})
+    lua, plots = plots_lua({"cols": 10, "rows": 10, "plazacells": 2})
     P = lua.globals().Plots
     L = lua.globals().Layout
     bx, by = L.plotCentre(plots["layout"], 1)
@@ -460,7 +478,7 @@ def an_unclaimed_empty_plot_stays_open():
 
 
 def shared_ground_never_becomes_erasable_scenery():
-    lua, plots = plots_lua({"cols": 10, "rows": 10, "spawn": 50})
+    lua, plots = plots_lua({"cols": 10, "rows": 10, "plazacells": 2})
     P = lua.globals().Plots
     body = lua.table_from({"worldPosition": lua.table_from({"x": 0.0, "y": 0.0, "z": 1.2})})
     assert P.sv_bodyIsOpen(plots, body) == "locked", (
@@ -469,7 +487,7 @@ def shared_ground_never_becomes_erasable_scenery():
 
 
 def outside_the_city_is_sweepable():
-    lua, plots = plots_lua({"cols": 4, "rows": 4, "spawn": 20})
+    lua, plots = plots_lua({"cols": 4, "rows": 4, "plazacells": 1})
     P = lua.globals().Plots
     body = lua.table_from({"worldPosition": lua.table_from(
         {"x": 500.0, "y": 500.0, "z": 1.0})})
@@ -478,7 +496,7 @@ def outside_the_city_is_sweepable():
 
 
 def grid_survives_a_save_and_load():
-    lua, plots = plots_lua({"cols": 6, "rows": 4, "plot": 16, "spawn": 30,
+    lua, plots = plots_lua({"cols": 6, "rows": 4, "plot": 16, "plazacells": 2,
                             "roadevery": 2, "roadwidth": 8})
     P = lua.globals().Plots
     P.sv_claim(plots, 3, "A")
@@ -489,7 +507,7 @@ def grid_survives_a_save_and_load():
     P.sv_onCreate(fresh_plots, saved)
     assert fresh_plots["grid"]["cols"] == 6
     assert fresh_plots["grid"]["plot"] == 16
-    assert fresh_plots["grid"]["spawn"] == 30, (
+    assert fresh_plots["grid"]["plazacells"] == 2, (
         "the plaza size was lost on reload -- it used to live in a module global "
         "instead of the grid, so a restart rebuilt a different city")
     assert fresh_plots["owners"][3] == "A", "plot ownership was lost on reload"
@@ -513,7 +531,7 @@ def grid_survives_a_save_and_load():
 
 def team_grid(**over):
     cfg = {"cols": 6, "rows": 6, "plot": 20, "gap": 1,
-           "roadevery": 0, "spawn": 0}
+           "roadevery": 0, "plazacells": 0}
     cfg.update(over)
     lua, plots = plots_lua(cfg)
     P = lua.globals().Plots
@@ -647,13 +665,22 @@ def teams_survive_a_restart():
         "the team did not survive a reload -- a chain rebuilt as separate pairs")
 
 
-def a_team_never_crosses_the_plaza_or_a_road():
-    # With a plaza, columns 2 and 3 of a six-wide grid sit either side of it.
-    lua, plots, P = team_grid(spawn=50)
-    ok, msg = link(P, plots, 3, 4)
-    assert not teamed(P, plots, 3, 4), "a team formed across the plaza"
-    assert "road" in str(msg).lower() or "shared block" in str(msg).lower(), (
-        f"the refusal should explain what is between them, got {msg!r}")
+def a_team_never_crosses_the_plaza():
+    # A 2-cell plaza on a 6x6 grid takes cells 2 and 3 on both axes, so in row 0
+    # that is plot indices 3 and 4 -- and neither exists.
+    # 6x6 with a 2-cell plaza takes cells 2 and 3 on both axes, so the plots it
+    # swallows are 15, 16, 21 and 22.
+    lua, plots, P = team_grid(plazacells=2)
+    L = lua.globals().Layout
+    for gone in (15, 16, 21, 22):
+        assert L.plotExists(plots["layout"], gone) is False, f"plot {gone} is plaza"
+    link(P, plots, 14, 15)
+    assert not teamed(P, plots, 14, 15), "a team formed with a plot under the plaza"
+    link(P, plots, 15, 16)
+    assert not teamed(P, plots, 15, 16), "two plaza cells were allowed to team"
+    # and the plots around the edge of it still team normally
+    link(P, plots, 13, 14)
+    assert teamed(P, plots, 13, 14), "two ordinary neighbours could not team"
 
 
 # ------------------------------------------------------------------ event ---
@@ -882,7 +909,7 @@ def every_caption_can_be_drawn():
             collect(f"settings/{g}", G.Build(values, g, page))
 
     cfg = {"plot": 20, "gap": 1, "cols": 10, "rows": 10, "roadevery": 0,
-           "roadwidth": 6, "spawn": 50, "claimed": {}}
+           "roadwidth": 6, "plazacells": 2, "claimed": {}}
     collect("city", lua.globals().PlotsGui.Build(lua.table_from(
         {k: (lua.table_from(v) if isinstance(v, dict) else v) for k, v in cfg.items()})))
 
@@ -894,7 +921,16 @@ def every_caption_can_be_drawn():
                               for k, v in cfg.items()})})
     collect("myplot", lua.globals().MyPlotGui.Build(st))
 
-    for phase in ("off", "prep", "build", "ended"):
+    for phase in ("off", "prep", "build", "buffer", "ended"):
+        collect(f"event/{phase}", lua.globals().EventGui.Build(lua.table_from(
+            {"phase": phase, "remaining": 754.0, "prep": 10, "build": 60, "buffer": 5})))
+    for step in (1, 2):
+        collect(f"confirm/{step}", lua.globals().ConfirmGui.Build(lua.table_from(
+            {"step": step, "title": "DELETE THE WHOLE CITY?",
+             "lines": lua.table_from(["96 plots in the city, 41 claimed",
+                                      "12406 blocks built on them",
+                                      "by 9 different players"])})))
+    for phase in ("off", "prep", "build", "buffer", "ended"):
         collect(f"eventhud/{phase}", lua.globals().EventHud.Build(
             lua.table_from({"phase": phase, "remaining": 754.0, "panic": phase == "build"}),
             1920, 1080))
@@ -990,6 +1026,7 @@ def no_button_is_buried(label, items, H):
 
 def gui_lua():
     lua = fresh("Layout.lua", "Settings.lua", "Event.lua", "EventHud.lua",
+                "EventGui.lua", "ConfirmGui.lua",
                 "SettingsGui.lua", "PlotsGui.lua", "MenuGui.lua", "MyPlotGui.lua")
     lua.globals().Settings.Sv_Load(False)
     return lua
@@ -1053,9 +1090,9 @@ def the_city_map_never_leaves_its_box():
     MAP = 380
     x0, y0 = G.W - 28 - MAP, 108
     for cfg in ({"cols": 20, "rows": 2}, {"cols": 2, "rows": 20},
-                {"cols": 1, "rows": 1}, {"cols": 20, "rows": 20, "spawn": 120}):
+                {"cols": 1, "rows": 1}, {"cols": 20, "rows": 20, "plazacells": 3}):
         full = {"plot": 20, "gap": 1, "cols": 10, "rows": 10, "roadevery": 0,
-                "roadwidth": 6, "spawn": 50, "claimed": {}}
+                "roadwidth": 6, "plazacells": 2, "claimed": {}}
         full.update(cfg)
         kids = lua.eval("{}")
         G.AddMap(kids, lua.table_from({k: (lua.table_from(v) if isinstance(v, dict) else v)
@@ -1078,7 +1115,7 @@ def the_my_plot_panel_fits_in_every_state():
     lua = gui_lua()
     G = lua.globals().MyPlotGui
     cfg = {"plot": 20, "gap": 1, "cols": 10, "rows": 10, "roadevery": 0,
-           "roadwidth": 6, "spawn": 50, "claimed": {}}
+           "roadwidth": 6, "plazacells": 2, "claimed": {}}
 
     states = [
         ("plots off", {"plotsOn": False}),
@@ -1192,6 +1229,41 @@ def the_event_hud_reads_correctly_in_every_phase():
     assert "PAUSED" in caps, f"a paused clock does not say so: {caps!r}"
 
 
+def the_event_panel_fits_running_and_stopped():
+    lua = gui_lua()
+    G = lua.globals().EventGui
+    for phase in ("off", "prep", "build", "buffer", "ended"):
+        for paused in (False, True):
+            st = lua.table_from({"phase": phase, "remaining": 3754.0, "paused": paused,
+                                 "prep": 10, "build": 60, "buffer": 5})
+            label = f"event({phase}{',paused' if paused else ''})"
+            items = panel_fits(label, G.Build(st), G.W, G.H)
+            no_button_is_buried(label, items, G.H)
+
+
+def the_confirm_panel_puts_the_dangerous_button_somewhere_else():
+    # The whole point of asking twice is that the second ask cannot be answered
+    # by muscle memory, so YES on step two must NOT be where YES was on step one.
+    lua = gui_lua()
+    G = lua.globals().ConfirmGui
+    where = {}
+    for step in (1, 2):
+        st = lua.table_from({"step": step, "title": "DELETE THE WHOLE CITY?",
+                             "lines": lua.table_from(["96 plots", "12406 blocks"])})
+        items = panel_fits(f"confirm({step})", G.Build(st), G.W, G.H)
+        no_button_is_buried(f"confirm({step})", items, G.H)
+        yes = [i for i in items if i["name"] == "Yes"]
+        no = [i for i in items if i["name"] == "No"]
+        assert yes and no, f"confirm step {step} is missing a button"
+        where[step] = (yes[0]["x"], no[0]["x"])
+    assert where[1][0] != where[2][0], (
+        "YES is in the same place on both steps -- a double click gets through "
+        "both doors, which defeats asking twice")
+    assert where[2][0] == where[1][1], (
+        "on the second step YES should sit where CANCEL was, so reflex lands on "
+        "cancel")
+
+
 def main():
     check("settings: schema is internally consistent", settings_schema_is_sane)
     check("settings: presets only name real keys", settings_presets_only_name_real_keys)
@@ -1212,6 +1284,7 @@ def main():
 
     check("plots: one plot per player", one_plot_each)
     check("plots: teaming needs a shared filler", teaming_needs_a_shared_filler)
+    check("plots: the plaza cannot be claimed", the_plaza_cannot_be_claimed)
     check("plots: no teaming across a road", teaming_is_refused_across_a_road)
     check("plots: the filler is shared only after teaming",
           the_filler_becomes_shared_only_after_teaming)
@@ -1239,7 +1312,7 @@ def main():
     check("teams: giving up a plot removes it from its team",
           giving_up_a_plot_removes_it_from_its_team)
     check("teams: teams survive a restart", teams_survive_a_restart)
-    check("teams: never across the plaza or a road", a_team_never_crosses_the_plaza_or_a_road)
+    check("teams: never across the plaza", a_team_never_crosses_the_plaza)
 
     check("event: prep then build then ended", an_event_runs_prep_then_build_then_ends)
     check("event: zero prep starts building at once", a_zero_minute_prep_starts_building_at_once)
@@ -1250,6 +1323,11 @@ def main():
     check("event: each time call happens once", each_time_call_happens_once)
     check("event: the clock reads the way a clock should", the_clock_reads_the_way_a_clock_should)
     check("event: the per-second broadcast stays small", the_client_state_is_small_and_complete)
+
+    check("gui: the event panel fits running and stopped",
+          the_event_panel_fits_running_and_stopped)
+    check("gui: the second confirm moves the dangerous button",
+          the_confirm_panel_puts_the_dangerous_button_somewhere_else)
 
     check("hud: the clock sits in the top right at any resolution",
           the_event_hud_sits_in_the_top_right_at_any_resolution)

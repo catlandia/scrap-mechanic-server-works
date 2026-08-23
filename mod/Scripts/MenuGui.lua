@@ -12,7 +12,10 @@ MenuGui = {}
 MenuGui.W = 460
 -- Tall enough for six entries plus the host header; the layout check in the
 -- build script computes this rather than trusting the eye.
-MenuGui.H = 540
+-- Seven entries plus the HOST header. The layout check computes whether this is
+-- enough rather than trusting the eye -- it caught this exact panel overflowing
+-- the moment the EVENT CLOCK entry was added.
+MenuGui.H = 600
 
 local BG = "0.055 0.062 0.078 1"
 local PANEL = "1 1 1 1"
@@ -58,6 +61,8 @@ MenuGui.ENTRIES = {
 	  help = "everyone online, with their ids", host = false },
 	{ action = "help", label = "COMMANDS",
 	  help = "everything you can type", host = false },
+	{ action = "event", label = "EVENT CLOCK",
+	  help = "prep, build and buffer times -- start it here", host = true },
 	{ action = "city", label = "CITY LAYOUT",
 	  help = "plots, roads and plaza, with a live map", host = true },
 	{ action = "settings", label = "SERVER SETTINGS",
