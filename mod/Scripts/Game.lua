@@ -360,13 +360,13 @@ end
 -- asks, the server decides and saves, the server sends the new values back and
 -- the panel re-renders. That keeps a guest's client from ever being the
 -- authority on what the server allows.
-function Game.sv_openSettingsGui( self, player, page )
+function Game.sv_openSettingsGui( self, player, group, page )
 	local values = {}
 	for _, row in ipairs( Settings.SCHEMA ) do
 		values[row.key] = Settings.Get( row.key )
 	end
 	self.network:sendToClient( player, "client_openSettingsGui",
-		{ values = values, page = page } )
+		{ values = values, group = group, page = page } )
 end
 
 function Game.sv_n_settingsGuiClick( self, data, player )
@@ -374,7 +374,17 @@ function Game.sv_n_settingsGuiClick( self, data, player )
 		return
 	end
 
-	if data.action == "cycle" then
+	if data.action == "preset" then
+		local ok, detail = Settings.Sv_ApplyPreset( data.preset )
+		if ok then
+			self.sv.blockedTools = Settings.Sv_BlockedTools()
+			self:sv_toWorld( "/settingschanged", {}, player )
+			self:sv_broadcast( "Server preset: " .. detail )
+		else
+			self.network:sendToClient( player, "client_showMessage", detail )
+		end
+
+	elseif data.action == "cycle" then
 		local row
 		for _, r in ipairs( Settings.SCHEMA ) do
 			if r.key == data.key then row = r end
@@ -395,12 +405,13 @@ function Game.sv_n_settingsGuiClick( self, data, player )
 		end
 	end
 
-	self:sv_openSettingsGui( player, data.page or 1 )
+	self:sv_openSettingsGui( player, data.group, data.page or 1 )
 end
 
 function Game.client_openSettingsGui( self, data )
 	if self.cl == nil then self.cl = {} end
 	self.cl.settingsValues = data.values
+	self.cl.settingsGroup = data.group or "safety"
 	self.cl.settingsPage = data.page or 1
 
 	if self.cl.settingsGui and sm.exists( self.cl.settingsGui ) then
@@ -408,7 +419,7 @@ function Game.client_openSettingsGui( self, data )
 		self.cl.settingsGui:destroy()
 	end
 
-	local root = SettingsGui.Build( data.values, self.cl.settingsPage )
+	local root = SettingsGui.Build( data.values, self.cl.settingsGroup, self.cl.settingsPage )
 	self.cl.settingsGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
 	self.cl.settingsGui:render( root )
 	self.cl.settingsGui:open()
@@ -420,19 +431,32 @@ function Game.cl_onSettingsGuiClick( self, data )
 		return
 	end
 
+	-- Switching tab or page is pure presentation, so it re-renders locally
+	-- instead of round-tripping to the server. Only a value change needs the
+	-- server, because only the server decides what the settings are.
+	if data.action == "group" then
+		self.cl.settingsGroup = data.group
+		self.cl.settingsPage = 1
+		self.cl.settingsGui:render( SettingsGui.Build(
+			self.cl.settingsValues, self.cl.settingsGroup, 1 ) )
+		return
+	end
+
 	if data.action == "page" then
-		local pages = SettingsGui.PageCount()
+		local pages = SettingsGui.PageCount( self.cl.settingsGroup )
 		local page = data.page
 		if page < 1 then page = pages elseif page > pages then page = 1 end
 		self.cl.settingsPage = page
-		local root = SettingsGui.Build( self.cl.settingsValues, page )
-		self.cl.settingsGui:render( root )
+		self.cl.settingsGui:render( SettingsGui.Build(
+			self.cl.settingsValues, self.cl.settingsGroup, page ) )
 		return
 	end
 
 	-- A value change has to go to the server; the client does not decide.
-	self.network:sendToServer( "sv_n_settingsGuiClick",
-		{ action = data.action, key = data.key, page = self.cl.settingsPage } )
+	self.network:sendToServer( "sv_n_settingsGuiClick", {
+		action = data.action, key = data.key, preset = data.preset,
+		group = self.cl.settingsGroup, page = self.cl.settingsPage,
+	} )
 end
 
 function Game.cl_onSettingsGuiClose( self )
@@ -546,7 +570,7 @@ function Game.sv_n_adminCommand( self, params, player )
 		end
 
 	elseif cmd == "/settings" then
-		self:sv_openSettingsGui( player, 1 )
+		self:sv_openSettingsGui( player, "safety", 1 )
 
 	elseif cmd == "/settingslist" then
 		reply( "settings -- /set <name> <value>" )
