@@ -288,7 +288,15 @@ function Settings.Sv_Set( key, raw )
 
 	Settings.values[row.key] = value
 	if row.apply then
-		pcall( row.apply, value )
+		-- Deliberately NOT silent. Several apply hooks are world-dependent and
+		-- throw when this runs from the Game script; the World re-applies them
+		-- on /settingschanged, which is where they actually take. Logging the
+		-- failure is what would have made "settings do nothing" obvious.
+		local ok, err = pcall( row.apply, value )
+		if not ok then
+			sm.log.info( string.format(
+				"[ServerWorks] %s deferred to world (%s)", row.key, tostring( err ) ) )
+		end
 	end
 	Settings.Sv_Save()
 	sm.log.info( string.format( "[ServerWorks] setting %s = %s", row.key, tostring( value ) ) )

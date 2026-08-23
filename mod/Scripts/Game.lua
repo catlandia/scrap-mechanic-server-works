@@ -463,14 +463,15 @@ function Game.client_openSettingsGui( self, data )
 	self.cl.settingsGroup = data.group or "safety"
 	self.cl.settingsPage = data.page or 1
 
-	-- close() only. A json GUI has no destroy() -- MEASURED, every reopen threw
-	--   ERROR: Unknown member 'destroy' in userdata   Game.lua:428
-	-- and the throw left the panel unopenable for the rest of the session.
-	-- Vanilla only ever calls close() (CreativePlayer.cl_e_unstuckYes).
-	self:cl_closeSettingsGui()
+	-- Reuse the GUI and just render the new tree into it. Closing and recreating
+	-- on every click threw the panel away and built another, which is wasteful
+	-- and makes the whole thing flicker. Re-rendering is what vanilla does
+	-- (HideoutTrader rebuilds its item list this way).
 
 	local root = SettingsGui.Build( data.values, self.cl.settingsGroup, self.cl.settingsPage )
-	self.cl.settingsGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
+	if self.cl.settingsGui == nil or not sm.exists( self.cl.settingsGui ) then
+		self.cl.settingsGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
+	end
 	-- render() IS the show. A json GUI has neither open() nor destroy() --
 	-- MEASURED: "Unknown member 'open' in userdata" at Game.lua:473, thrown on
 	-- every render, and the throw is what shut the panel again on every click.

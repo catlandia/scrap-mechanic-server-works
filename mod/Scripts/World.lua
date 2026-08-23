@@ -466,11 +466,21 @@ function World.sv_e_swCommand( self, params )
 		end
 
 	elseif cmd == "/plots" or cmd == "/plotgrid" or cmd == "/settingschanged" then
+		-- THE fix for "settings display but do nothing". Settings.Sv_Set runs the
+		-- apply hooks from the Game script, and the ones that matter are
+		-- world-dependent -- sm.fire.setFireLimit throws there, and the pcall
+		-- around it swallowed the error silently. So the value changed, the file
+		-- was written, the panel updated, and the world never heard about it.
+		-- Re-apply here, where a world exists and the calls are legal.
+		Settings.Sv_ApplyAll()
 		self:sv_applySettings()
 		-- A preset can change the protection mode itself, so take it from
 		-- settings rather than re-asserting whatever the world already had.
 		local wanted = Settings.Get( "protection" )
-		g_swProtection:sv_setMode( wanted or g_swProtection:sv_getMode() )
+		local _, detail = g_swProtection:sv_setMode( wanted or g_swProtection:sv_getMode() )
+		sm.log.info( string.format( "[ServerWorks] settings applied in world: fire=%s plots=%s mode=%s (%s)",
+			tostring( Settings.Get( "fire" ) ), tostring( g_swPlots.enabled ),
+			g_swProtection:sv_getMode(), tostring( detail ) ) )
 		if cmd == "/plots" then
 			local claimed, total = g_swPlots:sv_counts()
 			self:sv_broadcast( string.format( "Plot system %s (%d of %d plots claimed).",
