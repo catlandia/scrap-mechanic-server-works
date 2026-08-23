@@ -1,28 +1,66 @@
+// WHAT A CUSTOM GAME'S TOOLSET CAN AND CANNOT DO
+//
+// It can ADD a tool. It CANNOT override one the base content already declares:
+// the first declaration wins and ours is loaded after.
+//
+// MEASURED. The game log prints the class each uuid actually resolved to, and
+// across every Server Works session it printed the BASE class, never ours:
+//
+//   Created Tool 18 of type {8f190ce2-3a59-423e-8483-a7aa67bd5bc0(SurvivalLift)}
+//
+// while this file was asking for class Lift. Same for 6993e5df(ClayRifle) and
+// a2a2bb33(PotatoLauncher). Meanwhile the nugdupS entry below -- a uuid nothing
+// else declares -- resolves exactly as written. Adding works, overriding does
+// not, and those two facts together are what tell the cases apart.
+//
+// So the entries that pointed 6993e5df at GuardedClayRifle and a2a2bb33 at
+// GuardedPotatoLauncher are gone: they never ran. What actually stops those
+// tools is the client-side forceTool guard in Game.client_onFixedUpdate.
+//
+// (Line comments really are legal here -- Data/Tools/ToolSets/tools.json:44
+// uses them itself.)
+
 {
 	"toolList": [
+
+		// THE CREATIVE LIFT, and the answer to "I cant press E on the lift".
+		//
+		// There are TWO lifts, and they are different ITEMS -- not one uuid that
+		// two pieces of content fight over:
+		//
+		//   5cc12f03  the creative lift, class Lift. Declared by
+		//             Data/Tools/ToolSets/tools.json and named
+		//             tool_lift_creative at
+		//             ChallengeData/Scripts/game/challenge_tools.lua:2
+		//   8f190ce2  the survival lift, class SurvivalLift. Declared by
+		//             Survival/Tools/ToolSets/tools.json:44
+		//
+		// baseGameContent "Survival" loads Survival/Tools/toolsets.json, which
+		// lists the survival index and never the creative one -- so this game
+		// had only the survival lift, and the log confirms that is the one that
+		// was in the player's hands.
+		//
+		// The blueprint import menu that E opens is engine-side: GarageImportGui
+		// driving Data/Gui/Layouts/Lift/Lift_Import.layout. No Lua subclass was
+		// ever going to bring that back, which is why V19 and V22 both failed to.
+		//
+		// This entry is an ADDITION -- nothing in survival content declares
+		// 5cc12f03 -- so it is the case that provably works.
+		{
+			"uuid": "5cc12f03-275e-4c8e-b013-79fc0f913e1b",
+			"previewRenderable": "$GAME_DATA/Character/Char_Tools/char_lift_preview.rend",
+			"previewRotation": [ 1, 0, 0, 0, 0, -1, 0, 1, 0 ],
+			"script": { "class": "Lift", "file": "$GAME_DATA/Scripts/game/Lift.lua" }
+		},
+
+		// The stale-mod canary. A uuid nothing else declares, so if it is in the
+		// creative menu then mod content updates are reaching the game. It is
+		// also the standing proof that adding a tool works.
 		{
 			"uuid": "748b6656-84b2-440f-8f4c-8cc7deeba63c",
 			"previewRenderable": "$GAME_DATA/Character/Char_Tools/char_spudgun_preview.rend",
 			"previewRotation": [ 1, 0, 0, 0, 0, -1, 0, 1, 0 ],
 			"script": { "class": "PotatoRifle", "file": "$SURVIVAL_DATA/Scripts/game/tools/PotatoRifle.lua" }
-		},
-		{
-			"uuid": "8f190ce2-3a59-423e-8483-a7aa67bd5bc0",
-			"previewRenderable": "$GAME_DATA/Character/Char_Tools/char_lift_preview.rend",
-			"previewRotation": [ 1, 0, 0, 0, 0, -1, 0, 1, 0 ],
-			"script": { "class": "Lift", "file": "$GAME_DATA/Scripts/game/Lift.lua" }
-		},
-		{
-			"uuid": "6993e5df-6852-4e84-88ae-df49f765e784",
-			"previewRenderable": "$GAME_DATA/Character/Char_Tools/char_claygun_preview.rend",
-			"previewRotation": [ 1, 0, 0, 0, 0, -1, 0, 1, 0 ],
-			"script": { "class": "GuardedClayRifle", "file": "$CONTENT_DATA/Scripts/GuardedTools.lua" }
-		},
-		{
-			"uuid": "a2a2bb33-a841-4b23-88da-b758063d9206",
-			"previewRenderable": "$GAME_DATA/Character/Char_Tools/char_spudgun_launcher_preview.rend",
-			"previewRotation": [ 1, 0, 0, 0, 0, -1, 0, 1, 0 ],
-			"script": { "class": "GuardedPotatoLauncher", "file": "$CONTENT_DATA/Scripts/GuardedTools.lua" }
 		}
 	]
 }

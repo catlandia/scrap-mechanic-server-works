@@ -84,8 +84,9 @@ Everything non-obvious in this codebase comes from one of these.
 
 4. **Survival content wins any uuid it shares with creative.** With
    `baseGameContent: "Survival"`, `Sledgehammer` read `clientPublicData.perks`,
-   which only `SurvivalPlayer` populates, and threw once per client frame. Our
-   own toolset can take a uuid back.
+   which only `SurvivalPlayer` populates, and threw once per client frame. The fix
+   is a Lua override of what broke — `Player.lua` supplies the missing table —
+   **not** a re-declaration of the uuid in our toolset, which cannot win (see 7).
 
    **A caution that cost a whole version.** The same reasoning was applied to the
    lift — uuid `8f190ce2` resolves to `SurvivalLift`, therefore the lift is
@@ -100,9 +101,16 @@ Everything non-obvious in this codebase comes from one of these.
 6. **A blueprint on the lift is a real body, flagged as a ghost.** Not a preview,
    not a hologram — `sm.body.getAllBodies()` returns it. Anything that walks
    every body has to skip `body:isGhost()`, or it will pin
-   `convertibleToDynamic = false` on a creation somebody is trying to place and
-   the lift will silently do nothing. This was the real lift bug, and it took
-   three attempts to find because it produces no error and no log line.
+   `convertibleToDynamic = false` on a creation somebody is trying to place.
+7. **A Custom Game's toolset can ADD a tool but cannot OVERRIDE one.** First
+   declaration wins and the mod's loads last. Measured from the log, which prints
+   the class each uuid resolved to. Two builds' worth of work was spent on
+   overrides that never ran.
+8. **`baseGameContent` decides which tool databases exist at all.** `"Survival"`
+   loads `Survival/Tools/toolsets.json` and never the creative index, so the
+   creative lift (`5cc12f03`, a *different item* from the survival lift
+   `8f190ce2`) simply was not in the game. `dev/check_uuids.py` now reads the
+   setting and checks against only what it loads.
 
 ---
 
@@ -150,7 +158,35 @@ The grid is an explicit run of segments with positions from a prefix sum, not
 - **plot** — claimable, one per player
 - **filler** — the one-block seam between neighbours, shared once they team up
 - **road** — a real street, wider, never claimable, belongs to everyone
-- **plaza** — the centre, spawn point, the only pillar
+- **plaza** — the centre, spawn point, the only pillar. Where the plaza band
+  crosses ordinary plots it becomes an **avenue** running out to the city edge.
+
+### Teams, in detail
+
+The owner's rule: *"only if the plot is behind, front, left, right. nothing in
+between. unless another teammate connects."* Two halves, and they need separate
+machinery.
+
+A **link** is a direct agreement between two plots, and it may only be made
+orthogonally — never corner to corner, and never across a road or the plaza,
+because there is no shared filler there to hand over.
+
+A **team** is whatever those links join up into: a connected component over the
+link graph. So a diagonal neighbour *can* end up on your team, but only by way of
+somebody who links you both.
+
+        A - B        A and C are teammates because B links them.
+            |        D is nobody's teammate: the only plot it touches is C,
+            C   D    and C never agreed to it.
+
+Two consequences worth knowing. A filler is shared when the plots either side are
+on the same **team**, not merely when they linked directly — four plots teamed in
+a ring would otherwise have a locked strip through the middle of their own land.
+And leaving a team cuts everyone who was only reachable *through* you, which is
+the same rule read backwards.
+
+The component is cached and rebuilt only when a link changes, because
+`sv_authorised` runs per body per patrol slice.
 
 Enforcement is by **presence**: a zone's bodies unlock only while everyone
 standing in it is authorised. Intruders are pushed back out — without that,
@@ -215,10 +251,10 @@ engine's, and stubbing them would be a test that lies.
 
 ## 6. Not done, in priority order
 
-1. **Confirm the lift spawns creations.** V24 found the real cause — the
-   protection patrol was pinning `convertibleToDynamic = false` on the ghost body
-   of the creation being placed — and made ghosts invisible to the mod. Untested
-   in game.
+1. **Confirm the lift spawns creations.** Two causes found and fixed, neither
+   confirmed in game: the protection patrol was pinning
+   `convertibleToDynamic = false` on the ghost body of the creation being placed
+   (V24), and the creative lift was not in the game at all (V25).
 2. **UI for the rest** — `/players`, `/rules`, `/banlist`, `/known` still print to
    chat. Each wants a panel.
 3. **Steam-ID ban resolution.** Lua cannot see a Steam ID; the game log records

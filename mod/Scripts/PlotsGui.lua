@@ -126,23 +126,31 @@ function PlotsGui.AddMap( kids, cfg, x, y, size )
 
 	local claimed = cfg.claimed or {}
 	local mine = cfg.mine
+	local team = cfg.team or {}
 	for row = 0, grid.cfg.rows - 1 do
 		for col = 0, grid.cfg.cols - 1 do
 			local r = Layout.plotRect( grid, col, row )
 			local index = Layout.plotIndex( grid, col, row )
 			if r and index then
-				local owned = claimed[tostring( index )] ~= nil
-				local yours = mine ~= nil and index == mine
-				cell( "mp" .. index, r.x, r.y, r.w, r.h,
-					yours and "0.36 0.84 0.46 1"
-						or ( owned and ACCENT or "0.62 0.63 0.60 1" ),
-					owned and 0.95 or 0.8 )
+				local key = tostring( index )
+				local owned = claimed[key] ~= nil
+				local colour, alpha
+				if index == mine then
+					colour, alpha = "0.30 0.86 0.42 1", 1          -- yours
+				elseif team[key] then
+					colour, alpha = "0.24 0.55 0.34 1", 0.95        -- your team's
+				elseif owned then
+					colour, alpha = ACCENT, 0.95                    -- somebody else's
+				else
+					colour, alpha = "0.62 0.63 0.60 1", 0.8         -- free
+				end
+				cell( "mp" .. index, r.x, r.y, r.w, r.h, colour, alpha )
 			end
 		end
 	end
 
 	kids[#kids + 1] = text( "MapKey",
-		"orange centre = spawn    green = yours    orange plot = claimed    dark = road",
+		"bright green = yours    dark green = your team    orange = taken    grey = free",
 		x, y + size + 14, size, 18, "SM_TextTiny", DIM, "Left" )
 end
 

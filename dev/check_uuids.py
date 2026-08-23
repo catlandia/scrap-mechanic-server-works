@@ -10,7 +10,15 @@ Two of this project's bugs were of that family:
     LAUNCHER in game and shoots fire, so grouping it with the spud guns by class
     name left a flamethrower switched on by default.
   * uuid 8f190ce2 is the lift, and survival owns it -- which was true, and was
-    still the wrong explanation for the lift not working.
+    still the wrong explanation for the lift not working. The creative lift is
+    5cc12f03, a completely different item, and baseGameContent "Survival" does
+    not load the toolset that declares it.
+
+That last one is why this script cares about baseGameContent. A Custom Game's
+toolset can ADD a tool but cannot OVERRIDE one the base content already
+declares -- first declaration wins, and the mod's is loaded last. So whether one
+of our entries is a working addition or a silently ignored override depends
+entirely on which base toolsets are loaded, and that is what config.json picks.
 
 So this resolves each uuid to the file that declares it and prints the name the
 game actually shows for it. Names come from the English inventoryDescriptions,
@@ -43,17 +51,53 @@ def load_json(path):
         return None
 
 
-def index_game():
-    """uuid -> (kind, declaring file). Everything the game can spawn or hand you."""
+# Which toolset index each baseGameContent actually loads. Everything else under
+# Data/ and Survival/ is still searched for shapes -- only TOOLS are gated this
+# way, and only tools have the add-versus-override distinction that matters.
+TOOL_INDEX = {
+    "Survival": "Survival/Tools/toolsets.json",
+    "Creative": "Data/Tools/toolsets.json",
+    "None": "Data/Tools/toolsets.json",
+}
+
+
+def resolve(path_expr):
+    """$GAME_DATA/... -> Data/...,  $SURVIVAL_DATA/... -> Survival/..."""
+    return (path_expr.replace("$GAME_DATA", "Data")
+                     .replace("$SURVIVAL_DATA", "Survival")
+                     .replace("$CHALLENGE_DATA", "ChallengeData"))
+
+
+def loaded_toolsets(base_content):
+    """The toolset files this game will actually load, in load order."""
+    index = GAME / TOOL_INDEX.get(base_content, TOOL_INDEX["Survival"])
+    data = load_json(index) or {}
+    out = []
+    for entry in data.get("toolSetList", []):
+        path = GAME / resolve(entry)
+        if path.is_file():
+            out.append(path)
+    return out
+
+
+def index_game(base_content):
+    """uuid -> (kind, declaring file). Everything the game can spawn or hand you.
+
+    Tools come only from the toolsets this baseGameContent loads, because a uuid
+    declared in a file the game never reads is not a conflict.
+    """
     out = {}
-    roots = ["Data", "Survival", "ChallengeData"]
-    for r in roots:
+    for path in loaded_toolsets(base_content):
+        text = strip_comments(io.open(path, encoding="utf-8-sig",
+                                      errors="replace").read())
+        for u in UUID_RE.findall(text.lower()):
+            out.setdefault(u, ("tool", path.relative_to(GAME).as_posix()))
+
+    for r in ("Data", "Survival", "ChallengeData"):
         base = GAME / r
         if not base.is_dir():
             continue
         for pattern, kind in (("**/*.shapeset", "shape"),
-                              ("**/*.toolset", "tool"),
-                              ("Tools/ToolSets/*.json", "tool"),
                               ("**/*.harvestableset", "harvestable")):
             for path in base.glob(pattern):
                 text = strip_comments(io.open(path, encoding="utf-8-sig",
@@ -106,7 +150,15 @@ def main():
                 declared.append((u, entry.get("script", {}).get("class", "?"),
                                  path.relative_to(ROOT).as_posix()))
 
-    game = index_game()
+    cfg = load_json(ROOT / "mod" / "config.json") or {}
+    base_content = cfg.get("baseGameContent", "Survival")
+    print(f"  baseGameContent: {base_content}")
+    loaded = loaded_toolsets(base_content)
+    print(f"  tool databases this loads: "
+          f"{', '.join(p.relative_to(GAME).as_posix() for p in loaded)}")
+    print()
+
+    game = index_game(base_content)
     names = index_names()
     rows = mod_uuids()
 
@@ -135,22 +187,29 @@ def main():
 
     if redeclared:
         print()
-        print("  uuids our own toolset TAKES BACK from the base game:")
+        print("  DEAD ENTRIES -- our toolset re-declares a uuid the loaded base")
+        print("  content already owns, and the first declaration wins:")
         for u, cls, where in sorted(redeclared):
             kind, gwhere = game[u]
-            print(f"        {names.get(u, '?'):<16} {u}  ->  {cls}")
-            print(f"        was {gwhere}, now {where}")
+            print(f"        {names.get(u, '?'):<16} {u}  ->  {cls}   IGNORED")
+            print(f"        {gwhere} declares it first and keeps it")
     if invented:
         print()
-        print("  uuids that exist only in this mod:")
+        print("  tools our toolset ADDS (nothing in the loaded base content")
+        print("  declares these, so they take effect):")
         for u, cls, where in sorted(invented):
-            print(f"        {u}  ->  {cls}   ({where})")
+            title = names.get(u, "?")
+            print(f"        {title:<16} {u}  ->  {cls}")
 
     print()
     print(f"{len(ok)} uuids resolve, {len(missing)} do not "
           f"(out of {len(seen)} named by the mod)")
     if missing:
         print("a uuid the game does not know is a silent no-op, not an error")
+        return 1
+    if redeclared:
+        print(f"{len(redeclared)} toolset entr"
+              f"{'y is' if len(redeclared) == 1 else 'ies are'} dead -- see above")
         return 1
     return 0
 

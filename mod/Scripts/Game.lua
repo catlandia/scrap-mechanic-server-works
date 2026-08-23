@@ -8,6 +8,8 @@ dofile( "$CONTENT_DATA/Scripts/SettingsGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/PlotsGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/GuardedTools.lua" )
 dofile( "$CONTENT_DATA/Scripts/MenuGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/MyPlotGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/PlotMarker.lua" )
 -- IndexWidgets and friends. BasePlayer pulls this in too, but relying on load
 -- order for a global is how you get a nil at the worst moment.
 dofile( "$SURVIVAL_DATA/Scripts/util.lua" )
@@ -52,7 +54,7 @@ local WORLD_COMMANDS = {
 -- Commands a guest may use. Everything else is host-only.
 local PLAYER_COMMANDS = {
 	["/sw"] = true, ["/swhelp"] = true, ["/plot"] = true, ["/players"] = true,
-	["/rules"] = true, ["/home"] = true, ["/menu"] = true,
+	["/rules"] = true, ["/home"] = true, ["/menu"] = true, ["/myplot"] = true,
 }
 
 -- How many words a player name may contain. bindChatCommand splits arguments on
@@ -168,6 +170,14 @@ function Game.sv_e_swReply( self, params )
 	end
 end
 
+-- The world knows where plots are; only the Game script has a network to reach
+-- a client with. Same bridge sv_e_swReply uses.
+function Game.sv_e_swMarker( self, params )
+	if params.player == nil or not sm.exists( params.player ) then return end
+	self.network:sendToClient( params.player, "client_setPlotMarker",
+		{ position = params.position, ping = params.ping } )
+end
+
 function Game.sv_e_swToolsChanged( self, params )
 	self.sv.blockedTools = Settings.Sv_BlockedTools()
 	self.sv.hazardTools = Settings.Sv_HazardTools()
@@ -273,6 +283,19 @@ function Game.server_onPlayerJoined( self, player, newPlayer )
 		perma = rec.perma,
 		plots = Settings.Get( "plots" ) == true,
 	} )
+
+	-- If they already own a plot from a previous session, put it back on their
+	-- compass straight away. Coming back to an event and having to remember
+	-- which square was yours is exactly the friction this removes.
+	--
+	-- Sent quietly: sv_toWorld tells the player "world not ready yet" when it
+	-- cannot deliver, and a join is the one moment where that is both possible
+	-- and completely meaningless to them.
+	local world = self:sv_world()
+	if world and sm.exists( world ) then
+		sm.event.sendToWorld( world, "sv_e_swCommand",
+			{ cmd = "/marker", args = {}, player = player } )
+	end
 end
 
 
@@ -291,6 +314,8 @@ function Game.client_welcome( self, data )
 		lines[#lines + 1] = "   2. You can only build on your own plot."
 		lines[#lines + 1] = "   3. Walk onto someone else's plot and you get pushed off."
 		lines[#lines + 1] = "   4. To build with a neighbour, both type  /plot team <them>"
+		lines[#lines + 1] = "      Only front, behind, left or right -- never corner to corner."
+		lines[#lines + 1] = "      Teams chain: team your neighbour, they team theirs, all three share."
 		lines[#lines + 1] = "      Then the gap between your plots becomes shared ground."
 	else
 		lines[#lines + 1] = "  Free build. The host may lock builds at any time."
@@ -306,6 +331,23 @@ end
 
 function Game.client_showMessage( self, text )
 	sm.gui.chatMessage( text )
+end
+
+-- The plot marker. The server says where it is; only this client is ever told,
+-- so nobody else's compass shows it -- which is the behaviour the owner wanted
+-- and, on the compass HUD, the only behaviour available.
+function Game.client_setPlotMarker( self, data )
+	if self.cl == nil then self.cl = {} end
+	if data == nil or data.position == nil then
+		self.cl.plotMarker = nil
+		PlotMarker.Cl_Hide()
+		return
+	end
+	self.cl.plotMarker = data.position
+	PlotMarker.Cl_Show( data.position )
+	if data.ping then
+		PlotMarker.Cl_Ping()
+	end
 end
 
 -- The blocked list is pushed to clients so the check can happen where the tool
@@ -396,9 +438,13 @@ function Game.client_onCreate( self )
 	sm.game.bindChatCommand( "/plot",
 		{ { "string", "action", false, { "claim", "info", "team", "leave", "list" } },
 		  { "string", "who", true } },
-		"cl_onAdminCommand", "claim | info | team <player> | leave | list" )
+		"cl_onAdminCommand", "claim | info | team <player> (front, behind, left or right) | leave | list" )
 	sm.game.bindChatCommand( "/players", {}, "cl_onAdminCommand",
 		"Who is here, with session id and permanent id" )
+	-- Everything a builder does with their own ground, on one panel. NOT host
+	-- gated: this is the command the twenty people at the event actually use.
+	sm.game.bindChatCommand( "/myplot", {}, "cl_onAdminCommand",
+		"Your plot: claim ground, find it again, see your team" )
 
 	sm.game.bindChatCommand( "/preset",
 		{ { "string", "name", true, { "build", "show", "lockdown", "sandbox" } } },
@@ -647,6 +693,8 @@ function Game.sv_n_menuOpen( self, data, player )
 		self:sv_openSettingsGui( player, "safety", 1 )
 	elseif what == "city" and isHost then
 		self:sv_openPlotsGui( player )
+	elseif what == "myplot" then
+		self:sv_toWorld( "/myplot", {}, player )
 	elseif what == "rules" then
 		self:sv_n_adminCommand( { "/rules" }, player )
 	elseif what == "help" then
@@ -654,7 +702,7 @@ function Game.sv_n_menuOpen( self, data, player )
 	elseif what == "players" then
 		self:sv_n_adminCommand( { "/players" }, player )
 	elseif what == "plot" then
-		self:sv_toWorld( "/plot", { "/plot", "info" }, player )
+		self:sv_toWorld( "/myplot", {}, player )
 	end
 end
 
@@ -679,6 +727,17 @@ function Game.sv_openPlotsGui( self, player )
 			-- with being able to see which one is yours.
 			mine = g_swPlots:sv_plotOf( Identity.Sv_PermaOf( player ) ),
 		}
+		-- The team as well, so the map can show at a glance which ground you may
+		-- build on. A team is a connected run of plots, not a pair, so it is not
+		-- something a player can work out by looking at the grid.
+		if cfg.mine then
+			cfg.team = {}
+			for index in pairs( g_swPlots:sv_teamOf( cfg.mine ) ) do
+				if index ~= cfg.mine then
+					cfg.team[tostring( index )] = true
+				end
+			end
+		end
 	else
 		cfg = Layout.config( {} )
 		cfg.claimed = {}
@@ -693,6 +752,61 @@ function Game.client_openPlotsGui( self, cfg )
 		self.cl.plotsGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
 	end
 	self.cl.plotsGui:render( PlotsGui.Build( cfg ) )
+end
+
+--[[ my plot panel ]]
+
+-- Built on the server because only the world knows what square the player is
+-- standing on, and re-sent rather than patched: the whole state is four fields
+-- and a grid, and a panel that redraws from one source cannot get out of step
+-- with the world the way an incrementally-updated one can.
+function Game.client_openMyPlotGui( self, state )
+	if self.cl == nil then self.cl = {} end
+	self.cl.myPlotState = state
+	if self.cl.myPlotGui == nil or not sm.exists( self.cl.myPlotGui ) then
+		self.cl.myPlotGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
+	end
+	self.cl.myPlotGui:render( MyPlotGui.Build( state ) )
+end
+
+function Game.cl_closeMyPlotGui( self )
+	-- A json GUI has no destroy() and no open(); render() IS the show and close()
+	-- is the hide. Measured twice, as "Unknown member 'destroy' in userdata" and
+	-- then again as "Unknown member 'open'".
+	if self.cl and self.cl.myPlotGui and sm.exists( self.cl.myPlotGui ) then
+		self.cl.myPlotGui:close()
+	end
+end
+
+function Game.cl_onMyPlotClose( self )
+	self:cl_closeMyPlotGui()
+end
+
+function Game.cl_onMyPlotClick( self, widgetName, data )
+	if type( data ) ~= "table" then return end
+	if data.action == "close" then
+		self:cl_closeMyPlotGui()
+		return
+	end
+	self.network:sendToServer( "sv_n_myPlotAction", { action = data.action } )
+	self:cl_closeMyPlotGui()
+end
+
+function Game.sv_n_myPlotAction( self, data, player )
+	if type( data ) ~= "table" then return end
+	local map = { claim = "claim", leave = "leave" }
+	if data.action == "find" then
+		self:sv_toWorld( "/home", {}, player )
+	elseif map[data.action] then
+		self:sv_toWorld( "/plot", { "/plot", map[data.action] }, player )
+	end
+end
+
+-- The world assembles the state and hands it back through here, because a world
+-- script has no network of its own.
+function Game.sv_e_swMyPlot( self, params )
+	if params.player == nil or not sm.exists( params.player ) then return end
+	self.network:sendToClient( params.player, "client_openMyPlotGui", params.state )
 end
 
 function Game.cl_onPlotsGuiClick( self, widgetName, data )
@@ -788,7 +902,10 @@ function Game.sv_n_adminCommand( self, params, player )
 		reply( "SERVER WORKS" )
 		reply( "  /plot claim         claim the plot you are stood on" )
 		reply( "  /plot info          who owns this ground" )
+		reply( "  /myplot             claim, find and give up your plot, on one panel" )
 		reply( "  /plot team <name>   ask a neighbour to team up (they type it back)" )
+		reply( "                      front, behind, left or right only -- not diagonal." )
+		reply( "                      Teams chain, so a corner joins via whoever links you." )
 		reply( "  /plot leave         give up your plot" )
 		reply( "  /home               teleport back to your own plot" )
 		reply( "  /players            who is here     /rules  the server rules" )
@@ -825,6 +942,7 @@ function Game.sv_n_adminCommand( self, params, player )
 		reply( "  6. Max " .. num( "maxbots" ) .. " cook/dress/craft bot per plot" )
 		reply( "  7. No noise pollution -- horns are " .. onoff( "horns" ) )
 		reply( "  8. Multiple people can share plots if they agree (/plot team)" )
+		reply( "     Only with the plot in front, behind, left or right of you." )
 		reply( "  9. No griefing or trolling. Bans are permanent." )
 		reply( "  10. Max " .. num( "maxjoints" ) .. " combined bearings/pistons/suspensions per plot" )
 		reply( "  11. Fireworks " .. onoff( "fireworks" ) .. ", plasma drills " .. onoff( "plasmadrills" ) )
@@ -880,10 +998,20 @@ function Game.sv_n_adminCommand( self, params, player )
 		if ok then self:sv_toWorld( "/settingschanged", params, player ) end
 
 	elseif cmd == "/players" then
+		-- The host is whoever is running the server -- sm.player.getHostPlayer()
+		-- IS that person, and it is the same test every host-only path uses. Say
+		-- so out loud, because "who has the buttons" is a fair question for a
+		-- lobby and there is no other way to find out.
 		local players = sm.player.getAllPlayers()
+		local hostPlayer = sm.player.getHostPlayer()
 		reply( string.format( "%d player(s) here:", #players ) )
 		for _, p in ipairs( players ) do
-			reply( string.format( "  id %-3d %-10s %s", p.id, Identity.Sv_PermaOf( p ) or "?", p.name ) )
+			reply( string.format( "  id %-3d %-10s %s%s", p.id,
+				Identity.Sv_PermaOf( p ) or "?", p.name,
+				p == hostPlayer and "   <- HOST" or "" ) )
+		end
+		if hostPlayer == nil then
+			reply( "  no host player -- host-only commands will refuse everyone" )
 		end
 
 	elseif cmd == "/known" then

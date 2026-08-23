@@ -10,6 +10,71 @@ was most of them.
 
 ---
 
+## V25 — the lift, for real this time
+
+### There are two lifts, and this game only had the wrong one
+
+Third attempt, and the first one built on evidence rather than inference.
+
+The game log prints the class every uuid resolves to at the moment a tool is
+created. Ours said, in every single session:
+
+    Created Tool 18 of type {8f190ce2-3a59-423e-8483-a7aa67bd5bc0(SurvivalLift)}
+
+Two things follow, and both were believed otherwise.
+
+**A Custom Game's toolset cannot override a uuid the base content declares.** It
+can only ADD. First declaration wins and the mod's is loaded last. The proof it
+is precedence and not a broken file sits in the same toolset: the nugdupS canary,
+a uuid nothing else declares, resolves exactly as written. So V19's lift override
+and V22's `GuardedClayRifle` / `GuardedPotatoLauncher` **never ran** — and what
+actually stopped the clay gun was the client-side `forceTool` guard that shipped
+in the same build and got none of the credit.
+
+**The creative lift is a different item entirely.**
+
+| uuid | class | declared by |
+|---|---|---|
+| `5cc12f03` | `Lift` | `Data/Tools/ToolSets/tools.json`, named `tool_lift_creative` at `ChallengeData/Scripts/game/challenge_tools.lua:2` |
+| `8f190ce2` | `SurvivalLift` | `Survival/Tools/ToolSets/tools.json:44` |
+
+`baseGameContent: "Survival"` loads `Survival/Tools/toolsets.json`, which never
+lists the creative index — so this game had only the survival lift, and no amount
+of Lua was going to change that. The blueprint menu the **E** key opens is
+engine-side: `GarageImportGui` driving `Data/Gui/Layouts/Lift/Lift_Import.layout`.
+
+The fix is one toolset entry adding `5cc12f03`, which is the case that provably
+works. **Unconfirmed in game** — it is a strong inference from three independent
+pieces of evidence, not a measurement.
+
+### Find my plot
+
+`g_compassHud` already exists in our game: `CreativeGame.client_onCreate` calls
+`sm.gui.createCompassHudGui()` and we call that parent. So the compass needed
+pointing at something, not building. Claiming a plot, `/home`, or joining an
+event you already own ground in now puts a marker on it. It is that client's own
+HUD, so nobody else sees it — *"only they can see it so it doesnt interfier"*
+comes free.
+
+### /myplot
+
+Claiming was a typed command, run while standing in the right square, answered by
+a line of chat that scrolls away. Now one panel: what you own, what you are
+standing on, who is on your team, a live map with your plot in green — and
+buttons to claim it, find it again, or give it up. The hint line under the
+buttons says why CLAIM will not do anything when it will not.
+
+`/players` marks the host, because "who has the buttons" is a fair question and
+there was no way to answer it.
+
+### Removed
+
+`dev/check_uuids.py` now reads `baseGameContent` and indexes only the tool
+databases that setting actually loads — which is what turns "this uuid exists
+somewhere in the install" into the useful question, "does this uuid exist in
+*our* game". It immediately found a second dead uuid: the creative sledgehammer
+`ed185725`, which our settings had been gating for nothing.
+
 ## V24 — the lift, the city, and a test harness that runs the mod
 
 ### The lift finally has the right cause, and V19's was wrong
@@ -77,6 +142,28 @@ Teaming now follows the seam rather than the grid: two plots may team up only
 when the ground between them is a **filler**. A road between them, or the plaza,
 means there is nothing to share — and that falls out of the segment list instead
 of being a second rule to keep in step.
+
+### Teams chain; links do not
+
+*"the teams shall only be able to team if the plot is either behind, front, left,
+right. nothing in between. unless another teammate connects."*
+
+Half of that already held — a link was already refused for anything but an
+orthogonal neighbour with a shared filler. The other half did not: teams were
+**pairwise**, so A–B and B–C left A and C strangers.
+
+A team is now the connected component over the link graph. A diagonal plot is a
+teammate exactly when somebody links you both, and not otherwise. A filler is
+shared across the whole team rather than only between two plots that exchanged a
+request, so a ring of four teammates no longer has a locked strip through the
+middle of its own land. Leaving cuts everyone who was only reachable through you.
+
+Refusals now say which rule you hit — "corner to corner does not count", "too far
+apart", "there is a road between you" — because "not a neighbour" is the one
+message people argue with, and diagonal *looks* adjacent.
+
+The city map paints your plot bright green and your team dark green, since a team
+is a shape you cannot work out by looking at the grid.
 
 ### The mod can now be tested without the game
 

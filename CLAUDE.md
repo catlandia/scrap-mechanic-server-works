@@ -103,6 +103,61 @@ reference and never as a performance one; that cadence is exactly what would kil
 lobby. Plot enforcement here is therefore *amortised reconciliation*, not prevention — an
 out-of-bounds block gets reverted shortly after placement, not blocked.
 
+### A Custom Game's toolset can ADD a tool. It cannot OVERRIDE one.
+
+First declaration wins, and a mod's toolset is loaded after the base content's.
+**MEASURED**, from the line the game logs whenever a tool is created:
+
+    Created Tool 18 of type {8f190ce2-3a59-423e-8483-a7aa67bd5bc0(SurvivalLift)}
+
+while `serverworks.toolset` was asking for class `Lift` on that uuid. Same for
+`6993e5df(ClayRifle)` and `a2a2bb33(PotatoLauncher)` — always the base class,
+never ours, in every session. The proof it is precedence rather than a broken
+file is in the same toolset: the nugdupS canary is a uuid nothing else declares
+and it resolves exactly as written.
+
+Two builds were spent on overrides that never executed. `grep "Created Tool"` in
+`Logs/game-*.log` settles it in one command, and `dev/check_uuids.py` now flags
+a dead entry before the game ever sees it.
+
+### `baseGameContent` decides which tool databases exist at all
+
+`"Survival"` loads `Survival/Tools/toolsets.json`; `"Creative"` and `"None"` load
+`Data/Tools/toolsets.json`. They share `core.json` and the survival spudgun/carry
+sets, and nothing else.
+
+So there are **two lifts and they are different items**:
+
+| uuid | class | declared by |
+|---|---|---|
+| `5cc12f03` | `Lift` | `Data/Tools/ToolSets/tools.json` — `tool_lift_creative` at `ChallengeData/Scripts/game/challenge_tools.lua:2` |
+| `8f190ce2` | `SurvivalLift` | `Survival/Tools/ToolSets/tools.json:44` |
+
+With `baseGameContent: "Survival"` the creative lift is **not in the game**, and
+the blueprint menu that E opens is engine-side (`GarageImportGui` driving
+`Data/Gui/Layouts/Lift/Lift_Import.layout`), so no Lua could bring it back. Our
+toolset now adds `5cc12f03`, which is the case that works.
+
+The general rule: **before blaming a script, check the uuid is even loaded.**
+
+### The compass is available and is per-player
+
+`CreativeGame.client_onCreate` calls `sm.gui.createCompassHudGui()` and stores it
+in the global `g_compassHud` (`Data/Scripts/game/CreativeGame.lua:181`), so any
+Custom Game that calls its parent inherits a working compass. Vanilla's own calls
+give the shapes:
+
+    g_compassHud:compassAddIcon( name, icon, stacking, w, h )   RaidManager.lua:1174
+    g_compassHud:compassSetIconWorldPosition( name, position )  RaidManager.lua:1175
+    g_compassHud:compassSetIconStacking( name, false )          RaidManager.lua:1176
+    g_compassHud:compassPingMarker( name, effect )              RaidManager.lua:1228
+    g_compassHud:setVisible( name, bool )                       BaseEnemyCharacter.lua:26
+    g_compassHud:compassRemoveIcon( name )                      BaseEnemyCharacter.lua:43
+
+Icons live in `Data/Gui/Resolutions/*/Compass/`. It is that client's own HUD, so
+a marker is private to one player with no work — which is the property a
+per-player plot marker needs.
+
 ### A body on the lift is REAL, and it is flagged as a ghost
 
 Selecting a creation from the blueprint menu spawns actual bodies into the world
@@ -251,6 +306,8 @@ credit it with fixing the thing that actually degraded.
     mod/Scripts/Snapshots.lua   world and per-plot capture and rollback
 
     mod/Scripts/Layout.lua      ALL city geometry, pure -- no sm.* calls at all
+    mod/Scripts/MyPlotGui.lua   the panel players use: claim, find, team, leave
+    mod/Scripts/PlotMarker.lua  "find my plot", on the game's own compass HUD
 
     dev/check_all.py            all four checks below; --sync installs afterwards
     dev/check_lua.py            compiles every mod script through a real Lua parser
@@ -312,8 +369,11 @@ to be wrong:
    `CreativePlayer` does not, and threw once per client frame → fixed by two
    overrides in `Player.lua`.
 
-   The pattern to remember: **when a creative feature silently does nothing, check whether
-   survival owns that uuid.** Our own toolset can take it back.
+   The pattern to remember: **when a creative feature silently does nothing, check
+   whether survival owns that uuid** — and then fix it in Lua, by overriding the
+   method that broke, the way `Player.lua` does. **Not by re-declaring the uuid in
+   our toolset: that does not work.** See "A Custom Game's toolset can ADD a tool"
+   above.
 
    **And the counter-example, which cost a whole version.** uuid `8f190ce2` is the
    lift, and survival does own it — `Survival/Tools/ToolSets/tools.json:44` maps it

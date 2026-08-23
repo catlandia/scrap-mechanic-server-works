@@ -118,8 +118,81 @@ function Plots.sv_plotWorldCentre( self, index )
 		( Plots.DECK_Z + 1 ) * Plots.BLOCK + 0.5 )
 end
 
+--[[ teams ]]
+--
+-- A LINK is a direct agreement between two plots, and it can only ever be made
+-- between plots that are front, behind, left or right of each other -- never
+-- diagonal, and never across a road or the plaza, because there is no shared
+-- filler there to hand over. sv_adjacent is what enforces that.
+--
+-- A TEAM is everything those links join up into. So a diagonal neighbour CAN end
+-- up on your team, but only by way of somebody who links you both:
+--
+--     A - B        A and C are teammates because B links them.
+--         |        D is nobody's teammate: the only plot it touches is C,
+--         C   D    and C never agreed to it.
+--
+-- Which is the owner's rule exactly: "only if the plot is behind, front, left,
+-- right, nothing in between, unless another teammate connects".
+--
+-- The group is a connected component over the link graph. It is worked out once
+-- and cached, because sv_authorised runs per body per patrol slice and per
+-- occupied zone per tick, and a flood fill on that path would be the one piece
+-- of genuinely hot arithmetic in the mod. Links change when somebody teams,
+-- unteams or gives up a plot -- rarely, and always through sv_dirtyTeams.
+
+function Plots.sv_dirtyTeams( self )
+	self.groups = nil
+end
+
+-- plotIndex -> a set of every plot in the same team, itself included.
+function Plots.sv_teamGroups( self )
+	if self.groups then return self.groups end
+
+	local groups, seen = {}, {}
+	for start in pairs( self.teams ) do
+		if not seen[start] then
+			-- Breadth first over the links. Bounded by the plot count, and every
+			-- plot is visited once, so this is O(plots) however tangled the
+			-- links are.
+			local group, queue, head = { [start] = true }, { start }, 1
+			seen[start] = true
+			while head <= #queue do
+				local at = queue[head]
+				head = head + 1
+				for other in pairs( self.teams[at] or {} ) do
+					if not group[other] then
+						group[other] = true
+						seen[other] = true
+						queue[#queue + 1] = other
+					end
+				end
+			end
+			for index in pairs( group ) do
+				groups[index] = group
+			end
+		end
+	end
+
+	self.groups = groups
+	return groups
+end
+
+-- Everyone on a plot's team, itself included. A plot with no links is a team of
+-- one, which keeps every caller free of a special case.
+function Plots.sv_teamOf( self, index )
+	if index == nil then return {} end
+	local g = self:sv_teamGroups()[index]
+	if g == nil then return { [index] = true } end
+	return g
+end
+
+-- Teammates, not neighbours. Two plots are teamed when they are in the same
+-- group, whether they linked directly or through somebody else.
 function Plots.sv_teamed( self, a, b )
-	return a ~= nil and b ~= nil and self.teams[a] ~= nil and self.teams[a][b] == true
+	if a == nil or b == nil then return false end
+	if a == b then return true end
+	return self:sv_teamOf( a )[b] == true
 end
 
 -- Everyone allowed to build in a zone, as a set of permaIds.
@@ -139,23 +212,29 @@ function Plots.sv_authorised( self, z )
 	end
 
 	if z.kind == "plot" then
-		add( z.index )
-		for other in pairs( self.teams[z.index] or {} ) do
+		for other in pairs( self:sv_teamOf( z.index ) ) do
 			add( other )
 		end
 		return out
 	end
 
-	-- Filler. It belongs to nobody until the two plots either side team up, and
-	-- then it belongs to both of them -- "that extra block becomes yours".
+	-- Filler. It belongs to nobody until the two plots either side are on the
+	-- same team, and then it belongs to that whole team -- "that extra block
+	-- becomes yours".
+	--
+	-- Same team rather than directly linked, deliberately. Four plots teamed in a
+	-- ring would otherwise have a locked one-block strip running through the
+	-- middle of their own land, purely because that particular pair never
+	-- exchanged a request.
 	local a = self:sv_indexAt( z.col, z.row )
 	local b = ( z.kind == "fillerX" )
 		and self:sv_indexAt( z.col + 1, z.row )
 		or self:sv_indexAt( z.col, z.row + 1 )
 
-	if self:sv_teamed( a, b ) then
-		add( a )
-		add( b )
+	if a ~= nil and b ~= nil and self:sv_teamed( a, b ) then
+		for other in pairs( self:sv_teamOf( a ) ) do
+			add( other )
+		end
 	end
 	return out
 end
@@ -315,6 +394,7 @@ function Plots.sv_release( self, perma )
 			for _, set in pairs( self.teams ) do
 				set[i] = nil
 			end
+			self:sv_dirtyTeams()
 			return true, string.format( "released plot %d", i )
 		end
 	end
@@ -357,10 +437,15 @@ function Plots.sv_request( self, fromPerma, toPerma )
 	local b = self:sv_plotOf( toPerma )
 	if a == nil then return false, "claim a plot first" end
 	if b == nil then return false, "they do not own a plot" end
+	if a == b then return false, "that is your own plot" end
 	if not self:sv_adjacent( a, b ) then
-		return false, "you can only team up with a neighbour"
+		-- Named precisely, because "not a neighbour" is the one refusal people
+		-- argue with. Diagonal is the common case and it looks adjacent.
+		return false, self:sv_whyNotNeighbours( a, b )
 	end
-	if self:sv_teamed( a, b ) then return false, "already teamed" end
+	if self:sv_teamed( a, b ) then
+		return false, "you are already on the same team"
+	end
 
 	-- Their request already pending? Then this is the acceptance.
 	if self.requests[b] and self.requests[b][a] then
@@ -369,7 +454,12 @@ function Plots.sv_request( self, fromPerma, toPerma )
 		self.teams[b] = self.teams[b] or {}
 		self.teams[a][b] = true
 		self.teams[b][a] = true
-		return true, string.format( "plots %d and %d are teamed -- the filler between you is now shared", a, b )
+		self:sv_dirtyTeams()
+		local size = 0
+		for _ in pairs( self:sv_teamOf( a ) ) do size = size + 1 end
+		return true, string.format(
+			"plots %d and %d are teamed -- the block between you is now shared. Team of %d.",
+			a, b, size )
 	end
 
 	self.requests[a] = self.requests[a] or {}
@@ -386,7 +476,31 @@ function Plots.sv_unteam( self, perma )
 		n = n + 1
 	end
 	self.teams[a] = nil
-	return true, string.format( "left %d team(s)", n )
+	self:sv_dirtyTeams()
+	-- Leaving cuts your links, and anyone who was only reachable THROUGH you is
+	-- no longer on the team either. That is the same rule read backwards, and it
+	-- is worth saying out loud so it is not a surprise.
+	return true, string.format(
+		"left the team -- %d link(s) cut", n )
+end
+
+-- Why two plots cannot link. The refusal people argue with is the diagonal one,
+-- so it gets said in words rather than as "not a neighbour".
+function Plots.sv_whyNotNeighbours( self, a, b )
+	local ca, ra = Layout.plotColRow( self.layout, a )
+	local cb, rb = Layout.plotColRow( self.layout, b )
+	if ca == nil or cb == nil then return "that plot is not on the grid" end
+
+	local dc, dr = math.abs( ca - cb ), math.abs( ra - rb )
+	if dc == 1 and dr == 1 then
+		return "corner to corner does not count -- team up with whoever is between you first"
+	end
+	if dc + dr > 1 then
+		return "too far apart -- only the plot in front, behind, left or right of you"
+	end
+	-- Orthogonal but no filler: a road or the plaza runs between them, and there
+	-- is no shared block to hand over.
+	return "there is a road between you, not a shared block -- nothing to team over"
 end
 
 function Plots.sv_describe( self, index, nameOf )
@@ -395,11 +509,17 @@ function Plots.sv_describe( self, index, nameOf )
 		return string.format( "plot %d -- unclaimed", index )
 	end
 	local mates = {}
-	for b in pairs( self.teams[index] or {} ) do
-		mates[#mates + 1] = tostring( b )
+	for b in pairs( self:sv_teamOf( index ) ) do
+		if b ~= index then mates[#mates + 1] = b end
+	end
+	table.sort( mates )
+	for i, b in ipairs( mates ) do
+		local who = self.owners[b]
+		mates[i] = string.format( "%d (%s)", b,
+			( who and nameOf( who ) ) or who or "unclaimed" )
 	end
 	return string.format( "plot %d -- %s%s", index, nameOf( owner ) or owner,
-		#mates > 0 and ( "  teamed with plot " .. table.concat( mates, ", " ) ) or "" )
+		#mates > 0 and ( "  team: " .. table.concat( mates, ", " ) ) or "" )
 end
 
 function Plots.sv_counts( self )

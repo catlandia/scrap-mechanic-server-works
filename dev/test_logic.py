@@ -495,6 +495,167 @@ def grid_survives_a_save_and_load():
     assert fresh_plots["owners"][3] == "A", "plot ownership was lost on reload"
 
 
+# ------------------------------------------------------------------ teams ---
+#
+# The owner's rule, verbatim: "the teams shall only be able to team if the plot
+# is either behind, front, left, right. nothing in between. unless another
+# teammate connects."
+#
+# Two halves. A LINK may only be made orthogonally. A TEAM is whatever those
+# links join up into, so a diagonal plot is a teammate exactly when somebody
+# links you both -- and not otherwise.
+#
+# The grid used below is 6x6 with no plaza and no roads, so every plot has a
+# filler on all four sides and nothing but the rule under test is in the way.
+#
+#     row 1:   7   8   9  10  11  12
+#     row 0:   1   2   3   4   5   6
+
+def team_grid(**over):
+    cfg = {"cols": 6, "rows": 6, "plot": 20, "gap": 1,
+           "roadevery": 0, "spawn": 0}
+    cfg.update(over)
+    lua, plots = plots_lua(cfg)
+    P = lua.globals().Plots
+    for i in range(1, 37):
+        plots["owners"][i] = f"P{i}"
+    return lua, plots, P
+
+
+def link(P, plots, a, b):
+    """Both sides run the same command, which is how a team is agreed."""
+    P.sv_request(plots, f"P{a}", f"P{b}")
+    ok, msg = P.sv_request(plots, f"P{b}", f"P{a}")
+    return ok, msg
+
+
+def teamed(P, plots, a, b):
+    r = P.sv_teamed(plots, a, b)
+    return (r[0] if isinstance(r, tuple) else r) is True
+
+
+def a_link_must_be_orthogonal():
+    lua, plots, P = team_grid()
+    for a, b, what in ((1, 2, "left/right"), (1, 7, "front/behind"),
+                       (8, 7, "left/right"), (8, 2, "front/behind")):
+        ok, msg = link(P, plots, a, b)
+        assert teamed(P, plots, a, b), f"{what} plots {a} and {b} refused to team: {msg}"
+
+
+def a_link_may_not_be_diagonal():
+    lua, plots, P = team_grid()
+    ok, msg = link(P, plots, 1, 8)          # corner to corner
+    assert not teamed(P, plots, 1, 8), (
+        "plots 1 and 8 are diagonal and were allowed to link directly")
+    assert "corner" in str(msg).lower(), (
+        f"the refusal should say why it is refused, got {msg!r}")
+
+
+def a_link_may_not_skip_a_plot():
+    lua, plots, P = team_grid()
+    link(P, plots, 1, 3)
+    assert not teamed(P, plots, 1, 3), "plots two apart were allowed to link"
+
+
+def a_teammate_can_connect_you_to_a_diagonal():
+    # 1 - 2
+    #     |      1 and 8 are diagonal. They become teammates through 2.
+    #     8
+    lua, plots, P = team_grid()
+    link(P, plots, 1, 2)
+    link(P, plots, 2, 8)
+    assert teamed(P, plots, 1, 8), (
+        "1 and 8 are joined through 2 and should be on the same team -- "
+        "'unless another teammate connects'")
+    assert teamed(P, plots, 1, 2) and teamed(P, plots, 2, 8)
+
+
+def a_plot_that_merely_touches_the_team_is_not_on_it():
+    lua, plots, P = team_grid()
+    link(P, plots, 1, 2)
+    link(P, plots, 2, 8)
+    # 9 is orthogonally next to 8, but 8 never agreed to it.
+    assert not teamed(P, plots, 9, 8), "an unlinked neighbour was treated as a teammate"
+    assert not teamed(P, plots, 9, 1), "an unlinked neighbour joined the whole team"
+
+
+def the_whole_team_may_build_on_every_plot_in_it():
+    lua, plots, P = team_grid()
+    link(P, plots, 1, 2)
+    link(P, plots, 2, 8)
+    for index in (1, 2, 8):
+        z = lua.table_from({"kind": "plot", "index": index})
+        who = set(dict(P.sv_authorised(plots, z)))
+        assert who == {"P1", "P2", "P8"}, (
+            f"plot {index} is buildable by {sorted(who)}, expected the whole team")
+    z = lua.table_from({"kind": "plot", "index": 3})
+    assert set(dict(P.sv_authorised(plots, z))) == {"P3"}, (
+        "a plot outside the team became buildable by the team")
+
+
+def a_ring_shares_the_block_in_the_middle_of_it():
+    # 1 - 2      Four plots teamed in a ring. Nobody ever ran the command
+    # |   |      between 1 and 7, but they are on the same team and the block
+    # 7 - 8      between them is inside the team's own land.
+    lua, plots, P = team_grid()
+    link(P, plots, 1, 2)
+    link(P, plots, 2, 8)
+    link(P, plots, 8, 7)
+    assert teamed(P, plots, 1, 7), "the ring did not close into one team"
+    # the filler between plot 1 (col 0,row 0) and plot 7 (col 0,row 1)
+    z = lua.table_from({"kind": "fillerY", "col": 0, "row": 0})
+    who = set(dict(P.sv_authorised(plots, z)))
+    assert who == {"P1", "P2", "P7", "P8"}, (
+        f"the block between two teammates is held by {sorted(who)} -- a locked "
+        f"strip through the middle of a team's own land")
+
+
+def leaving_cuts_everyone_who_was_only_reachable_through_you():
+    # 1 - 2 - 3, then 2 leaves. 1 and 3 were only ever joined by 2.
+    lua, plots, P = team_grid()
+    link(P, plots, 1, 2)
+    link(P, plots, 2, 3)
+    assert teamed(P, plots, 1, 3)
+    P.sv_unteam(plots, "P2")
+    assert not teamed(P, plots, 1, 3), (
+        "1 and 3 stayed teamed after the only plot joining them left")
+    assert not teamed(P, plots, 1, 2) and not teamed(P, plots, 2, 3)
+    z = lua.table_from({"kind": "plot", "index": 1})
+    assert set(dict(P.sv_authorised(plots, z))) == {"P1"}, (
+        "an old teammate still has build rights after the team broke up")
+
+
+def giving_up_a_plot_removes_it_from_its_team():
+    lua, plots, P = team_grid()
+    link(P, plots, 1, 2)
+    link(P, plots, 2, 3)
+    P.sv_release(plots, "P2")
+    assert not teamed(P, plots, 1, 3), "the team survived one of its plots being released"
+    z = lua.table_from({"kind": "plot", "index": 1})
+    assert set(dict(P.sv_authorised(plots, z))) == {"P1"}
+
+
+def teams_survive_a_restart():
+    lua, plots, P = team_grid()
+    link(P, plots, 1, 2)
+    link(P, plots, 2, 8)
+    P.Sv_SaveFile(plots)
+    saved = P.Sv_LoadFile()
+    again = lua.eval("Plots()")
+    P.sv_onCreate(again, saved)
+    assert teamed(P, again, 1, 8), (
+        "the team did not survive a reload -- a chain rebuilt as separate pairs")
+
+
+def a_team_never_crosses_the_plaza_or_a_road():
+    # With a plaza, columns 2 and 3 of a six-wide grid sit either side of it.
+    lua, plots, P = team_grid(spawn=50)
+    ok, msg = link(P, plots, 3, 4)
+    assert not teamed(P, plots, 3, 4), "a team formed across the plaza"
+    assert "road" in str(msg).lower() or "shared block" in str(msg).lower(), (
+        f"the refusal should explain what is between them, got {msg!r}")
+
+
 # -------------------------------------------------------------------- gui ---
 #
 # A json GUI is a plain nested table of rectangles, so its layout can be checked
@@ -553,7 +714,7 @@ def no_button_is_buried(label, items, H):
 
 def gui_lua():
     lua = fresh("Layout.lua", "Settings.lua", "SettingsGui.lua",
-                "PlotsGui.lua", "MenuGui.lua")
+                "PlotsGui.lua", "MenuGui.lua", "MyPlotGui.lua")
     lua.globals().Settings.Sv_Load(False)
     return lua
 
@@ -635,6 +796,51 @@ def the_city_map_never_leaves_its_box():
                 f"map cell {w['Name']} runs past the bottom of the box for {cfg}")
 
 
+def the_my_plot_panel_fits_in_every_state():
+    # The panel changes shape with what the player owns and what they are stood
+    # on, and the hint line under the buttons changes with it. Every branch.
+    lua = gui_lua()
+    G = lua.globals().MyPlotGui
+    cfg = {"plot": 20, "gap": 1, "cols": 10, "rows": 10, "roadevery": 0,
+           "roadwidth": 6, "spawn": 50, "claimed": {}}
+
+    states = [
+        ("plots off", {"plotsOn": False}),
+        ("owns nothing, off the map", {"plotsOn": True}),
+        ("owns nothing, on a free plot", {
+            "plotsOn": True,
+            "standing": {"kind": "plot", "index": 12, "free": True}}),
+        ("owns nothing, on a taken plot", {
+            "plotsOn": True,
+            "standing": {"kind": "plot", "index": 12, "free": False,
+                         "owner": "Somebody With A Long Name"}}),
+        ("owns nothing, on the plaza", {
+            "plotsOn": True, "standing": {"kind": "plaza"}}),
+        ("owns one, standing on it", {
+            "plotsOn": True, "mine": 34,
+            "standing": {"kind": "plot", "index": 34, "free": False, "mine": True}}),
+        ("owns one, big team", {
+            "plotsOn": True, "mine": 34,
+            "standing": {"kind": "road"},
+            "team": [f"plot {i} (Player {i})" for i in range(35, 41)]}),
+    ]
+    for label, extra in states:
+        state = dict(extra)
+        state["cfg"] = cfg
+        table = lua.table_from({
+            k: (lua.table_from(v) if isinstance(v, dict)
+                else (lua.table_from(list(v)) if isinstance(v, list) else v))
+            for k, v in state.items()})
+        # cfg has a nested dict of its own
+        if "cfg" in state:
+            table["cfg"] = lua.table_from({
+                k: (lua.table_from(v) if isinstance(v, dict) else v)
+                for k, v in cfg.items()})
+        root = G.Build(table)
+        items = panel_fits(f"my plot ({label})", root, G.W, G.H)
+        no_button_is_buried(f"my plot ({label})", items, G.H)
+
+
 def main():
     check("settings: schema is internally consistent", settings_schema_is_sane)
     check("settings: presets only name real keys", settings_presets_only_name_real_keys)
@@ -666,12 +872,32 @@ def main():
     check("plots: junk outside the city stays clearable", outside_the_city_is_sweepable)
     check("plots: the grid and its claims survive a restart", grid_survives_a_save_and_load)
 
+    check("teams: a link must be front, behind, left or right", a_link_must_be_orthogonal)
+    check("teams: no diagonal links", a_link_may_not_be_diagonal)
+    check("teams: no linking past a plot", a_link_may_not_skip_a_plot)
+    check("teams: a teammate can connect you to a diagonal",
+          a_teammate_can_connect_you_to_a_diagonal)
+    check("teams: merely touching a team does not join it",
+          a_plot_that_merely_touches_the_team_is_not_on_it)
+    check("teams: the whole team may build on every plot in it",
+          the_whole_team_may_build_on_every_plot_in_it)
+    check("teams: a ring shares the block in the middle of it",
+          a_ring_shares_the_block_in_the_middle_of_it)
+    check("teams: leaving cuts whoever was only reachable through you",
+          leaving_cuts_everyone_who_was_only_reachable_through_you)
+    check("teams: giving up a plot removes it from its team",
+          giving_up_a_plot_removes_it_from_its_team)
+    check("teams: teams survive a restart", teams_survive_a_restart)
+    check("teams: never across the plaza or a road", a_team_never_crosses_the_plaza_or_a_road)
+
     check("gui: the menu fits, for host and guest", the_menu_panel_fits)
     check("gui: every settings page fits and nothing is buried",
           the_settings_panel_fits_on_every_page)
     check("gui: the city panel fits at every value it can be stepped to",
           the_city_panel_fits_at_every_setting)
     check("gui: the city map stays inside its box", the_city_map_never_leaves_its_box)
+    check("gui: the my-plot panel fits in every state",
+          the_my_plot_panel_fits_in_every_state)
 
     width = max(len(n) for n in PASS + [n for n, _ in FAIL])
     for name in PASS:

@@ -31,27 +31,41 @@ log stays quiet**.
 
 It is the shape of every hard bug in this codebase, and it is instructive.
 
-*"I can't use the lift to spawn creations."* Reported twice. V19 diagnosed it as
-survival content owning the lift's uuid — `baseGameContent: "Survival"` means
-uuid `8f190ce2` resolves to `SurvivalLift` rather than creative's `Lift` — and
-re-declared the uuid in the mod's own toolset. The reasoning was sound, the
-citation was real, and **the diagnosis was wrong**: `SurvivalLift = class( Lift )`
-has exactly one live method and the rest of the file is commented out. It
-inherits all the blueprint handling. V19 swapped a working class for an identical
+*"I can't use the lift to spawn creations."* Reported three times, diagnosed
+wrongly twice, and the two wrong diagnoses are more instructive than the right
 one.
 
-The real cause was ours. Selecting a creation from the blueprint menu spawns
-**real bodies into the world, flagged as ghosts** (`Lift.client_onForceTool`
-takes body objects; `sv_n_removeGhostBody` calls `destroyCreation` on one). They
-appear in `sm.body.getAllBodies()` like anything else, and the protection patrol
-reached them within a fraction of a second and pinned
-`convertibleToDynamic = false`. A ghost that cannot convert to dynamic cannot
-become a creation.
+**Attempt 1 (V19).** Blamed survival owning the lift's uuid, and re-declared
+`8f190ce2` in the mod's own toolset. Two errors in one change. `SurvivalLift =
+class( Lift )` has exactly one live method and the rest of the file is commented
+out — it inherits all the blueprint handling, so the class was never the problem.
+And the re-declaration could not have taken effect anyway.
 
-Two things to take from it. **The engine will hand you real objects where you
-expect a preview** — anything that walks every body must skip `body:isGhost()`.
-And **"survival owns this uuid" is not the same as "survival broke this"**; read
-the subclass before blaming it.
+**Attempt 2 (V24).** Found a real bug: selecting a creation spawns **real bodies
+flagged as ghosts** (`Lift.client_onForceTool` takes body objects;
+`sv_n_removeGhostBody` calls `destroyCreation` on one), and the protection patrol
+was pinning `convertibleToDynamic = false` on them. That is fixed and it was
+worth fixing. It was probably not the whole story.
+
+**Attempt 3 (V25), the first built on measurement.** The game log prints the
+class every uuid resolves to:
+
+    Created Tool 18 of type {8f190ce2-3a59-423e-8483-a7aa67bd5bc0(SurvivalLift)}
+
+...while the toolset was asking for `Lift`. So **a Custom Game's toolset can add
+a tool but cannot override one** — first declaration wins, the mod's loads last —
+and every override written in V19 and V22 was dead code. Then: the creative lift
+is uuid `5cc12f03`, a **different item**, declared only in the toolset index that
+`baseGameContent: "Survival"` never loads. The game did not have it.
+
+Three things to take from it:
+
+- **The engine hands you real objects where you expect a preview.** Anything
+  walking every body must skip `body:isGhost()`.
+- **"Survival owns this uuid" is not "survival broke this".** Read the subclass.
+- **Before blaming a script, check the uuid is even loaded.** `dev/check_uuids.py`
+  now does that against the configured `baseGameContent`, and found a second dead
+  uuid the same day.
 
 ## The thing worth checking first
 
@@ -74,6 +88,9 @@ Examples you can verify in ten minutes against your own install:
 | Clearing a world is `shape:destroyShape()` over all bodies | `Data/Scripts/game/worlds/CreativeBaseWorld.lua:204` |
 | 1 block = 0.25 m | `Data/Scripts/game/Lift.lua:299` — `self.liftPos * 0.25` |
 | A creation on the lift is a real body flagged as a ghost | `Lift.lua:383` takes bodies, `:391` calls `destroyCreation` on one |
+| A mod toolset cannot override a base-game uuid | `grep "Created Tool" Logs/game-*.log` — always the base class |
+| The creative lift is a different item from the survival lift | `challenge_tools.lua:2` names `5cc12f03` `tool_lift_creative` |
+| The compass HUD is available to any Custom Game | `CreativeGame.lua:181` — `g_compassHud = sm.gui.createCompassHudGui()` |
 | World classes carry engine flags, not just Game classes | `LuaWorldScript.cpp`'s literal list in the exe string table |
 | `sm.game` has no tickrate/timescale knob | `python dev/dump_api.py Game` |
 | Lua cannot see a Steam ID | `python dev/dump_api.py Player`; also `grep -ri steam` over all vanilla `.lua` returns nothing |

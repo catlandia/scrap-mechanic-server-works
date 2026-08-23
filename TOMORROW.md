@@ -1,92 +1,97 @@
 # Next session
 
-V24 is installed. **Restart Scrap Mechanic** — the game reads mod content at
-startup, not on world load, and `sync_mod.py --clean-cache` has already wiped the
-compiled script cache.
+V25 is installed. **Restart Scrap Mechanic** — mod content is read at startup and
+the compiled script cache has been wiped.
 
-## Test these, in this order
-
-Everything below is a thing that could not be verified without the game. The
-things that *could* be were, and they pass — see "Already verified" at the bottom.
-
-### 1. The lift, and the real reason it was broken
-
-    /menu  ->  or just open the Creations menu and pick a blueprint
-
-Pick a saved creation out of the blueprint menu and place it. It should appear.
-
-**What changed and why.** V19 blamed survival owning the lift's uuid. That was
-wrong — `SurvivalLift = class( Lift )` with one live method, so it inherits all
-the blueprint handling. The real cause was ours: picking a creation spawns **real
-bodies flagged as ghosts**, and the protection patrol was pinning
-`convertibleToDynamic = false` on them within a fraction of a second. A ghost
-that cannot convert to dynamic cannot become a creation. Ghosts are now invisible
-to the mod everywhere.
-
-If it still fails, point at something and run:
-
-    /why
-
-It now prints `ghost=` `onLift=` `virtualLift=` `protectedByUs=` for whatever you
-are looking at. If `protectedByUs=true` while you are holding a blueprint, the
-ghost test is not catching it and that is the next thread to pull.
-
-### 2. The city, built from the middle outwards
-
-    /menu -> CITY LAYOUT -> BUILD CITY
-
-Watch the order: the pillar and the plaza go down first, then plots fill in
-outwards in rings from spawn. Check for:
-
-- the plaza sits exactly on spawn, and there is exactly **one** pillar
-- two wide avenues run out of the plaza to the city edge
-- no gaps in the streets (three vertical seams used to be missing entirely)
-- no two slabs occupying the same ground
-
-Then press **BUILD CITY a second time** without changing anything. Nothing should
-double up. That is the specific bug: the old clear found city bodies by height,
-and a slab with a build welded to it floats above the test, survived the clear,
-and got a second slab imported into it.
-
-### 3. The map matches the world
-
-Open `CITY LAYOUT` and compare the top-down map against what got built, piece for
-piece. It is now drawn from the same function the builder uses, so any difference
-at all is a bug worth reporting. Your own plot draws green.
-
-### 4. Teaming
-
-Claim a plot, have someone claim the one next door, and `/plot team <them>` both
-ways. Then try to team with someone **across the plaza** or across a road — it
-should refuse. The seam between two plots is what makes them neighbours, not
-their position in the grid.
-
-## Then, the still-untested pile
-
-- `/players`, `/rules`, `/banlist`, `/known` are still chat-only. They each want
-  a panel.
-- Frame rate. Still the thing the measurement actually pointed at, still nothing
-  done about it.
-- `PhysicsQuality`. `/protection` prints the host's value. Two sessions and
-  `dev/session_stats.py` would settle whether it matters.
-
-## Already verified, without the game
+Run this first, every time. Ten seconds, and it has caught three real bugs:
 
     python dev/check_all.py --sync
 
-That runs all four and installs afterwards:
+## 1. The lift — third attempt, first one built on evidence
 
-    check_lua.py      14/14 files compile through a real Lua parser
-    check_uuids.py    65 uuids, all resolving against the installed game
+**Look for a SECOND lift in the creative menu.** There should now be two items
+called Lift. Take the new one.
+
+Then place it and press **E**.
+
+### Why there are two
+
+The log prints the class every uuid resolves to, and ours said, every session:
+
+    Created Tool 18 of type {8f190ce2-3a59-423e-8483-a7aa67bd5bc0(SurvivalLift)}
+
+That one line settled two things that had been guessed at:
+
+- **A Custom Game's toolset cannot override a base-game uuid.** It can only ADD.
+  So V19's lift override and V22's guarded clay gun / fire launcher never ran at
+  all. (The clay gun was stopped by the client-side `forceTool` guard that shipped
+  in the same build — the subclasses got credit for someone else's work.)
+- **The creative lift is a different item.** `5cc12f03` is `tool_lift_creative`;
+  `8f190ce2` is the survival one. `baseGameContent: "Survival"` never loads the
+  toolset that declares the creative lift, so this game simply did not have it.
+
+V25 adds `5cc12f03`, which is the case that provably works. **This is a strong
+inference, not a measurement** — the thing to confirm.
+
+If E still does nothing, the next thing to read is the log line above: run
+`grep "Created Tool" Logs/game-*.log` and see which lift you were holding.
+
+## 2. Find my plot
+
+Claim a plot, then look at your compass. There should be a marker on it.
+
+- `/myplot` → **FIND MY PLOT**, or just `/home`
+- It follows claiming, giving up a plot, and rejoining an event
+- It is your own HUD, so nobody else can see it
+
+## 3. /myplot
+
+The panel for claiming. One place for: what you own, what square you're standing
+on, who's on your team, a live map with your plot in green — and buttons to claim,
+find, or give up. The line under the buttons says why CLAIM is doing nothing when
+it is.
+
+Worth checking the hint line is honest in each case: standing nowhere, standing on
+a free plot, standing on someone else's, already owning one.
+
+## 4. The city (V24, still unconfirmed by eye)
+
+The log says `city built: 100 plots, 0 failed` — three times, where it used to
+skip 16 for the plaza. So the geometry is right. Still worth looking at:
+
+- one pillar, under the plaza, and no others
+- two wide avenues running out of the plaza to the city edge
+- no gaps in the streets — three vertical seams used to be missing entirely
+- **press BUILD CITY twice.** Nothing should double up.
+
+## 5. Teams
+
+`/plot team <them>`, both ways. Front, behind, left, right — never diagonal.
+Then have a third person team the second, and check the first and third are now
+teammates: teams chain, links don't. Across a road or the plaza it should refuse
+and say which.
+
+## Still not done
+
+- `/rules`, `/banlist`, `/known` are still chat-only.
+- Frame rate. What the measurement pointed at on day one; still nothing done.
+- `PhysicsQuality`. `/protection` prints the host's value. Two sessions and
+  `dev/session_stats.py` would settle it.
+- Quest markers and invites — parked, as agreed.
+
+## Verified without the game
+
+    check_lua.py      16/16 files compile through a real Lua parser
+    check_uuids.py    67 uuids, all resolving in THIS baseGameContent
     test_layout.py    12 city configurations, every block rasterised
-    test_logic.py     26 checks over settings, bans, profiles, plots and panels
+    test_logic.py     38 checks: settings, bans, profiles, plots, teams, panels
 
-Run it before any test session. They execute the mod's own Lua rather than
-a Python restatement of it, so a pass means the rules themselves are sound —
-what remains is everything that touches a body, a tool, a GUI or the network.
+These run the mod's own Lua, not a Python restatement of it. A pass means the
+rules are sound; everything touching a body, a tool, a GUI or the network is
+still only as good as the citations.
 
 ## The rule that keeps paying
 
-**Read the log first.** `Logs/game-*.log` in the game folder. Every hard bug this
-project has had was named outright by it — except this one, which named nothing
-at all, which is exactly why it took three attempts.
+**Read the log first.** Every hard bug this project has had was named by
+`Logs/game-*.log` — including this one, which had been sitting in a
+`Created Tool` line for three builds before anyone looked at it.

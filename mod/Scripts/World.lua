@@ -550,7 +550,11 @@ function World.sv_e_swCommand( self, params )
 		g_swPlots.owners = {}
 		g_swPlots.teams = {}
 		g_swPlots.requests = {}
+		g_swPlots:sv_dirtyTeams()
 		Plots.Sv_SaveFile( g_swPlots )
+		-- Every claim just went away, so every compass marker is pointing at
+		-- somebody else's ground until it is cleared.
+		self:sv_refreshAllMarkers()
 		self:sv_broadcast( "City layout changed. All plot claims cleared." )
 		self:sv_buildFloor( reply )
 
@@ -605,7 +609,80 @@ function World.sv_e_swCommand( self, params )
 
 	elseif cmd == "/home" then
 		self:sv_home( player, reply )
+
+	elseif cmd == "/myplot" then
+		self:sv_openMyPlot( player )
+
+	elseif cmd == "/marker" then
+		-- Not a chat command; sent by Game when a player joins.
+		self:sv_refreshMarker( player, false )
 	end
+end
+
+--[[ the my-plot panel ]]
+
+-- Everything the panel shows, gathered in one place. Built on the server because
+-- only the world knows what square a player is standing on -- the Game script
+-- has no world and cannot ask.
+function World.sv_openMyPlot( self, player )
+	local perma = Identity.Sv_PermaOf( player )
+	local mine = perma and g_swPlots:sv_plotOf( perma ) or nil
+
+	local standing = nil
+	local character = player:getCharacter()
+	if character and sm.exists( character ) then
+		local z = g_swPlots:sv_locate( character.worldPosition )
+		if z then
+			standing = { kind = z.kind }
+			if z.kind == "plot" then
+				local owner = g_swPlots.owners[z.index]
+				standing.index = z.index
+				standing.free = owner == nil
+				standing.mine = owner ~= nil and owner == perma
+				standing.owner = owner and ( Identity.Sv_NameOf( owner ) or owner ) or nil
+			end
+		end
+	end
+
+	-- The team as names, because "plot 34" means nothing to the person reading it
+	-- and the name of the neighbour they just agreed with means everything.
+	local team = {}
+	if mine then
+		local list = {}
+		for index in pairs( g_swPlots:sv_teamOf( mine ) ) do
+			if index ~= mine then list[#list + 1] = index end
+		end
+		table.sort( list )
+		for _, index in ipairs( list ) do
+			local owner = g_swPlots.owners[index]
+			team[#team + 1] = string.format( "plot %d (%s)", index,
+				owner and ( Identity.Sv_NameOf( owner ) or owner ) or "unclaimed" )
+		end
+	end
+
+	local g = g_swPlots.grid
+	local claimed = {}
+	for index, owner in pairs( g_swPlots.owners ) do
+		claimed[tostring( index )] = Identity.Sv_NameOf( owner ) or owner
+	end
+	local teamSet = {}
+	if mine then
+		for index in pairs( g_swPlots:sv_teamOf( mine ) ) do
+			if index ~= mine then teamSet[tostring( index )] = true end
+		end
+	end
+
+	sm.event.sendToGame( "sv_e_swMyPlot", { player = player, state = {
+		plotsOn = g_swPlots.enabled == true,
+		mine = mine,
+		standing = standing,
+		team = team,
+		cfg = {
+			plot = g.plot, gap = g.gap, cols = g.cols, rows = g.rows,
+			roadevery = g.roadevery, roadwidth = g.roadwidth, spawn = g.spawn,
+			claimed = claimed, mine = mine, team = teamSet,
+		},
+	} } )
 end
 
 function World.sv_plotCommand( self, args, player, reply )
@@ -636,6 +713,7 @@ function World.sv_plotCommand( self, args, player, reply )
 		reply( detail )
 		if ok then
 			Plots.Sv_SaveFile( g_swPlots )
+			self:sv_refreshMarker( player, true )
 			self:sv_broadcast( string.format( "%s claimed plot %d.", player.name, here.index ) )
 		end
 
@@ -682,7 +760,11 @@ function World.sv_plotCommand( self, args, player, reply )
 		reply( detail )
 		local released, detail2 = g_swPlots:sv_release( perma )
 		reply( detail2 )
-		if ok or released then Plots.Sv_SaveFile( g_swPlots ) end
+		if ok or released then
+			Plots.Sv_SaveFile( g_swPlots )
+			-- The compass must stop pointing at ground that is not theirs.
+			self:sv_refreshMarker( player, false )
+		end
 
 	elseif action == "list" then
 		local claimed, total = g_swPlots:sv_counts()
@@ -696,6 +778,24 @@ end
 -- Player-vs-player collision cannot be turned off (see Settings.lua for the
 -- evidence), so people do get shoved and flung. This does not prevent that, it
 -- undoes it.
+-- Point a player's compass at their own plot, or clear it if they have none.
+-- Called whenever the answer could have changed: on join, on claim, on release,
+-- and when the city is relaid under everybody.
+function World.sv_refreshMarker( self, player, ping )
+	if player == nil or not sm.exists( player ) then return end
+	local perma = Identity.Sv_PermaOf( player )
+	local index = perma and g_swPlots:sv_plotOf( perma )
+	local pos = index and g_swPlots:sv_plotWorldCentre( index ) or nil
+	sm.event.sendToGame( "sv_e_swMarker",
+		{ player = player, position = pos, ping = ping == true } )
+end
+
+function World.sv_refreshAllMarkers( self )
+	for _, player in ipairs( sm.player.getAllPlayers() ) do
+		self:sv_refreshMarker( player, false )
+	end
+end
+
 function World.sv_home( self, player, reply )
 	local perma = Identity.Sv_PermaOf( player )
 	local index = perma and g_swPlots:sv_plotOf( perma )
@@ -714,7 +814,11 @@ function World.sv_home( self, player, reply )
 		return
 	end
 	local ok = pcall( function() character:setWorldPosition( pos ) end )
-	reply( ok and string.format( "sent you to plot %d", index ) or "teleport failed" )
+	-- Light the compass whether or not the teleport worked: "find my plot" is
+	-- the more useful half of this command, and it is the half that cannot fail.
+	self:sv_refreshMarker( player, true )
+	reply( ok and string.format( "sent you to plot %d -- marked on your compass", index )
+		or "teleport failed, but your plot is marked on your compass" )
 end
 
 

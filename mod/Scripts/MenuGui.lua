@@ -50,8 +50,8 @@ local function button( name, caption, x, y, w, h, skin, data, font )
 end
 
 MenuGui.ENTRIES = {
-	{ action = "plot", label = "MY PLOT",
-	  help = "who owns the ground you are stood on", host = false },
+	{ action = "myplot", label = "MY PLOT",
+	  help = "claim ground, find it again, see your team", host = false },
 	{ action = "rules", label = "SERVER RULES",
 	  help = "the limits currently in force", host = false },
 	{ action = "players", label = "WHO IS HERE",

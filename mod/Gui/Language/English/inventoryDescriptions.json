@@ -3,5 +3,10 @@
 		"title": "nugdupS",
 		"upperCaseTitle": "NUGDUPS",
 		"description": "A Spud Gun, backwards. This item exists for one reason: if you can see it in the creative menu, mod content updates are reaching the game. If it is missing, they are not."
+	},
+	"5cc12f03-275e-4c8e-b013-79fc0f913e1b": {
+		"title": "Lift",
+		"upperCaseTitle": "LIFT",
+		"description": "The creative lift. Build on it to make creations that are not fixed to the ground, raise and lower them, and flip one back upright. This is the lift that opens the creations menu, which the survival lift does not."
 	}
 }

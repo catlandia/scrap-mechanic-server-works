@@ -74,10 +74,11 @@ local TOOLS = {
 	cornades = { sm.uuid.new( "f978a804-0685-4c3e-b282-cedec6140f33" ) },
 
 	-- default ON
-	sledgehammer = {
-		sm.uuid.new( "bb641a4f-e391-441c-bc6d-0ae21a069476" ),
-		sm.uuid.new( "ed185725-ea12-43fc-9cd7-4295d0dbf88b" ),   -- creative variant
-	},
+	-- Only the survival sledgehammer. The creative variant is uuid ed185725, and
+	-- baseGameContent "Survival" never loads Data/Tools/ToolSets/tools.json, so
+	-- that item does not exist in this game at all -- naming it here was a uuid
+	-- that could never match anything. dev/check_uuids.py found it.
+	sledgehammer = { sm.uuid.new( "bb641a4f-e391-441c-bc6d-0ae21a069476" ) },
 	-- Names below are the IN-GAME titles from
 	-- Survival/Gui/Language/English/inventoryDescriptions.json, not the script
 	-- class names. That distinction matters: uuid a2a2bb33 has the script class
@@ -94,7 +95,15 @@ local TOOLS = {
 	painttool = { sm.uuid.new( "c60b9627-fc2b-4319-97c5-05921cb976c6" ) },
 	connecttool = { sm.uuid.new( "8c7efc37-cd7c-4262-976e-39585f8527bf" ) },
 	weldtool = { sm.uuid.new( "fdb8b8be-96e7-4de0-85c7-d2f42e4f33ce" ) },
-	lift = { sm.uuid.new( "8f190ce2-3a59-423e-8483-a7aa67bd5bc0" ) },
+	-- BOTH lifts. They are different items: 5cc12f03 is the creative lift
+	-- (tool_lift_creative, class Lift) and 8f190ce2 is the survival one
+	-- (SurvivalLift). baseGameContent "Survival" only ships the second, so our
+	-- toolset adds the first -- and a gate that named one of them would let the
+	-- other straight through.
+	lift = {
+		sm.uuid.new( "5cc12f03-275e-4c8e-b013-79fc0f913e1b" ),
+		sm.uuid.new( "8f190ce2-3a59-423e-8483-a7aa67bd5bc0" ),
+	},
 	glowsticks = { sm.uuid.new( "9506abb9-e415-4229-a824-28a479cca788" ) },
 }
 

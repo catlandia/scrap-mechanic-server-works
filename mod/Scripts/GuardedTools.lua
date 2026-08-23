@@ -1,66 +1,38 @@
--- GuardedTools -- tools that cannot fire, rather than tools we keep confiscating.
+-- GuardedTools -- what is left of an idea that did not work, and why.
 --
--- MEASURED: "took firelauncher from CyberSlime2077" twelve times in one second.
--- The strip was working perfectly and achieving nothing, because CreativeGame
--- sets enableLimitedInventory = false. A creative inventory is INFINITE -- there
--- is no slot to empty, so removal is meaningless and forceTool only unequips
--- something the player picks straight back up.
+-- V22 subclassed ClayRifle and PotatoLauncher, held their fire buttons shut, and
+-- pointed our toolset at the subclasses. It looked right, the clay gun did stop
+-- firing, and the whole thing was recorded as the fix.
 --
--- So stop fighting over the item and disable the tool itself. V19 proved a
--- Custom Game's toolset can re-declare a vanilla uuid and win (that is how the
--- creative lift came back), so the same trick points a banned tool at a subclass
--- of its real script with the trigger held shut.
+-- IT NEVER RAN.
 --
--- Subclassing rather than replacing keeps the setting meaningful: when the tool
--- is allowed, every callback goes straight through to the real implementation
--- and it behaves exactly as vanilla. When it is not, the fire buttons are
--- swallowed and nothing else changes -- it still draws, still holds, still
--- animates, it just will not shoot.
+-- MEASURED, from the game log, which prints the class each uuid actually
+-- resolved to at the moment a tool is created:
 --
--- g_swBlockedNames is set on each client by Game.client_setBlockedTools.
-
-dofile( "$SURVIVAL_DATA/Scripts/game/tools/ClayRifle.lua" )
-dofile( "$SURVIVAL_DATA/Scripts/game/tools/PotatoLauncher.lua" )
+--   Created Tool 18 of type {8f190ce2-3a59-423e-8483-a7aa67bd5bc0(SurvivalLift)}
+--
+-- while our toolset was asking for class Lift on that uuid. Same story for
+-- 6993e5df(ClayRifle) and a2a2bb33(PotatoLauncher) -- always the base class,
+-- never ours, in every session.
+--
+-- A Custom Game's toolset can ADD a tool. It cannot OVERRIDE one the base
+-- content already declares: the first declaration wins and the mod's is loaded
+-- last. The proof that it is precedence and not a broken file is sitting in the
+-- same toolset -- the nugdupS canary, a uuid nothing else declares, resolves
+-- exactly as written.
+--
+-- So what actually stopped the clay gun? Game.client_onFixedUpdate, which calls
+-- sm.tool.forceTool( nil ) on the client the instant a blocked uuid appears in
+-- the player's hands. V22 moved that check from the server to the client in the
+-- same build, and THAT is the change that worked. The subclasses were along for
+-- the ride and got the credit.
+--
+-- The lesson worth keeping: two changes shipped together, one of them explains
+-- the result, and picking the more interesting one is how a mod ends up carrying
+-- code that has never executed.
+--
+-- What survives is this table. Nothing reads it any more except as the default
+-- Game.client_setBlockedTools overwrites, but it is declared here so the name
+-- has one obvious home.
 
 g_swBlockedNames = g_swBlockedNames or {}
-
-local function blocked( name )
-	return g_swBlockedNames[name] == true
-end
-
--- One message per equip, not one per frame.
-local function warnOnce( self, name )
-	if self.swWarned then return end
-	self.swWarned = true
-	sm.gui.chatMessage( string.format( "The %s is disabled on this server.", name ) )
-end
-
-
---[[ clay gun ]]
-
-GuardedClayRifle = class( ClayRifle )
-
-function GuardedClayRifle.client_onEquippedUpdate( self, primaryState, secondaryState, f )
-	if blocked( "claygun" ) then
-		warnOnce( self, "clay gun" )
-		-- true, true means "handled" -- the buttons are consumed and the real
-		-- fire path never runs.
-		return true, true
-	end
-	self.swWarned = nil
-	return ClayRifle.client_onEquippedUpdate( self, primaryState, secondaryState, f )
-end
-
-
---[[ fire launcher ]]
-
-GuardedPotatoLauncher = class( PotatoLauncher )
-
-function GuardedPotatoLauncher.client_onEquippedUpdate( self, primaryState, secondaryState, f )
-	if blocked( "firelauncher" ) then
-		warnOnce( self, "fire launcher" )
-		return true, true
-	end
-	self.swWarned = nil
-	return PotatoLauncher.client_onEquippedUpdate( self, primaryState, secondaryState, f )
-end
