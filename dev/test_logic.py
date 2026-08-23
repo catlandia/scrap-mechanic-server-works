@@ -896,7 +896,8 @@ def every_caption_can_be_drawn():
 
     for phase in ("off", "prep", "build", "ended"):
         collect(f"eventhud/{phase}", lua.globals().EventHud.Build(
-            lua.table_from({"phase": phase, "remaining": 754.0, "panic": phase == "build"})))
+            lua.table_from({"phase": phase, "remaining": 754.0, "panic": phase == "build"}),
+            1920, 1080))
 
     assert captions, "no captions collected -- the panels built nothing"
 
@@ -1125,6 +1126,72 @@ def the_my_plot_panel_fits_in_every_state():
                 f"PlotsGui.AddMap is not being reached")
 
 
+def the_event_hud_sits_in_the_top_right_at_any_resolution():
+    # MEASURED failure: with Anchor = "TopRight" the clock landed in the middle
+    # left of a 2560x1080 screen. "TopRight" is in the executable's string table
+    # but is not a value this anchor accepts, and the widget was centred instead.
+    #
+    # So the root is the whole display and the content sits at its top right
+    # corner, which needs no anchor beyond "Center" -- the one that works.
+    lua = gui_lua()
+    G = lua.globals().EventHud
+    RESOLUTIONS = [
+        (1920, 1080, "16:9"),
+        (2560, 1080, "ultrawide -- the owner's monitor"),
+        (3840, 2160, "4K"),
+        (1280, 720,  "720p"),
+        (1024, 768,  "4:3"),
+        (1693, 693,  "the canvas size implied by the screenshot"),
+    ]
+    for w, h, label in RESOLUTIONS:
+        root = G.Build(lua.table_from({"phase": "build", "remaining": 754.0}), w, h)
+
+        assert int(root["width"]) == w and int(root["height"]) == h, (
+            f"{label}: the root is {int(root['width'])}x{int(root['height'])}, "
+            f"not the {w}x{h} screen -- it must cover the display exactly")
+        assert root["Anchor"] == "Center", (
+            f"{label}: root anchored {root['Anchor']!r}; only Center is known to work")
+
+        items = walk(root, [])[1:]
+        assert items, f"{label}: the HUD drew nothing"
+
+        # every piece inside the panel, and the panel in the top-right corner
+        right = max(i["x"] + i["w"] for i in items)
+        top = min(i["y"] for i in items)
+        left = min(i["x"] for i in items)
+        bottom = max(i["y"] + i["h"] for i in items)
+
+        assert right <= w, f"{label}: content runs {right - w} past the right edge"
+        assert left >= 0 and top >= 0, f"{label}: content starts off screen at ({left},{top})"
+        assert bottom <= h, f"{label}: content runs {bottom - h} past the bottom"
+
+        margin = int(G.MARGIN)
+        assert abs((w - right) - margin) <= 1, (
+            f"{label}: {w - right}px from the right edge, expected {margin} -- "
+            f"not in the corner")
+        assert abs(top - margin) <= 1, (
+            f"{label}: {top}px from the top, expected {margin}")
+        # and it must be in the RIGHT half, which is the whole point
+        assert left > w / 2, (
+            f"{label}: the clock starts at x={left} on a {w}-wide screen -- "
+            f"that is the left half")
+
+
+def the_event_hud_reads_correctly_in_every_phase():
+    lua = gui_lua()
+    G = lua.globals().EventHud
+    for phase, want in (("off", "--:--"), ("prep", "09:14"),
+                        ("build", "09:14"), ("ended", "TIME")):
+        root = G.Build(lua.table_from({"phase": phase, "remaining": 554.0}), 1920, 1080)
+        caps = [i["caption"] for i in walk_full(root) if i["caption"]]
+        assert want in caps, f"{phase}: clock reads {caps}, expected {want!r} among them"
+    # paused says so, in place of the hint
+    root = G.Build(lua.table_from({"phase": "build", "remaining": 60.0, "paused": True}),
+                   1920, 1080)
+    caps = " ".join(str(i["caption"]) for i in walk_full(root) if i["caption"])
+    assert "PAUSED" in caps, f"a paused clock does not say so: {caps!r}"
+
+
 def main():
     check("settings: schema is internally consistent", settings_schema_is_sane)
     check("settings: presets only name real keys", settings_presets_only_name_real_keys)
@@ -1183,6 +1250,11 @@ def main():
     check("event: each time call happens once", each_time_call_happens_once)
     check("event: the clock reads the way a clock should", the_clock_reads_the_way_a_clock_should)
     check("event: the per-second broadcast stays small", the_client_state_is_small_and_complete)
+
+    check("hud: the clock sits in the top right at any resolution",
+          the_event_hud_sits_in_the_top_right_at_any_resolution)
+    check("hud: the clock reads correctly in every phase",
+          the_event_hud_reads_correctly_in_every_phase)
 
     check("fonts: every caption can actually be drawn", every_caption_can_be_drawn)
 

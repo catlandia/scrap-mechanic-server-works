@@ -592,7 +592,22 @@ function Game.cl_updateEventHud( self )
 		end
 		local shown = { phase = e.phase, remaining = left,
 			paused = e.paused, panic = e.panic }
-		pcall( function() self.cl.eventHud:render( EventHud.Build( shown ) ) end )
+		-- Re-read the screen size on every render rather than caching it: the
+		-- player can change resolution or alt-tab out of fullscreen mid-event,
+		-- and a cached size would leave the clock stranded off the edge.
+		local sw, sh = EventHud.ScreenSize()
+		-- Once per session, so the GUI canvas size stops being something we infer
+		-- from a screenshot. Every fixed-size panel in this mod is declared in
+		-- these units -- SettingsGui is 1120x690 -- so if this ever prints a
+		-- height near or below 690 those panels are overflowing the screen and
+		-- that is why a button is unreachable.
+		if not self.cl.screenLogged then
+			self.cl.screenLogged = true
+			sm.log.info( string.format(
+				"[ServerWorks] gui canvas %gx%g (panels are declared in these units)",
+				sw, sh ) )
+		end
+		pcall( function() self.cl.eventHud:render( EventHud.Build( shown, sw, sh ) ) end )
 	end
 
 	--[[ the warehouse timer ]]
