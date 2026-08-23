@@ -93,6 +93,36 @@ def write_slot(data, index, item_uuid, quantity, tool_instance=NO_TOOL):
     return bytes(out)
 
 
+# --- tools -------------------------------------------------------------------
+# A tool in an inventory is not just a uuid: the slot's tool field holds a row id
+# in the Tool table, and that row carries the actual item uuid. Writing a tool
+# with 0xFFFFFFFF there gives an item the game cannot bind a script to.
+#
+# Tool.data, 27 bytes: header[0:7] = version 0x08, 0x0001, row id (4, big-endian)
+#                      uuid[7:23]  = REVERSED, same as containers
+#                      tail[23:27] = 0x00000001
+#
+# Game.uniqueIds is 18 big-endian uint32 allocators; index 8 is the next Tool id.
+# It has to be bumped or the game will later hand out an id that already exists.
+TOOL_LEN = 27
+TOOL_ID_INDEX = 8
+
+
+def tool_row(row_id, item_uuid):
+    return (bytes([0x08, 0x00, 0x01]) + row_id.to_bytes(4, "big")
+            + rev(item_uuid) + (1).to_bytes(4, "big"))
+
+
+def read_allocators(con):
+    blob = con.execute("SELECT uniqueIds FROM Game").fetchone()[0]
+    return [int.from_bytes(blob[i:i + 4], "big") for i in range(0, len(blob), 4)]
+
+
+def write_allocators(con, vals):
+    con.execute("UPDATE Game SET uniqueIds=?",
+                (b"".join(v.to_bytes(4, "big") for v in vals),))
+
+
 def containers(db, writable=False):
     mode = "" if writable else "?mode=ro"
     con = sqlite3.connect(f"file:{db}{mode}", uri=True)
@@ -108,6 +138,7 @@ def main():
     ap.add_argument("--count", type=int, default=1)
     ap.add_argument("--to-holders-of")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--manifest", help="json list of {uuid, count, tool}")
     a = ap.parse_args()
 
     if not os.path.isfile(a.save):
@@ -141,6 +172,62 @@ def main():
                 if u != NIL:
                     print(f"    {i:2d} x{q:<4d} {names.get(u.lower(), u)}"
                           + (f"  [tool #{tool}]" if tool != NO_TOOL else ""))
+        return
+
+    if a.manifest:
+        wanted = json.load(open(a.manifest, encoding="utf-8"))
+        con = containers(a.save, writable=True) if a.apply else containers(a.save)
+        rows2 = dict(list(con.execute("SELECT id, data FROM Container")))
+        allocs = read_allocators(con)
+        next_tool = allocs[TOOL_ID_INDEX]
+        new_tools = []
+
+        for cid, _ in holders:
+            d = rows2[cid]
+            _, real, slots = parse(d)
+            for want in wanted:
+                u, n = want["uuid"], int(want["count"])
+                nm = names.get(u.lower(), u)
+                tool_id = NO_TOOL
+                if want.get("tool"):
+                    tool_id = next_tool
+                    new_tools.append((tool_id, u))
+                    next_tool += 1
+
+                idx = next((i for i, (su, _, _) in enumerate(slots)
+                            if su.lower() == u.lower()), None)
+                if idx is None:
+                    idx = next((i for i, (su, _, q) in enumerate(slots)
+                                if su == NIL and q == 0), None)
+                if idx is None:
+                    print(f"  !! no slot left for {nm}")
+                    continue
+                d = write_slot(d, idx, u, min(65535, n), tool_id)
+                _, real, slots = parse(d)
+                print(f"  slot {idx:2d}  x{n:<5d} {nm}"
+                      + (f"  [new tool row {tool_id}]" if tool_id != NO_TOOL else ""))
+            rows2[cid] = d
+
+        if not a.apply:
+            print("dry run -- re-run with --apply to write")
+            con.close()
+            return
+
+        backup = a.save + ".bak2"
+        if not os.path.exists(backup):
+            shutil.copy2(a.save, backup)
+            print(f"backed up -> {os.path.basename(backup)}")
+        for tid, u in new_tools:
+            con.execute("INSERT OR REPLACE INTO Tool (id, data) VALUES (?,?)",
+                        (tid, tool_row(tid, u)))
+        allocs[TOOL_ID_INDEX] = next_tool
+        write_allocators(con, allocs)
+        for cid, _ in holders:
+            con.execute("UPDATE Container SET data=? WHERE id=?", (rows2[cid], cid))
+        con.commit()
+        con.close()
+        print(f"wrote {len(holders)} container(s), {len(new_tools)} tool row(s), "
+              f"next Tool id now {next_tool}")
         return
 
     if not a.give:
