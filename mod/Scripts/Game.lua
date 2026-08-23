@@ -8,6 +8,8 @@ dofile( "$CONTENT_DATA/Scripts/SettingsGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/PlotsGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/GuardedTools.lua" )
 dofile( "$CONTENT_DATA/Scripts/MenuGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/Event.lua" )
+dofile( "$CONTENT_DATA/Scripts/EventHud.lua" )
 dofile( "$CONTENT_DATA/Scripts/MyPlotGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/PlotMarker.lua" )
 -- IndexWidgets and friends. BasePlayer pulls this in too, but relying on load
@@ -55,6 +57,7 @@ local WORLD_COMMANDS = {
 local PLAYER_COMMANDS = {
 	["/sw"] = true, ["/swhelp"] = true, ["/plot"] = true, ["/players"] = true,
 	["/rules"] = true, ["/home"] = true, ["/menu"] = true, ["/myplot"] = true,
+	["/tool"] = true,
 }
 
 -- How many words a player name may contain. bindChatCommand splits arguments on
@@ -124,6 +127,17 @@ function Game.server_onCreate( self )
 	self.sv.hazardTools = Settings.Sv_HazardTools()
 	self.sv.hostOnlyTools = Settings.Sv_HostOnlyTools()
 	self.sv.pendingRestore = nil
+
+	-- The event clock. Loaded from its own file rather than the Game script's
+	-- storage, for the same reason Plots is: it has to be readable the instant
+	-- the world asks, without depending on save ordering.
+	g_swEvent = Event()
+	g_swEvent:sv_onCreate( Event.Sv_LoadFile() )
+	self.sv.nextEventPush = 0
+	if g_swEvent:sv_running() then
+		sm.log.info( string.format( "[ServerWorks] event resumed: %s, %s left",
+			g_swEvent.phase, Event.Clock( g_swEvent:sv_remaining() ) ) )
+	end
 end
 
 -- CreativeGame drops new players at 16,16, which with a centred city is somebody
@@ -178,6 +192,23 @@ function Game.sv_e_swMarker( self, params )
 		{ position = params.position, ping = params.ping } )
 end
 
+-- /buildtime is an alias now, forwarded from the world because that is where the
+-- command still lands.
+function Game.sv_e_swBuildTime( self, params )
+	if g_swEvent == nil then return end
+	local minutes = tonumber( params.minutes ) or 0
+	if minutes <= 0 then
+		g_swEvent:sv_stop()
+		Settings.Sv_SetQuiet( "buildopen", true )
+		self:sv_applyEventPhase( "off" )
+	else
+		local _, phase = g_swEvent:sv_start( 0, minutes )
+		self:sv_applyEventPhase( phase )
+	end
+	Event.Sv_SaveFile( g_swEvent )
+	self:sv_pushEvent()
+end
+
 function Game.sv_e_swToolsChanged( self, params )
 	self.sv.blockedTools = Settings.Sv_BlockedTools()
 	self.sv.hazardTools = Settings.Sv_HazardTools()
@@ -199,6 +230,7 @@ function Game.server_onFixedUpdate( self, dt )
 	local tick = sm.game.getCurrentTick()
 	self:sv_checkToolGuard( tick )
 	self:sv_flushKicks()
+	self:sv_tickEvent( tick )
 
 	-- Re-read the ban file so a tool outside the game can push a ban mid-event.
 	if tick >= self.sv.nextBanReload then
@@ -244,6 +276,149 @@ function Game.sv_checkToolGuard( self, tick )
 	Settings.Sv_CheckTools( hosts, self.sv.hazardTools or {}, drop )
 end
 
+--[[ the event clock ]]
+
+-- Runs on the server every tick. Three jobs: cross a phase boundary when the
+-- deadline passes, make the "N minutes left" calls, and keep every client's HUD
+-- fed. Only the first two do anything most ticks.
+function Game.sv_tickEvent( self, tick )
+	if g_swEvent == nil then return end
+
+	local moved = g_swEvent:sv_advance()
+	if moved then
+		Event.Sv_SaveFile( g_swEvent )
+		self:sv_applyEventPhase( moved )
+		self:sv_pushEvent()
+		return
+	end
+
+	local call = g_swEvent:sv_dueCall()
+	if call then
+		Event.Sv_SaveFile( g_swEvent )
+		self:sv_broadcast( string.format( "%d minute%s of build time left.",
+			call, call == 1 and "" or "s" ) )
+	end
+
+	-- One small message a second, which is all a clock that shows whole seconds
+	-- can use. Clients interpolate between them; see Game.cl_eventRemaining.
+	if tick >= self.sv.nextEventPush then
+		self.sv.nextEventPush = tick + TICKS_PER_SECOND
+		self:sv_pushEvent()
+	end
+end
+
+function Game.sv_pushEvent( self, player )
+	if g_swEvent == nil then return end
+	local state = g_swEvent:sv_clientState()
+	if player then
+		self.network:sendToClient( player, "client_setEvent", state )
+	else
+		self.network:sendToClients( "client_setEvent", state )
+	end
+end
+
+-- What each phase actually DOES. Building is a body-level thing, so the work
+-- itself happens in the world; this decides and announces, and forwards.
+--
+-- The event owns `buildopen` while it is running. A host who wants manual
+-- control back stops the event -- two things quietly fighting over one setting
+-- is worse than one of them plainly winning.
+function Game.sv_applyEventPhase( self, phase )
+	local open = ( phase == "build" )
+	Settings.Sv_SetQuiet( "buildopen", open )
+
+	local world = self:sv_world()
+	if world and sm.exists( world ) then
+		sm.event.sendToWorld( world, "sv_e_swEventPhase", { phase = phase } )
+	end
+
+	if phase == "prep" then
+		self:sv_broadcast( string.format(
+			"PREP TIME -- %s. Claim a plot now; building opens when the clock runs out.",
+			Event.Clock( g_swEvent:sv_remaining() ) ) )
+	elseif phase == "build" then
+		self:sv_broadcast( string.format( "BUILD TIME -- %s on the clock. Go.",
+			Event.Clock( g_swEvent:sv_remaining() ) ) )
+	elseif phase == "ended" then
+		self:sv_broadcast( "TIME. Builds are locked and everything has been saved." )
+	elseif phase == "off" then
+		self:sv_broadcast( "The event clock has been stopped." )
+	end
+end
+
+-- The host's controls for the clock. Everything here is one line of chat away
+-- because a host mid-event has both hands full; the panel is the nicer surface
+-- but this is the one that works while somebody is shouting at you.
+function Game.sv_eventCommand( self, params, reply )
+	if g_swEvent == nil then reply( "no event clock" ) return end
+	local action = params[2] or "status"
+	local a, b = tonumber( params[3] ), tonumber( params[4] )
+
+	if action == "status" then
+		reply( string.format( "event: %s", Event.LABELS[g_swEvent.phase] or g_swEvent.phase ) )
+		local left = g_swEvent:sv_remaining()
+		if left then
+			reply( string.format( "  %s left%s", Event.Clock( left ),
+				g_swEvent:sv_paused() and "  (PAUSED)" or "" ) )
+		end
+		reply( string.format( "  configured: %g min prep, %g min build",
+			g_swEvent.prepMinutes, g_swEvent.buildMinutes ) )
+		reply( "  /event start <prep> <build>   both in minutes, any number you like" )
+		return
+	end
+
+	if action == "start" then
+		local prep = a or g_swEvent.prepMinutes
+		local build = b or g_swEvent.buildMinutes
+		local _, phase = g_swEvent:sv_start( prep, build )
+		Event.Sv_SaveFile( g_swEvent )
+		self:sv_applyEventPhase( phase )
+		self:sv_pushEvent()
+		reply( string.format( "event started: %g min prep, then %g min build",
+			prep, build ) )
+
+	elseif action == "stop" then
+		g_swEvent:sv_stop()
+		Event.Sv_SaveFile( g_swEvent )
+		-- Stopping hands `buildopen` back to the host rather than leaving it
+		-- wherever the clock happened to put it. Two things quietly fighting
+		-- over one setting is worse than one of them plainly winning.
+		Settings.Sv_SetQuiet( "buildopen", true )
+		self:sv_applyEventPhase( "off" )
+		self:sv_pushEvent()
+		reply( "event stopped -- building is open and yours to control again" )
+
+	elseif action == "pause" or action == "resume" then
+		local ok, detail = ( action == "pause" )
+			and g_swEvent:sv_pause() or g_swEvent:sv_resume()
+		Event.Sv_SaveFile( g_swEvent )
+		self:sv_pushEvent()
+		reply( detail )
+		if ok then
+			self:sv_broadcast( action == "pause"
+				and "The clock is PAUSED." or "The clock is running again." )
+		end
+
+	elseif action == "skip" then
+		local ok, phase = g_swEvent:sv_skip()
+		if not ok then reply( phase ) return end
+		Event.Sv_SaveFile( g_swEvent )
+		self:sv_applyEventPhase( phase )
+		self:sv_pushEvent()
+		reply( "skipped to " .. phase )
+
+	elseif action == "add" then
+		local ok, detail = g_swEvent:sv_addMinutes( a or 0 )
+		Event.Sv_SaveFile( g_swEvent )
+		self:sv_pushEvent()
+		reply( detail )
+		if ok then self:sv_broadcast( "The host changed the clock: " .. detail ) end
+
+	else
+		reply( "start | stop | pause | resume | skip | add <min> | status" )
+	end
+end
+
 function Game.sv_flushKicks( self )
 	if #self.sv.kickQueue == 0 then return end
 	local pending = self.sv.kickQueue
@@ -282,7 +457,9 @@ function Game.server_onPlayerJoined( self, player, newPlayer )
 	self.network:sendToClient( player, "client_welcome", {
 		perma = rec.perma,
 		plots = Settings.Get( "plots" ) == true,
+		event = g_swEvent and g_swEvent.phase or "off",
 	} )
+	self:sv_pushEvent( player )
 
 	-- If they already own a plot from a previous session, put it back on their
 	-- compass straight away. Coming back to an event and having to remember
@@ -367,8 +544,90 @@ function Game.client_setBlockedTools( self, data )
 	end
 end
 
+--[[ the event clock, on the client ]]
+
+-- The server sends the remaining time about once a second. That is plenty for a
+-- MM:SS readout and visibly jerky on the warehouse timer, which draws tenths and
+-- hundredths -- so remember which tick the update landed on and subtract elapsed
+-- ticks since. The display is interpolated; the truth is still the server's.
+function Game.client_setEvent( self, state )
+	if self.cl == nil then self.cl = {} end
+	self.cl.event = state
+	self.cl.eventAtTick = sm.game.getCurrentTick()
+	self.cl.eventDirty = true
+end
+
+function Game.cl_eventRemaining( self )
+	local e = self.cl and self.cl.event
+	if e == nil or e.remaining == nil then return nil end
+	if e.paused then return e.remaining end
+	local elapsed = ( sm.game.getCurrentTick() - ( self.cl.eventAtTick or 0 ) ) / 40
+	return math.max( 0, e.remaining - elapsed )
+end
+
+function Game.cl_updateEventHud( self )
+	local e = self.cl.event
+	if e == nil then return end
+
+	-- The corner clock. Rendered once a second rather than every frame: it shows
+	-- whole seconds, so 39 of every 40 renders would draw the same thing.
+	local tick = sm.game.getCurrentTick()
+	local left = self:cl_eventRemaining()
+	local whole = left and math.floor( left ) or -1
+	if self.cl.eventDirty or whole ~= self.cl.eventShownSecond then
+		self.cl.eventShownSecond = whole
+		self.cl.eventDirty = false
+		if self.cl.eventHud == nil or not sm.exists( self.cl.eventHud ) then
+			-- Same four flags NotificationManager uses for its own timer.
+			local ok, gui = pcall( sm.jsonGui.createGui, { layer = "Wallpaper",
+				isInteractive = false, needsCursor = false, isHud = true } )
+			if not ok then
+				if not self.cl.eventHudFaulted then
+					self.cl.eventHudFaulted = true
+					sm.log.warning( "[ServerWorks] event HUD unavailable: " .. tostring( gui ) )
+				end
+				return
+			end
+			self.cl.eventHud = gui
+		end
+		local shown = { phase = e.phase, remaining = left,
+			paused = e.paused, panic = e.panic }
+		pcall( function() self.cl.eventHud:render( EventHud.Build( shown ) ) end )
+	end
+
+	--[[ the warehouse timer ]]
+	--
+	-- Handed over to the engine's own, which brings the red destruction warning,
+	-- the explosion icon and three escalating alarms with it. Its native span is
+	-- five minutes (WAREHOUSE_DESTRUCTION_TICKS = 40 * 60 * 5), which is why the
+	-- handover happens at five and not at some rounder-sounding number.
+	local wantPanic = e.panic == true and left ~= nil and left > 0
+	if wantPanic and self.cl.panicTimer == nil and not self.cl.panicFaulted then
+		local ok, timer = pcall( NotificationManager.Cl_CreateEventTimer, 100, "explosion" )
+		if ok and timer then
+			self.cl.panicTimer = timer
+		else
+			-- Once. Never per frame.
+			self.cl.panicFaulted = true
+			sm.log.warning( "[ServerWorks] warehouse timer unavailable: " .. tostring( timer ) )
+		end
+	end
+	if self.cl.panicTimer then
+		if wantPanic then
+			pcall( function() self.cl.panicTimer:update( true, left ) end )
+		else
+			pcall( function() self.cl.panicTimer:destroy() end )
+			self.cl.panicTimer = nil
+		end
+	end
+end
+
 function Game.client_onFixedUpdate( self, dt )
 	CreativeGame.client_onFixedUpdate( self, dt )
+
+	if self.cl and self.cl.event then
+		self:cl_updateEventHud()
+	end
 
 	-- The host still gets every BUILD tool, but not the hazards. The bypass was
 	-- so whoever runs the event can place and clear things; it was never meant to
@@ -445,6 +704,17 @@ function Game.client_onCreate( self )
 	-- gated: this is the command the twenty people at the event actually use.
 	sm.game.bindChatCommand( "/myplot", {}, "cl_onAdminCommand",
 		"Your plot: claim ground, find it again, see your team" )
+	-- Says exactly which item is in your hand. There are two lifts and they look
+	-- identical in the menu; this is the only way to tell them apart from inside
+	-- the game, and three builds were spent guessing which one was being held.
+	sm.game.bindChatCommand( "/tool", {}, "cl_onAdminCommand",
+		"What am I holding? Prints the uuid of the tool in your hand" )
+	sm.game.bindChatCommand( "/event",
+		{ { "string", "action", true,
+		    { "start", "stop", "pause", "resume", "skip", "add", "status" } },
+		  { "number", "a", true }, { "number", "b", true } },
+		"cl_onAdminCommand",
+		"Host: start <prep> <build> | stop | pause | resume | skip | add <min> | status" )
 
 	sm.game.bindChatCommand( "/preset",
 		{ { "string", "name", true, { "build", "show", "lockdown", "sandbox" } } },
@@ -917,6 +1187,8 @@ function Game.sv_n_adminCommand( self, params, player )
 			reply( "  /plotmenu           lay the city out, then build it" )
 			reply( "  /plots on|off  /plotbuild  /plotclear" )
 			reply( "  /plotgrid <plot> <gap> <cols> <rows>" )
+			reply( "  /event start <prep> <build>   minutes. Prep = claim only, no building" )
+			reply( "  /event pause|resume|skip|add <min>|stop|status" )
 			reply( "  /lockdown [display]  /unlock  /protection  /buildtime N  /autosave N" )
 			reply( "  /snapshot [name]  /snapshots  /restore <name> [plot]" )
 			reply( "  /purge look         delete whatever you are pointing at" )
@@ -996,6 +1268,34 @@ function Game.sv_n_adminCommand( self, params, player )
 		local ok, detail = Settings.Sv_Set( "autosave", params[2] )
 		reply( detail )
 		if ok then self:sv_toWorld( "/settingschanged", params, player ) end
+
+	elseif cmd == "/event" then
+		self:sv_eventCommand( params, reply )
+
+	elseif cmd == "/tool" then
+		-- getCurrentToolUuid is a Player binding, so the server can read it
+		-- directly -- no client round trip and no way for it to disagree with
+		-- what the server thinks you are holding.
+		local ok, uuid = pcall( function() return player:getCurrentToolUuid() end )
+		if not ok or uuid == nil then
+			reply( "your hands are empty" )
+			return
+		end
+		local id = tostring( uuid )
+		reply( "holding: " .. id )
+		local KNOWN = {
+			["5cc12f03-275e-4c8e-b013-79fc0f913e1b"] =
+				"the CREATIVE lift -- this is the one that opens the creations menu",
+			["8f190ce2-3a59-423e-8483-a7aa67bd5bc0"] =
+				"the SURVIVAL lift -- it carries and raises, but has no creations menu",
+			["748b6656-84b2-440f-8f4c-8cc7deeba63c"] =
+				"nugdupS, the stale-mod canary. Mod content is reaching the game",
+		}
+		if KNOWN[id] then reply( "  " .. KNOWN[id] ) end
+		local blocked = self.sv.blockedTools[id] or self.sv.hostOnlyTools[id]
+		if blocked then
+			reply( string.format( "  gated by the '%s' setting", blocked ) )
+		end
 
 	elseif cmd == "/players" then
 		-- The host is whoever is running the server -- sm.player.getHostPlayer()

@@ -140,6 +140,39 @@ toolset now adds `5cc12f03`, which is the case that works.
 
 The general rule: **before blaming a script, check the uuid is even loaded.**
 
+### The game does not ship whole fonts
+
+Scrap Mechanic builds a **limited glyph atlas per font** from the strings it
+renders itself, cached at `Cache/Fonts/<language>/LimitedFontData.xml`. Anything
+outside a font's atlas draws as a hollow box. A mod writes strings the game has
+never seen, so this hits mods and nothing else.
+
+**MEASURED.** `SM_LabelMini`'s atlas is exactly `0123456789ACDEILORSTVW`, and it
+drew `HOST` as `⊠OST`, `YOU OWN` as `⊠O⊠ OW⊠`, `TOP DOWN` as `TO⊠ DOW⊠`. Five
+strings, five exact matches.
+
+**It is backwards from intuition: a font name that does not exist is SAFE.**
+MyGUI falls back to a complete font, which is the only reason `SM_Label`,
+`SM_HeaderSmall_Medium` and `SM_NumberSmall` — none of which appear in
+`Data/Gui/Fonts/ManualFontDataInput.xml` — render anything at all. The real fonts
+are the dangerous ones.
+
+Safe real fonts (present in the definitions, absent from the limited atlas):
+`SM_Text` `SM_TextTiny` `SM_TextSmall` `SM_TextLarge` `SM_LabelTiny`
+`SM_ButtonLarge` `SM_HeaderSmall` `SM_Header` `SM_ListItem`. Plus
+`SM_HeaderLarge_Medium`, which is limited but holds a full A-Z.
+
+Dangerous: `SM_LabelMini` `SM_Button` `SM_TabSmall` `SM_SubHeader` `SM_Label`(*)
+`SM_HeaderTiny` — all glyph-limited. `dev/test_logic.py` checks every caption
+against the atlas; do not add a font without it.
+
+### GUI skins that draw no text
+
+`UpgradeButton` is a progress bar. Given a Button and a Caption it renders the
+bar and **silently drops the caption**, which reads as a broken widget rather
+than as a styling mistake. `StyledButtonLarge` and `SecondaryButton` both draw
+their text.
+
 ### The compass is available and is per-player
 
 `CreativeGame.client_onCreate` calls `sm.gui.createCompassHudGui()` and stores it
@@ -306,6 +339,8 @@ credit it with fixing the thing that actually degraded.
     mod/Scripts/Snapshots.lua   world and per-plot capture and rollback
 
     mod/Scripts/Layout.lua      ALL city geometry, pure -- no sm.* calls at all
+    mod/Scripts/Event.lua       the event clock: prep -> build -> ended, wall clock
+    mod/Scripts/EventHud.lua    top-right timer + handover to the warehouse timer
     mod/Scripts/MyPlotGui.lua   the panel players use: claim, find, team, leave
     mod/Scripts/PlotMarker.lua  "find my plot", on the game's own compass HUD
 

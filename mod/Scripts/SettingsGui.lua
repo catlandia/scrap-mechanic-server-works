@@ -13,7 +13,12 @@
 --                                       and fills this way, so a panel can be
 --                                       drawn without any bespoke texture
 --   TextBox + Skin "TextBox" + FontName real text styling
---   Button + Skin "StyledButtonLarge" / "SecondaryButton" / "UpgradeButton"
+--   Button + Skin "StyledButtonLarge" / "SecondaryButton"
+--
+--   NOT "UpgradeButton" -- it is a progress bar and draws no caption at all.
+--   Measured from a screenshot: the two host entries on the main menu rendered
+--   as unlabelled gold bars, and the host reasonably concluded the features were
+--   missing.
 --
 -- Handbook.gui is 1120x560, which is what a full-size panel looks like in this
 -- game; this one matches that scale.
@@ -95,7 +100,7 @@ end
 local function button( name, caption, x, y, w, h, skin, data, font )
 	local b = widget{
 		Name = name, Type = "Button", Skin = skin or "SecondaryButton",
-		Caption = caption, FontName = font or "SM_Button", TextAlign = "Center",
+		Caption = caption, FontName = font or "SM_ButtonLarge", TextAlign = "Center",
 		x = x, y = y, width = w, height = h,
 	}
 	b.onClick = "cl_onSettingsGuiClick"
@@ -175,21 +180,21 @@ function SettingsGui.Build( values, group, page )
 			kids[#kids + 1] = fill( "NavBar" .. g.key, 0, ny - 6, 4, 40, ACCENT, 1 )
 		end
 		kids[#kids + 1] = button( "Nav" .. g.key, g.title, 14, ny, NAV_W - 28, 30,
-			on and "UpgradeButton" or "SecondaryButton",
-			{ action = "group", group = g.key }, "SM_TabSmall" )
+			on and "StyledButtonLarge" or "SecondaryButton",
+			{ action = "group", group = g.key }, "SM_ButtonLarge" )
 		ny = ny + 44
 	end
 	if SettingsGui.HasOther() then
 		kids[#kids + 1] = button( "Navother", "OTHER", 14, ny, NAV_W - 28, 30,
-			( group == "other" ) and "UpgradeButton" or "SecondaryButton",
-			{ action = "group", group = "other" }, "SM_TabSmall" )
+			( group == "other" ) and "StyledButtonLarge" or "SecondaryButton",
+			{ action = "group", group = "other" }, "SM_ButtonLarge" )
 	end
 
 	-- presets, bottom of the nav column
 	-- presets sit above the footer rule: 22 for the heading plus 30 a row
 	local py = SettingsGui.H - 78 - ( 22 + 30 * #( Settings.PRESET_ORDER or {} ) )
 	kids[#kids + 1] = text( "PresetHead", "PRESETS", 14, py, NAV_W - 28, 18,
-		"SM_LabelMini", DIM, "Left" )
+		"SM_LabelTiny", DIM, "Left" )
 	py = py + 22
 	for _, name in ipairs( Settings.PRESET_ORDER or {} ) do
 		kids[#kids + 1] = button( "Preset" .. name, string.upper( name ),
@@ -209,7 +214,7 @@ function SettingsGui.Build( values, group, page )
 		if g.key == group then title = g.title end
 	end
 	kids[#kids + 1] = text( "GroupTitle", title, BODY_X, 80, 400, 22,
-		"SM_SubHeader", ACCENT, "Left" )
+		"SM_HeaderSmall", ACCENT, "Left" )
 
 	for i = 0, ROWS - 1 do
 		local row = rows[first + i]
@@ -226,7 +231,7 @@ function SettingsGui.Build( values, group, page )
 			"SM_TextTiny", DIM, "Left" )
 		kids[#kids + 1] = button( "Val" .. i, shown( row, value ),
 			BODY_X + BODY_W - VALUE_W - 12, y + 6, VALUE_W, ROW_H - 18,
-			isOn and "UpgradeButton" or "SecondaryButton",
+			isOn and "StyledButtonLarge" or "SecondaryButton",
 			{ action = "cycle", key = row.key } )
 	end
 

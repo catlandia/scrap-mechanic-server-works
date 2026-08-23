@@ -656,6 +656,268 @@ def a_team_never_crosses_the_plaza_or_a_road():
         f"the refusal should explain what is between them, got {msg!r}")
 
 
+# ------------------------------------------------------------------ event ---
+#
+# The event clock takes `now` as an argument everywhere it needs the time, so a
+# whole event can be run forwards here in milliseconds instead of an hour. That
+# is the entire reason it is written that way.
+
+def event_lua():
+    lua = fresh("Event.lua")
+    E = lua.globals().Event
+    ev = lua.eval("Event()")
+    E.sv_onCreate(ev, None)
+    return lua, E, ev
+
+
+def an_event_runs_prep_then_build_then_ends():
+    lua, E, ev = event_lua()
+    T = 1_000_000
+    E.sv_start(ev, 10, 60, T)
+    assert ev["phase"] == "prep"
+    assert E.sv_buildAllowed(ev) is False, "building was open during prep"
+
+    # nothing happens before the deadline
+    assert E.sv_advance(ev, T + 9 * 60) is None
+    assert ev["phase"] == "prep"
+
+    assert E.sv_advance(ev, T + 10 * 60) == "build"
+    assert E.sv_buildAllowed(ev) is True, "building did not open when build time started"
+    assert abs(E.sv_remaining(ev, T + 10 * 60) - 60 * 60) < 1
+
+    assert E.sv_advance(ev, T + 69 * 60) is None, "the event ended early"
+    assert E.sv_advance(ev, T + 70 * 60) == "ended"
+    assert E.sv_buildAllowed(ev) is False, "building stayed open after time"
+    assert E.sv_advance(ev, T + 99 * 60) is None, "ended is not a stable state"
+
+
+def a_zero_minute_prep_starts_building_at_once():
+    # This is how /buildtime keeps working on top of the event clock.
+    lua, E, ev = event_lua()
+    E.sv_start(ev, 0, 30, 5000)
+    assert ev["phase"] == "build"
+    assert E.sv_buildAllowed(ev) is True
+
+
+def the_clock_survives_a_restart():
+    lua, E, ev = event_lua()
+    T = 2_000_000
+    E.sv_start(ev, 10, 60, T)
+    E.sv_advance(ev, T + 10 * 60)               # into build
+    E.Sv_SaveFile(ev)
+
+    lua2 = restart(lua, "Event.lua")
+    E2 = lua2.globals().Event
+    again = lua2.eval("Event()")
+    E2.sv_onCreate(again, E2.Sv_LoadFile())
+    assert again["phase"] == "build", "the phase was lost on reload"
+    left = E2.sv_remaining(again, T + 20 * 60)
+    assert abs(left - 50 * 60) < 1, (
+        f"after a restart 50 minutes should be left, got {left} -- a deadline "
+        f"stored in ticks would read as garbage here")
+
+
+def pausing_stops_the_clock():
+    lua, E, ev = event_lua()
+    T = 3_000_000
+    E.sv_start(ev, 0, 60, T)
+    E.sv_pause(ev, T + 10 * 60)
+    assert E.sv_paused(ev) is True
+    left = E.sv_remaining(ev, T + 10 * 60)
+    # an hour of wall clock passes while paused and nothing moves
+    assert E.sv_remaining(ev, T + 70 * 60) == left, "the clock ran while paused"
+    assert E.sv_advance(ev, T + 70 * 60) is None, "a paused event ended anyway"
+    E.sv_resume(ev, T + 70 * 60)
+    assert E.sv_paused(ev) is False
+    assert abs(E.sv_remaining(ev, T + 70 * 60) - left) < 1
+
+
+def time_can_be_added_and_taken_away():
+    lua, E, ev = event_lua()
+    T = 4_000_000
+    E.sv_start(ev, 0, 60, T)
+    E.sv_addMinutes(ev, 15, T)
+    assert abs(E.sv_remaining(ev, T) - 75 * 60) < 1
+    E.sv_addMinutes(ev, -30, T)
+    assert abs(E.sv_remaining(ev, T) - 45 * 60) < 1
+    # never past zero
+    E.sv_addMinutes(ev, -999, T)
+    assert E.sv_remaining(ev, T) >= 0
+
+
+def the_five_minute_handover_is_exact():
+    # The warehouse timer's own span is WAREHOUSE_DESTRUCTION_TICKS = 40*60*5,
+    # and NotificationManager splits exactly that into three alarms. Hand over at
+    # any other number and the alarms are out of step with the clock on screen.
+    lua, E, ev = event_lua()
+    T = 5_000_000
+    assert E.PANIC_SECONDS == 300, f"panic window is {E.PANIC_SECONDS}, not five minutes"
+    E.sv_start(ev, 0, 60, T)
+    assert E.sv_panicking(ev, T) is False
+    assert E.sv_panicking(ev, T + 54 * 60 + 59) is False, "panicked at 5:01 left"
+    assert E.sv_panicking(ev, T + 55 * 60) is True, "did not panic at exactly 5:00 left"
+    assert E.sv_panicking(ev, T + 59 * 60) is True
+    # and never during prep, however little of it is left
+    E.sv_start(ev, 10, 60, T)
+    assert E.sv_panicking(ev, T + 9 * 60 + 59) is False, "panicked during prep"
+
+
+def each_time_call_happens_once():
+    lua, E, ev = event_lua()
+    T = 6_000_000
+    E.sv_start(ev, 0, 60, T)
+    calls = []
+    # walk the whole hour a second at a time, exactly as the server does
+    for sec in range(0, 60 * 60 + 5):
+        c = E.sv_dueCall(ev, T + sec)
+        if c:
+            calls.append((int(c), sec))
+    got = [c for c, _ in calls]
+    assert got == [30, 15, 10, 5, 2, 1], f"calls were {got}"
+    assert len(set(got)) == len(got), "a call was made twice"
+
+
+def the_clock_reads_the_way_a_clock_should():
+    lua, E, ev = event_lua()
+    for seconds, want in ((0, "00:00"), (5, "00:05"), (59, "00:59"), (60, "01:00"),
+                          (3599, "59:59"), (3600, "1:00:00"), (3661, "1:01:01")):
+        got = E.Clock(seconds)
+        assert got == want, f"{seconds}s read as {got!r}, expected {want!r}"
+    assert E.Clock(None) == "--:--"
+
+
+def the_client_state_is_small_and_complete():
+    lua, E, ev = event_lua()
+    T = 7_000_000
+    E.sv_start(ev, 0, 60, T)
+    st = dict(E.sv_clientState(ev, T + 56 * 60))
+    assert set(st) == {"phase", "remaining", "paused", "panic"}, (
+        f"the per-second broadcast carries {sorted(st)} -- keep it small")
+    assert st["phase"] == "build" and st["panic"] is True
+
+
+# ------------------------------------------------------------------ fonts ---
+#
+# Scrap Mechanic does not ship whole fonts. It ships a GLYPH ATLAS per font,
+# built from the strings the game itself renders, and anything outside that set
+# draws as a hollow box. A mod writes strings the game has never seen, so this is
+# a trap laid specifically for mods.
+#
+# MEASURED, from a screenshot of the menu:
+#
+#     we wrote            it drew
+#     HOST                (X)OST
+#     YOU OWN             (X)O(X) OW(X)
+#     TOP DOWN            TO(X) DOW(X)
+#     YOUR TEAM           (X)O(X)R TEA(X)
+#
+# All four in SM_LabelMini, whose atlas is exactly:  0123456789ACDEILORSTVW
+# Every missing letter is a letter outside that set. Five strings, five exact
+# matches, no exceptions -- so the atlas is authoritative for a font that is
+# real and limited.
+#
+# The counter-intuitive part, and the reason this went unnoticed: a font name
+# that DOES NOT EXIST is safe. MyGUI falls back to a complete font, so
+# "SM_Label", "SM_HeaderSmall_Medium" and "SM_NumberSmall" -- none of which are
+# in ManualFontDataInput.xml -- render anything at all. It is the real fonts that
+# are dangerous.
+
+GAME = pathlib.Path(r"D:\SteamLibrary\steamapps\common\Scrap Mechanic")
+ATLAS = GAME / "Cache" / "Fonts" / "English" / "LimitedFontData.xml"
+FONTDEF = GAME / "Gui" / "Fonts" / "ManualFontDataInput.xml"
+
+
+def font_tables():
+    """(limited: name -> set of codepoints, real: set of names). Empty if no install."""
+    import re
+    if not ATLAS.is_file():
+        return None, None
+    limited = {}
+    text = io.open(ATLAS, encoding="utf-8", errors="replace").read()
+    # Split on ResourceWrapper: a font with no <Codes> must not swallow the
+    # next one's ranges, which is exactly the bug a lazy regex makes here.
+    for block in text.split("<ResourceWrapper>"):
+        m = re.search(r'name="([^"]+)"', block)
+        if not m:
+            continue
+        ranges = re.findall(r'range="(\d+) (\d+)"', block)
+        if not ranges:
+            continue                      # not glyph-limited
+        chars = set()
+        for a, b in ranges:
+            chars.update(range(int(a), int(b) + 1))
+        limited[m.group(1)] = chars
+
+    defs = GAME / "Data" / "Gui" / "Fonts" / "ManualFontDataInput.xml"
+    real = set()
+    if defs.is_file():
+        real = set(re.findall(r'name="([A-Za-z_0-9]+)"',
+                              io.open(defs, encoding="utf-8", errors="replace").read()))
+    return limited, real
+
+
+def every_caption_can_be_drawn():
+    limited, real = font_tables()
+    if limited is None:
+        raise AssertionError(f"no game install at {GAME} -- cannot check fonts")
+
+    lua = gui_lua()
+    captions = []          # (where, font, caption)
+
+    def collect(where, root):
+        for it in walk_full(root):
+            cap, font = it.get("caption"), it.get("font")
+            if cap and font:
+                captions.append((where, font, cap))
+
+    # Every panel, in the states that change what they say.
+    collect("menu(host)", lua.globals().MenuGui.Build(True))
+    collect("menu(guest)", lua.globals().MenuGui.Build(False))
+
+    G = lua.globals().SettingsGui
+    values = lua.table_from({row["key"]: row["default"]
+                             for row in lua.globals().Settings.SCHEMA.values()})
+    for g in [x["key"] for x in G.GROUPS.values()]:
+        for page in range(1, int(G.PageCount(g)) + 1):
+            collect(f"settings/{g}", G.Build(values, g, page))
+
+    cfg = {"plot": 20, "gap": 1, "cols": 10, "rows": 10, "roadevery": 0,
+           "roadwidth": 6, "spawn": 50, "claimed": {}}
+    collect("city", lua.globals().PlotsGui.Build(lua.table_from(
+        {k: (lua.table_from(v) if isinstance(v, dict) else v) for k, v in cfg.items()})))
+
+    st = lua.table_from({"plotsOn": True, "mine": 34,
+                         "standing": lua.table_from({"kind": "plot", "index": 34,
+                                                     "free": False, "mine": True}),
+                         "cfg": lua.table_from(
+                             {k: (lua.table_from(v) if isinstance(v, dict) else v)
+                              for k, v in cfg.items()})})
+    collect("myplot", lua.globals().MyPlotGui.Build(st))
+
+    for phase in ("off", "prep", "build", "ended"):
+        collect(f"eventhud/{phase}", lua.globals().EventHud.Build(
+            lua.table_from({"phase": phase, "remaining": 754.0, "panic": phase == "build"})))
+
+    assert captions, "no captions collected -- the panels built nothing"
+
+    bad = []
+    for where, font, cap in captions:
+        if font not in real:
+            continue                       # not a real font: full fallback, safe
+        allowed = limited.get(font)
+        if allowed is None:
+            continue                       # real but not glyph-limited: safe
+        missing = sorted({c for c in str(cap) if ord(c) not in allowed})
+        if missing:
+            bad.append((where, font, str(cap)[:44], "".join(missing)))
+
+    if bad:
+        lines = [f"{w} [{f}] {c!r} cannot draw: {m}" for w, f, c, m in bad[:6]]
+        raise AssertionError(
+            f"{len(bad)} caption(s) use glyphs their font does not have. "
+            + " | ".join(lines))
+
+
 # -------------------------------------------------------------------- gui ---
 #
 # A json GUI is a plain nested table of rectangles, so its layout can be checked
@@ -686,6 +948,19 @@ def walk(node, out, depth=0):
     return out
 
 
+def walk_full(node, out=None):
+    """Like walk(), but keeps Caption and FontName so fonts can be checked."""
+    if out is None:
+        out = []
+    out.append(dict(name=node["Name"] if "Name" in node else "?",
+                    caption=node["Caption"], font=node["FontName"]))
+    kids = node["Childs"]
+    if kids is not None:
+        for k in kids.values():
+            walk_full(k, out)
+    return out
+
+
 def panel_fits(label, root, W, H):
     items = walk(root, [])
     assert len(items) > 3, f"{label}: only {len(items)} widgets, the panel is empty"
@@ -713,8 +988,8 @@ def no_button_is_buried(label, items, H):
 
 
 def gui_lua():
-    lua = fresh("Layout.lua", "Settings.lua", "SettingsGui.lua",
-                "PlotsGui.lua", "MenuGui.lua", "MyPlotGui.lua")
+    lua = fresh("Layout.lua", "Settings.lua", "Event.lua", "EventHud.lua",
+                "SettingsGui.lua", "PlotsGui.lua", "MenuGui.lua", "MyPlotGui.lua")
     lua.globals().Settings.Sv_Load(False)
     return lua
 
@@ -898,6 +1173,18 @@ def main():
           giving_up_a_plot_removes_it_from_its_team)
     check("teams: teams survive a restart", teams_survive_a_restart)
     check("teams: never across the plaza or a road", a_team_never_crosses_the_plaza_or_a_road)
+
+    check("event: prep then build then ended", an_event_runs_prep_then_build_then_ends)
+    check("event: zero prep starts building at once", a_zero_minute_prep_starts_building_at_once)
+    check("event: the clock survives a restart", the_clock_survives_a_restart)
+    check("event: pausing stops the clock", pausing_stops_the_clock)
+    check("event: time can be added and taken away", time_can_be_added_and_taken_away)
+    check("event: the five minute handover is exact", the_five_minute_handover_is_exact)
+    check("event: each time call happens once", each_time_call_happens_once)
+    check("event: the clock reads the way a clock should", the_clock_reads_the_way_a_clock_should)
+    check("event: the per-second broadcast stays small", the_client_state_is_small_and_complete)
+
+    check("fonts: every caption can actually be drawn", every_caption_can_be_drawn)
 
     check("gui: the menu fits, for host and guest", the_menu_panel_fits)
     check("gui: every settings page fits and nothing is buried",

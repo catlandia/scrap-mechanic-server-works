@@ -10,6 +10,95 @@ was most of them.
 
 ---
 
+## V26 — the event clock, and four bugs off a screenshot
+
+### The event has a shape now
+
+    off  ->  prep  ->  build  ->  ended
+
+**prep** is the point: people arrive and claim a plot, and nobody can build yet.
+Twenty people racing to claim ground at the same moment they start building is
+how you get a scramble decided by who loaded the world fastest.
+
+Custom minutes for both. `/event start 10 60`, plus `pause`, `resume`, `skip`,
+`add <min>`, `stop`, `status`. `/buildtime N` still works and is now an alias for
+`/event start 0 N`, which is what it always meant — one clock instead of two.
+
+**Deadlines are wall-clock, not ticks.** `os.time()` works here (the ban list has
+been stamping entries with it all along) and the tick counter restarts with the
+server, so a deadline in ticks is meaningless after a reload. The event survives
+a restart with the right time left; there is a check for exactly that.
+
+### The clock in the top right, and the handover
+
+A json GUI with `isHud = true` — the four flags copied from NotificationManager's
+own timer rather than guessed. Phase colour down the left edge, `MM:SS` or
+`H:MM:SS`, and a line saying what you may do right now.
+
+At five minutes it hands over to the **warehouse explosion timer**, which is the
+engine's own:
+
+    NotificationManager.Cl_CreateEventTimer( priority, "explosion" )
+
+**Five minutes is not a round number, it is the right one.**
+`survival_constants.lua:186` sets `WAREHOUSE_DESTRUCTION_TICKS = 40 * 60 * 5`, and
+NotificationManager splits exactly that span into three escalating alarms — one
+from 5:00, the next from 3:20, the last from 1:40. Hand over at five and they
+land where the sound designer put them.
+
+### Fonts: the game does not ship whole fonts
+
+**MEASURED**, from a screenshot:
+
+| we wrote | it drew |
+|---|---|
+| `HOST` | `⊠OST` |
+| `YOU OWN` | `⊠O⊠ OW⊠` |
+| `TOP DOWN` | `TO⊠ DOW⊠` |
+| `YOUR TEAM` | `⊠O⊠R TEA⊠` |
+
+All four in `SM_LabelMini`, whose glyph atlas is exactly
+`0123456789ACDEILORSTVW`. Every missing letter is outside that set — five
+strings, five exact matches.
+
+Scrap Mechanic ships a **limited glyph atlas per font**, built from the strings
+the game itself renders. A mod writes strings the game has never seen, so this is
+a trap laid specifically for mods. And it is backwards from intuition: a font
+name that **does not exist** is safe, because MyGUI falls back to a complete
+font — which is the only reason `SM_Label`, `SM_HeaderSmall_Medium` and
+`SM_NumberSmall` ever worked. The *real* fonts are the dangerous ones.
+
+`dev/test_logic.py` now builds every panel and checks every caption against the
+real atlas. It found eleven more broken captions in the settings panel the same
+minute it was written.
+
+### The host's buttons had no labels
+
+`UpgradeButton` is a **progress bar**, not a button: it drew as a gold-and-teal
+bar with no caption at all, so the two host entries on `/menu` read as broken
+widgets and the host reasonably concluded the features were missing. They were
+there and clickable the whole time. Now `StyledButtonLarge`, the skin CLOSE on
+the same panel already proved draws its text.
+
+### "The plot is not connected to the rest of the build"
+
+Ground showing between a plot and the walkway beside it — on a city whose
+geometry is *proved* to be a gapless partition. Geometry was never the problem;
+timing was. The build cleared the old city and imported the new one **in the same
+tick**, and `shape:destroyShape()` does not take effect until the tick ends. The
+importer was being asked to place blocks into space the old blocks still
+occupied.
+
+There is a settling stage now — clear, wait, then import — and each shared-ground
+import reports how many shapes it asked for against how many landed, so a hole
+gets named in the log instead of noticed in a screenshot.
+
+### /tool
+
+Says exactly which item is in your hand, and names it if it is one of the ones
+that matter. There are two lifts and they look identical in the menu; this is the
+only way to tell them apart from inside the game.
+
 ## V25 — the lift, for real this time
 
 ### There are two lifts, and this game only had the wrong one

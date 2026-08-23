@@ -54,7 +54,7 @@ end
 
 local function button( name, caption, x, y, w, h, skin, data )
 	local b = widget{ Name = name, Type = "Button", Skin = skin or "SecondaryButton",
-		Caption = caption, FontName = "SM_Button", TextAlign = "Center",
+		Caption = caption, FontName = "SM_ButtonLarge", TextAlign = "Center",
 		x = x, y = y, width = w, height = h }
 	b.onClick = "cl_onMyPlotClick"
 	b.onClickData = data
@@ -103,7 +103,7 @@ function MyPlotGui.Build( state )
 
 	--[[ what you own ]]
 	kids[#kids + 1] = text( "OwnHead", "YOU OWN", PAD, y, 200, 16,
-		"SM_LabelMini", DIM, "Left" )
+		"SM_LabelTiny", DIM, "Left" )
 	y = y + 20
 	kids[#kids + 1] = fill( "OwnBox", PAD, y, colW, 54, PANEL, 0.035 )
 	if state.mine then
@@ -117,7 +117,7 @@ function MyPlotGui.Build( state )
 
 	--[[ what you are stood on ]]
 	kids[#kids + 1] = text( "HereHead", "YOU ARE STANDING ON", PAD, y, 300, 16,
-		"SM_LabelMini", DIM, "Left" )
+		"SM_LabelTiny", DIM, "Left" )
 	y = y + 20
 	kids[#kids + 1] = fill( "HereBox", PAD, y, colW, 54, PANEL, 0.035 )
 
@@ -145,7 +145,7 @@ function MyPlotGui.Build( state )
 
 	--[[ your team ]]
 	kids[#kids + 1] = text( "TeamHead", "YOUR TEAM", PAD, y, 200, 16,
-		"SM_LabelMini", DIM, "Left" )
+		"SM_LabelTiny", DIM, "Left" )
 	y = y + 20
 	local mates = state.team or {}
 	local line = "just you"

@@ -42,7 +42,7 @@ end
 
 local function button( name, caption, x, y, w, h, skin, data, font )
 	local b = widget{ Name = name, Type = "Button", Skin = skin or "SecondaryButton",
-		Caption = caption, FontName = font or "SM_Button", TextAlign = "Center",
+		Caption = caption, FontName = font or "SM_ButtonLarge", TextAlign = "Center",
 		x = x, y = y, width = w, height = h }
 	b.onClick = "cl_onMenuClick"
 	b.onClickData = data
@@ -86,11 +86,20 @@ function MenuGui.Build( isHost )
 			if e.host and not hostHeader then
 				hostHeader = true
 				kids[#kids + 1] = text( "HostHead", "HOST", 24, y, 200, 16,
-					"SM_LabelMini", DIM, "Left" )
+					"SM_LabelTiny", DIM, "Left" )
 				y = y + 22
 			end
+			-- NOT "UpgradeButton". MEASURED, from a screenshot of the menu: that skin is a
+			-- PROGRESS BAR, not a button. It drew as a gold-and-teal bar with NO CAPTION at
+			-- all, which is why the host reported "I am the host why cant I access
+			-- features" -- the two host entries were there and clickable, but unlabelled, so
+			-- they read as broken widgets rather than buttons.
+			--
+			-- StyledButtonLarge is the skin CLOSE already uses on the same panel, so it is
+			-- proven to draw its caption, and it stays visually distinct from the guest
+			-- entries.
 			kids[#kids + 1] = button( "B" .. i, e.label, 24, y, MenuGui.W - 48, 34,
-				e.host and "UpgradeButton" or "SecondaryButton", { action = e.action } )
+				e.host and "StyledButtonLarge" or "SecondaryButton", { action = e.action } )
 			kids[#kids + 1] = text( "H" .. i, e.help, 26, y + 36, MenuGui.W - 52, 16,
 				"SM_TextTiny", DIM, "Left" )
 			y = y + 58

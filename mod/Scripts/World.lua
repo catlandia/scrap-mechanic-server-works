@@ -52,7 +52,6 @@ function World.server_onCreate( self )
 	self.sw = {
 		lastCensus = nil,
 		alarmQuietUntil = 0,
-		buildDeadline = nil,
 		nextAutoSnapshot = nil,
 		patrolFaulted = false,
 		rulesFaulted = false,
@@ -290,17 +289,10 @@ function World.sv_checkRules( self, tick )
 	end
 end
 
+-- The build deadline used to live here as a second, independent clock. It is the
+-- event clock's job now (Event.lua), and the end-of-event lock and snapshot moved
+-- to sv_e_swEventPhase -- one clock, one place it can be wrong.
 function World.sv_checkTimers( self, tick )
-	if self.sw.buildDeadline and tick >= self.sw.buildDeadline then
-		self.sw.buildDeadline = nil
-		local locked, detail = g_swProtection:sv_setMode( "locked" )
-		if locked then
-			Settings.Sv_SetQuiet( "protection", "locked" )
-			self:sv_broadcast( "Build time is up. BUILDS LOCKED -- " .. detail )
-		end
-		g_swSnapshots:sv_beginCapture( "buildend", self.world, self:sv_plotOfBody() )
-	end
-
 	local minutes = tonumber( Settings.Get( "autosave" ) ) or 0
 	if minutes > 0 and self.sw.nextAutoSnapshot and tick >= self.sw.nextAutoSnapshot then
 		self.sw.nextAutoSnapshot = tick + minutes * 60 * TICKS_PER_SECOND
@@ -346,6 +338,29 @@ end
 --[[ commands forwarded from Game ]]
 
 -- params = { cmd, args, player }
+-- What a phase change means to the world. Building open or shut is a setting the
+-- protection resolver already reads, so it only has to be re-applied; the end of
+-- an event is the same lock-and-save that /buildtime used to do, kept because it
+-- is right.
+function World.sv_e_swEventPhase( self, params )
+	local phase = params.phase
+
+	if phase == "ended" then
+		local locked, detail = g_swProtection:sv_setMode( "locked" )
+		if locked then
+			Settings.Sv_SetQuiet( "protection", "locked" )
+			sm.log.info( "[ServerWorks] event ended, world locked -- " .. tostring( detail ) )
+		end
+		g_swSnapshots:sv_beginCapture( "eventend", self.world, self:sv_plotOfBody() )
+		return
+	end
+
+	-- prep, build and off all just want the current settings applied to every
+	-- body. sv_setMode does a full immediate sweep, which is what makes the
+	-- whistle instant rather than arriving over the next few seconds.
+	g_swProtection:sv_setMode( g_swProtection:sv_getMode() )
+end
+
 function World.sv_e_swCommand( self, params )
 	local cmd, args, player = params.cmd, params.args, params.player
 	local function reply( text ) self:sv_reply( player, text ) end
@@ -392,20 +407,20 @@ function World.sv_e_swCommand( self, params )
 			g_swPlots.enabled and "ON" or "off", claimed, total ) )
 		local progress = g_swSnapshots:sv_progress()
 		if progress then reply( progress ) end
-		if self.sw.buildDeadline then
-			local left = ( self.sw.buildDeadline - sm.game.getCurrentTick() ) / ( 60 * TICKS_PER_SECOND )
-			reply( string.format( "build time remaining: %.1f min", left ) )
+		if g_swEvent and g_swEvent:sv_running() then
+			reply( string.format( "event: %s, %s left%s",
+				g_swEvent.phase, Event.Clock( g_swEvent:sv_remaining() ),
+				g_swEvent:sv_paused() and " (PAUSED)" or "" ) )
 		end
 
 	elseif cmd == "/buildtime" then
-		local minutes = tonumber( args[2] ) or 0
-		if minutes <= 0 then
-			self.sw.buildDeadline = nil
-			reply( "build timer cancelled" )
-		else
-			self.sw.buildDeadline = sm.game.getCurrentTick() + minutes * 60 * TICKS_PER_SECOND
-			self:sv_broadcast( string.format( "Building closes in %g minutes.", minutes ) )
-		end
+		-- Kept, because it is the command that already exists in the host's
+		-- fingers -- but it is no longer a second clock. It is /event start with
+		-- no prep phase, which is exactly what it always meant.
+		reply( "use /event start 0 " .. tostring( tonumber( args[2] ) or 60 )
+			.. "  -- /buildtime is now the event clock with no prep phase" )
+		sm.event.sendToGame( "sv_e_swBuildTime",
+			{ minutes = tonumber( args[2] ) or 0, player = player } )
 
 	elseif cmd == "/snapshot" then
 		local name = args[2]
@@ -833,6 +848,22 @@ end
 --
 -- The order is nearest-the-middle-first (Layout.buildOrder), so the city grows
 -- outwards from spawn while you watch it instead of sweeping in from a corner.
+-- REPORTED: "the plot is not connected to the rest of the build" -- brown ground
+-- showing between a plot and the walkway beside it, on a city whose geometry is
+-- proved to be a gapless partition by dev/test_layout.py.
+--
+-- Geometry was never the problem. TIMING was. This used to clear the old city
+-- and import the new one in the SAME TICK, and shape:destroyShape() does not
+-- take effect immediately -- the engine tears shapes down at the end of a tick.
+-- So the importer was asked to place new blocks into space the old blocks still
+-- occupied, and what lands in occupied space is anybody's guess.
+--
+-- So the build is a job with a waiting stage now. Clear, let the tick end and
+-- then some, and only then import. It costs a quarter of a second on a command
+-- that already takes several, and it removes a whole class of "sometimes the
+-- city comes out wrong".
+World.CITY_SETTLE_TICKS = 20
+
 function World.sv_buildFloor( self, reply )
 	if self.sw.cityJob then
 		reply( "already building" )
@@ -840,9 +871,21 @@ function World.sv_buildFloor( self, reply )
 	end
 	local removed = self:sv_clearFloor()
 	if removed > 0 then
-		reply( string.format( "cleared %d old city shapes", removed ) )
+		reply( string.format( "cleared %d old city shapes -- letting them settle", removed ) )
 	end
 
+	self.sw.cityJob = {
+		stage = "settle",
+		settleUntil = sm.game.getCurrentTick() + World.CITY_SETTLE_TICKS,
+		queue = Layout.buildOrder( g_swPlots.layout ),
+		cursor = 1, built = 0, failed = 0, shapes = 0,
+	}
+	reply( string.format( "building %d plots outwards from spawn...",
+		#self.sw.cityJob.queue ) )
+end
+
+-- The plaza and the streets. Imported once the old city has actually gone.
+function World.sv_buildShared( self )
 	-- The middle goes down first: the pillar, then the deck, then the plots
 	-- outwards. Nothing overlaps anything, so this is purely about what the host
 	-- sees appear -- but seeing spawn appear first is how you know the centre is
@@ -851,19 +894,29 @@ function World.sv_buildFloor( self, reply )
 		local bp = ( label == "pillar" ) and g_swPlots:sv_pillarBlueprint()
 			or g_swPlots:sv_deckBlueprint()
 		if bp then
+			local want = #bp.bodies[1].childs
 			local bodies, err = self:sv_importBlueprint( bp )
 			if bodies then
 				self:sv_pinCity( bodies, false )   -- nobody builds on shared ground
+				-- Count what actually landed. A blueprint child with `bounds` is
+				-- one shape, so placed should equal want -- and if it ever does
+				-- not, that is the missing walkway, named in the log instead of
+				-- being noticed from a screenshot.
+				local placed = 0
+				for _, body in ipairs( bodies ) do
+					if sm.exists( body ) then placed = placed + body:getShapeCount() end
+				end
+				if placed ~= want then
+					sm.log.warning( string.format(
+						"[ServerWorks] %s: asked for %d shapes, got %d -- the city has holes",
+						label, want, placed ) )
+				end
 			else
 				sm.log.warning( string.format( "[ServerWorks] %s import failed: %s",
 					label, tostring( err ) ) )
 			end
 		end
 	end
-
-	local queue = Layout.buildOrder( g_swPlots.layout )
-	self.sw.cityJob = { queue = queue, cursor = 1, built = 0, failed = 0 }
-	reply( string.format( "building %d plots outwards from spawn...", #queue ) )
 end
 
 function World.sv_importBlueprint( self, bp )
@@ -891,6 +944,13 @@ end
 function World.sv_stepCity( self )
 	local job = self.sw.cityJob
 	if job == nil then return end
+
+	if job.stage == "settle" then
+		if sm.game.getCurrentTick() < job.settleUntil then return end
+		job.stage = "plots"
+		self:sv_buildShared()
+		return
+	end
 
 	local last = math.min( job.cursor + 3, #job.queue )
 	for i = job.cursor, last do

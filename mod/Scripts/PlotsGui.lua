@@ -75,7 +75,7 @@ end
 
 local function button( name, caption, x, y, w, h, skin, data, font )
 	local b = widget{ Name = name, Type = "Button", Skin = skin or "SecondaryButton",
-		Caption = caption, FontName = font or "SM_Button", TextAlign = "Center",
+		Caption = caption, FontName = font or "SM_ButtonLarge", TextAlign = "Center",
 		x = x, y = y, width = w, height = h }
 	b.onClick = "cl_onPlotsGuiClick"
 	b.onClickData = data
@@ -99,7 +99,7 @@ function PlotsGui.AddMap( kids, cfg, x, y, size )
 
 	kids[#kids + 1] = fill( "MapBG", x - 8, y - 8, size + 16, size + 16, PANEL, 0.04 )
 	kids[#kids + 1] = text( "MapTitle", "TOP DOWN", x, y - 30, size, 18,
-		"SM_LabelMini", DIM, "Left" )
+		"SM_LabelTiny", DIM, "Left" )
 
 	local function cell( name, cx, cy, cw, ch, colour, alpha )
 		if cw * scale < 1 or ch * scale < 1 then return end
