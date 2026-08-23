@@ -115,11 +115,29 @@ local function applyProfile( body, p )
 	body:setConvertibleToDynamic( p.convertibleToDynamic )
 end
 
--- Two getters, not one. buildable alone is not enough: it matches the engine
--- default in open mode, so a brand new body would look "already correct" and
--- skip the destructable pin we rely on above.
+-- The sentinel has to be able to tell EVERY profile apart, or a switch between
+-- two that share its fields silently does nothing.
+--
+--                    buildable destructable usable erasable
+--   open                 T          F          T       T
+--   open_destructible    T          T          T       T
+--   locked               F          F          F       F
+--   display              F          F          T       F
+--   sweep                F          F          F       T
+--
+-- Four getters is what it takes for those five rows to be unique. Two was not:
+-- display and locked agree on buildable and destructable, so /lockdown after a
+-- /preset show found every body "already correct" and never cleared usable --
+-- which is why buttons still worked in lockdown. MEASURED in game, reported as
+-- "I can still press buttons on lockdown".
+--
+-- Cost is four calls per body per patrol pass instead of two, and only on the
+-- 128-body slice. Correctness first; this is nowhere near the budget.
 local function matchesProfile( body, p )
-	return body:isBuildable() == p.buildable and body:isDestructable() == p.destructable
+	return body:isBuildable() == p.buildable
+		and body:isDestructable() == p.destructable
+		and body:isUsable() == p.usable
+		and body:isErasable() == p.erasable
 end
 
 -- Which profile a given body should be under. /lockdown deliberately outranks
