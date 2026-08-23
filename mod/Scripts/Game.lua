@@ -469,11 +469,20 @@ function Game.client_openSettingsGui( self, data )
 
 	local root = SettingsGui.Build( data.values, self.cl.settingsGroup, self.cl.settingsPage )
 	self.cl.settingsGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
+	-- render() IS the show. A json GUI has neither open() nor destroy() --
+	-- MEASURED: "Unknown member 'open' in userdata" at Game.lua:473, thrown on
+	-- every render, and the throw is what shut the panel again on every click.
+	-- Vanilla only ever calls createGui / render / close
+	-- (CreativePlayer.cl_e_unstuck).
 	self.cl.settingsGui:render( root )
-	self.cl.settingsGui:open()
 end
 
-function Game.cl_onSettingsGuiClick( self, data )
+-- ( self, widgetName, data ) -- NOT ( self, data ). Confirmed against
+-- Survival/.../HideoutTrader.lua:1536 `cl_selectTrade( self, widgetName, data )`.
+-- Getting this wrong handed every click the widget's NAME as a string, so
+-- data.action was always nil and no branch ever matched.
+function Game.cl_onSettingsGuiClick( self, widgetName, data )
+	if type( data ) ~= "table" then return end
 	if data.action == "close" then
 		self:cl_closeSettingsGui()
 		return
@@ -507,7 +516,7 @@ function Game.cl_onSettingsGuiClick( self, data )
 	} )
 end
 
-function Game.cl_onSettingsGuiClose( self )
+function Game.cl_onSettingsGuiClose( self, widgetName )
 	self:cl_closeSettingsGui()
 end
 
