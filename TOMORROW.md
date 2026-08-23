@@ -1,43 +1,35 @@
-# Where things stand
+# Start here
 
-**V4 installed.** nugdupS confirmed visible in the creative menu, so **mod content does
-reach the game** — the stale-cache theory is disproved and can be dropped.
+The durable record is in [`docs/PLAN.md`](docs/PLAN.md) — goals, the measurement
+that reordered them, every engine constraint, the architecture, what is built,
+and what is left. [`docs/CHANGELOG.md`](docs/CHANGELOG.md) has every version and
+the bug it fixed. Read those before re-deriving anything.
 
-That leaves the lift problem as a V2/V3 bug, not a stale mod.
+## State
 
-## First thing to check: why lifts do not work
+**V23 installed.** Proven in game: `/lockdown`, the clay gun cannot fire, the
+city builds and looks right, `sm.json` persistence, explosives and fire off,
+content updates reach the game.
 
-Type `/protection` in chat.
+## Next, in order
 
-| response | meaning | fix |
-|---|---|---|
-| `protection: locked` | The world came up locked. `liftable = false` is part of that profile, along with buildable, erasable, paintable and connectable. | `/unlock` — should restore lifts immediately |
-| `protection: open` | Not the lock. Check `buildopen` in `Mods/Server Works/Settings.json`; if false, the resolver in `World.server_onCreate` returns false for every body in the world | `/set buildopen on` |
-| no response at all | The world script is not running | read the log |
+1. **Does the lift spawn creations now?** V19 gave uuid `8f190ce2` back to
+   creative's `Lift`; unconfirmed since. If not: `/why` while pointing at
+   something, and `/protection`.
+2. **UI for the rest.** `/players`, `/rules`, `/banlist`, `/known` still print to
+   chat. Each wants a panel like `/settings` and `/plotmenu`.
+3. **Frame rate.** The measurement pointed here and nothing has been done about
+   it — part budgets and plot spacing aimed at what is *rendered*.
+4. **`PhysicsQuality`.** `/protection` prints the host's value. Change it in the
+   host's game options, play two sessions, run `dev/session_stats.py` on both.
+   The first real simulation lead, still unmeasured.
 
-If it was `locked`, the cause is the `protection` value now persisted in `Settings.json`
-— new in V2. A run that ended locked comes back locked by design, which is correct
-behaviour for an event but surprising on a test world.
+## The habit that works
 
-## Then confirm the new code is actually live
+    python dev/check_lua.py              # before anything
+    python dev/sync_mod.py --clean-cache # install
+    python dev/session_stats.py --spam   # after any run
 
-    python dev/session_stats.py --spam
-
-`[ServerWorks] world ready` is a V2-and-later log line. Absent means the new scripts
-never ran, whatever the reason.
-
-## What is new in V4
-
-- **Settings panel.** `/settings` opens a real GUI instead of printing to chat.
-  Click a value to change it; numbers cycle through presets. `/settingslist` still
-  prints to chat and `/set <name> <value>` still takes exact numbers.
-- **`/swhelp`** — the mod's own help, separate from the game's `/help` (which the
-  engine reserves and refuses to let a mod bind). `/sw` does the same thing.
-
-## Still unverified
-
-Nothing in V4 has been run. The settings panel is the biggest untested piece: the
-json GUI format has no documentation beyond `Data/Gui/JsonGuis/PopUp_YN.gui`, so the
-skin names and the widget tree are inference. If `/settings` errors or opens blank,
-the panel is at fault, not the settings themselves — use `/settingslist` and `/set`
-meanwhile.
+**Read the log first.** Every hard bug in this project was named outright by
+`Logs/game-*.log`. Guessing before reading has cost whole test cycles, more than
+once.

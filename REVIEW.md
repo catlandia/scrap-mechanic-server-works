@@ -6,15 +6,21 @@ and so the owner can ask the right questions.
 
 ## Status, stated plainly
 
-**2,638 lines of Lua. Written in one session. Never run once.**
+**~4,600 lines of Lua across 13 scripts. V23. Tested in game across 23 builds.**
 
-It compiles under a real Lua parser (`python dev/check_lua.py`) and installs into
-the game's Mods folder. That is the entire extent of the verification. Anything
-below about behaviour is a claim, not a result.
+Proven working in a real session: `/lockdown`, the clay gun cannot fire, the city
+builds, `sm.json` persistence, explosives and fire genuinely off, mod content
+updates reaching the game.
 
-If you are deciding whether to trust this in a live event: don't, yet. Run it in
-an empty world first. The pass condition is not "it looks like it works" — it is
-**the game log stays quiet**. See "How to check it" below.
+Still unconfirmed: the lift spawning creations, and every panel added after V16.
+
+The full account is in [`docs/PLAN.md`](docs/PLAN.md); every version and the bug
+it fixed is in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Most of those bugs were
+named outright by the game log rather than reasoned out, which is the single most
+useful thing to know about working on this codebase.
+
+The pass condition for any run is not "it looks like it works" — it is **the game
+log stays quiet**.
 
 ## The thing worth checking first
 

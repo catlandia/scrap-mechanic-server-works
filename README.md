@@ -9,14 +9,19 @@ event on 2026-08-22.
 
 ---
 
-## ⚠ Status: untested
+## Status
 
-**2,638 lines of Lua. Never executed.** It compiles under a real Lua parser and
-installs, and that is the entire extent of verification so far.
+**V23.** Working in game: lockdown, plot claiming and enforcement, the city
+builder, snapshots, bans and the allow list, the settings and city-layout panels,
+and tool bans that actually hold.
 
-Before trusting it in a live event, run it in an empty world and check the game log
-is *quiet*. See [Testing](#testing). [`REVIEW.md`](REVIEW.md) lists what is verified
-versus assumed and ranks the assumptions most likely to be wrong.
+Still unconfirmed: the lift spawning creations, and the panels added most
+recently.
+
+- [`docs/PLAN.md`](docs/PLAN.md) — the plan of record: goals, the measurement that
+  reordered them, engine constraints, architecture, what is left
+- [`docs/CHANGELOG.md`](docs/CHANGELOG.md) — every version and the bug it fixed
+- [`REVIEW.md`](REVIEW.md) — verified versus assumed, for a sceptical reader
 
 ---
 
