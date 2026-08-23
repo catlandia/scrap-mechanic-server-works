@@ -115,6 +115,7 @@ function Game.server_onCreate( self )
 	self.sv.nextBanReload = 0
 	self.sv.blockedTools = Settings.Sv_BlockedTools()
 	self.sv.hazardTools = Settings.Sv_HazardTools()
+	self.sv.hostOnlyTools = Settings.Sv_HostOnlyTools()
 	self.sv.pendingRestore = nil
 end
 
@@ -127,8 +128,14 @@ function Game.sv_createNewPlayer( self, world, x, y, player )
 		{ player = player, x = 0, y = 0 } )
 end
 
+-- Two ready-made lists rather than making the client reason about who it is:
+-- guests get everything switched off PLUS the host-only tools, the host gets
+-- only the hazards.
 function Game.sv_toolPayload( self )
-	return { all = self.sv.blockedTools, hazard = self.sv.hazardTools }
+	local guest = {}
+	for k, v in pairs( self.sv.blockedTools or {} ) do guest[k] = v end
+	for k, v in pairs( self.sv.hostOnlyTools or {} ) do guest[k] = v end
+	return { guest = guest, host = self.sv.hazardTools or {} }
 end
 
 function Game.sv_world( self )
@@ -191,8 +198,11 @@ function Game.sv_checkToolGuard( self, tick )
 	if tick < self.sv.nextToolCheck then return end
 	self.sv.nextToolCheck = tick + TOOL_CHECK_TICKS
 
-	local blocked = self.sv.blockedTools
-	if next( blocked ) == nil then return end
+	if next( self.sv.blockedTools ) == nil
+		and next( self.sv.hostOnlyTools or {} ) == nil
+		and next( self.sv.hazardTools or {} ) == nil then
+		return
+	end
 
 	local host = sm.player.getHostPlayer()
 	local guests, hosts = {}, {}
@@ -203,7 +213,9 @@ function Game.sv_checkToolGuard( self, tick )
 	local drop = function( player, name )
 		self.network:sendToClient( player, "client_dropTool", name )
 	end
-	Settings.Sv_CheckTools( guests, blocked, drop )
+	local blocked = self.sv.blockedTools
+	local guestBlocked = self:sv_toolPayload().guest
+	Settings.Sv_CheckTools( guests, guestBlocked, drop )
 	Settings.Sv_CheckTools( hosts, self.sv.hazardTools or {}, drop )
 end
 
@@ -287,8 +299,8 @@ end
 -- was still getting a shot off.
 function Game.client_setBlockedTools( self, data )
 	if self.cl == nil then self.cl = {} end
-	self.cl.blockedTools = ( data and data.all ) or {}
-	self.cl.hazardTools = ( data and data.hazard ) or {}
+	self.cl.toolsGuest = ( data and data.guest ) or {}
+	self.cl.toolsHost = ( data and data.host ) or {}
 end
 
 function Game.client_onFixedUpdate( self, dt )
@@ -297,8 +309,8 @@ function Game.client_onFixedUpdate( self, dt )
 	-- The host still gets every BUILD tool, but not the hazards. The bypass was
 	-- so whoever runs the event can place and clear things; it was never meant to
 	-- hand them a clay gun.
-	local blocked = self.cl and
-		( sm.isHost and self.cl.hazardTools or self.cl.blockedTools )
+	if self.cl == nil then return end
+	local blocked = sm.isHost and self.cl.toolsHost or self.cl.toolsGuest
 	if blocked == nil or next( blocked ) == nil then return end
 
 	local ok, uuid = pcall( function()
@@ -317,7 +329,9 @@ function Game.client_onFixedUpdate( self, dt )
 	-- One message per pickup, not one per tick.
 	if self.cl.lastBlockedWarn ~= name then
 		self.cl.lastBlockedWarn = name
-		sm.gui.chatMessage( string.format( "The %s is disabled on this server.", name ) )
+		sm.gui.chatMessage( ( name == "lift" )
+			and "The lift is host only on this server."
+			or string.format( "The %s is disabled on this server.", name ) )
 	end
 end
 
@@ -325,7 +339,9 @@ function Game.client_dropTool( self, name )
 	-- forceTool is client-side only: the server can see what you hold, but only
 	-- your own client can put it away.
 	pcall( sm.tool.forceTool, nil )
-	sm.gui.chatMessage( string.format( "The %s is disabled on this server.", tostring( name ) ) )
+	sm.gui.chatMessage( ( name == "lift" )
+		and "The lift is host only on this server."
+		or string.format( "The %s is disabled on this server.", tostring( name ) ) )
 end
 
 function Game.client_onCreate( self )
@@ -443,6 +459,7 @@ function Game.sv_n_settingsGuiClick( self, data, player )
 		if ok then
 			self.sv.blockedTools = Settings.Sv_BlockedTools()
 			self.sv.hazardTools = Settings.Sv_HazardTools()
+			self.sv.hostOnlyTools = Settings.Sv_HostOnlyTools()
 			self.network:sendToClients( "client_setBlockedTools", self:sv_toolPayload() )
 			self:sv_toWorld( "/settingschanged", {}, player )
 			self:sv_broadcast( "Server preset: " .. detail )
@@ -719,6 +736,7 @@ function Game.sv_n_adminCommand( self, params, player )
 		if ok then
 			self.sv.blockedTools = Settings.Sv_BlockedTools()
 			self.sv.hazardTools = Settings.Sv_HazardTools()
+			self.sv.hostOnlyTools = Settings.Sv_HostOnlyTools()
 			self.network:sendToClients( "client_setBlockedTools", self:sv_toolPayload() )
 			self:sv_toWorld( "/settingschanged", params, player )
 			self:sv_broadcast( "Server preset: " .. detail )
@@ -740,6 +758,7 @@ function Game.sv_n_adminCommand( self, params, player )
 		if ok then
 			self.sv.blockedTools = Settings.Sv_BlockedTools()
 			self.sv.hazardTools = Settings.Sv_HazardTools()
+			self.sv.hostOnlyTools = Settings.Sv_HostOnlyTools()
 			self.network:sendToClients( "client_setBlockedTools", self:sv_toolPayload() )
 			self:sv_toWorld( "/settingschanged", params, player )
 			self:sv_broadcast( "Server setting changed: " .. detail )

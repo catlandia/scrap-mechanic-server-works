@@ -54,7 +54,7 @@ SettingsGui.GROUPS = {
 		"cleanupdebris", "autoremove" } },
 	{ key = "tools", title = "TOOLS", keys = {
 		"claygun", "firelauncher", "extinguisher", "sledgehammer", "spudguns",
-		"glowsticks", "painttool", "connecttool", "weldtool", "lift" } },
+		"glowsticks", "painttool", "connecttool", "weldtool", "lift", "hostlift" } },
 	{ key = "plots", title = "PLOTS", keys = {
 		"plots", "pushintruders", "buildopen", "minbuildheight" } },
 	{ key = "limits", title = "LIMITS", keys = {

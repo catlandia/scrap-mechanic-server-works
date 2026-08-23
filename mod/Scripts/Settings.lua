@@ -55,6 +55,11 @@ local HAZARD = {
 	claygun = true, firelauncher = true, cornades = true, extinguisher = true,
 }
 
+-- Tools only the host may hold, even when the tool itself is switched on. The
+-- lift is here because it spawns whole saved creations out of thin air: fine for
+-- whoever is running the event, not something a lobby of guests should each have.
+local HOST_ONLY = { lift = "hostlift" }
+
 local TOOLS = {
 	-- default OFF
 	claygun = {
@@ -144,6 +149,8 @@ Settings.SCHEMA = {
 	{ key = "connecttool", kind = "bool", default = true, help = "allow the connect tool" },
 	{ key = "weldtool", kind = "bool", default = true, help = "allow the weld tool" },
 	{ key = "lift", kind = "bool", default = true, help = "allow the lift" },
+	{ key = "hostlift", kind = "bool", default = true,
+	  help = "only the host may use the lift (it spawns whole creations)" },
 
 	{ key = "plots", kind = "bool", default = false, help = "restrict building to owned plots" },
 	{ key = "pushintruders", kind = "bool", default = true,
@@ -431,6 +438,19 @@ function Settings.Sv_BlockedTools()
 	for name, uuids in pairs( TOOLS ) do
 		if Settings.Get( name ) == false then
 			for _, uuid in ipairs( uuids ) do
+				blocked[tostring( uuid )] = name
+			end
+		end
+	end
+	return blocked
+end
+
+-- Blocked for guests but not the host: the setting names which gate applies.
+function Settings.Sv_HostOnlyTools()
+	local blocked = {}
+	for name, gate in pairs( HOST_ONLY ) do
+		if Settings.Get( gate ) == true then
+			for _, uuid in ipairs( TOOLS[name] or {} ) do
 				blocked[tostring( uuid )] = name
 			end
 		end
