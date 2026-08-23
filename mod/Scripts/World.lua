@@ -360,6 +360,14 @@ function World.sv_e_swCommand( self, params )
 		local ok, detail = g_swProtection:sv_setMode( mode )
 		if ok then
 			Settings.Sv_SetQuiet( "protection", mode )
+			-- A locked world means locked: hazards go off regardless of what the
+			-- settings panel says, and stay off until the world is reopened.
+			if mode ~= "open" then
+				for _, key in ipairs( { "claygun", "firelauncher", "cornades", "extinguisher" } ) do
+					Settings.Sv_SetQuiet( key, false )
+				end
+				sm.event.sendToGame( "sv_e_swToolsChanged", {} )
+			end
 			sm.log.info( string.format( "[ServerWorks] protection -> %s (%s)", mode, detail ) )
 			self:sv_broadcast(
 				mode == "locked" and ( "BUILDS LOCKED (strict) -- " .. detail )

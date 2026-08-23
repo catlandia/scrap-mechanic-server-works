@@ -507,16 +507,19 @@ function Settings.Sv_StripBlocked( player, blocked )
 	return removed
 end
 
+-- NO stripping. A creative inventory is infinite (CreativeGame sets
+-- enableLimitedInventory = false), so clearing a slot refills instantly and
+-- reports success forever -- measured as "took firelauncher" twelve times in a
+-- second while the player stood there holding it. The item cannot be taken away;
+-- the TOOL is disabled instead, in GuardedTools.lua.
 function Settings.Sv_CheckTools( players, blocked, notify )
 	for _, player in ipairs( players ) do
-		-- take it out of the inventory first; that is what actually sticks
-		local taken = Settings.Sv_StripBlocked( player, blocked )
-
 		local ok, uuid = pcall( function() return player:getCurrentToolUuid() end )
-		local held = ok and uuid and blocked[tostring( uuid )] or nil
-
-		if taken or held then
-			notify( player, taken or held, taken ~= nil )
+		if ok and uuid then
+			local name = blocked[tostring( uuid )]
+			if name then
+				notify( player, name )
+			end
 		end
 	end
 end

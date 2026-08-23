@@ -3,6 +3,7 @@ dofile( "$CONTENT_DATA/Scripts/Settings.lua" )
 dofile( "$CONTENT_DATA/Scripts/Identity.lua" )
 dofile( "$CONTENT_DATA/Scripts/SettingsGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/PlotsGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/GuardedTools.lua" )
 -- IndexWidgets and friends. BasePlayer pulls this in too, but relying on load
 -- order for a global is how you get a nil at the worst moment.
 dofile( "$SURVIVAL_DATA/Scripts/util.lua" )
@@ -163,6 +164,13 @@ function Game.sv_e_swReply( self, params )
 	end
 end
 
+function Game.sv_e_swToolsChanged( self, params )
+	self.sv.blockedTools = Settings.Sv_BlockedTools()
+	self.sv.hazardTools = Settings.Sv_HazardTools()
+	self.sv.hostOnlyTools = Settings.Sv_HostOnlyTools()
+	self.network:sendToClients( "client_setBlockedTools", self:sv_toolPayload() )
+end
+
 function Game.sv_e_swBroadcast( self, params )
 	self.network:sendToClients( "client_showMessage", params.text )
 end
@@ -213,14 +221,8 @@ function Game.sv_checkToolGuard( self, tick )
 	-- Only speak when something was actually taken. The old version messaged on
 	-- every poll while the tool stayed in the player's hands, which is how a ban
 	-- turned into a wall of chat instead of a removal.
-	self.sv.toolWarned = self.sv.toolWarned or {}
-	local drop = function( player, name, wasRemoved )
-		self.network:sendToClient( player, "client_dropTool",
-			{ name = name, removed = wasRemoved } )
-		if wasRemoved then
-			sm.log.info( string.format( "[ServerWorks] took %s from %s",
-				tostring( name ), tostring( player.name ) ) )
-		end
+	local drop = function( player, name )
+		self.network:sendToClient( player, "client_dropTool", { name = name } )
 	end
 	local blocked = self.sv.blockedTools
 	local guestBlocked = self:sv_toolPayload().guest
@@ -310,6 +312,13 @@ function Game.client_setBlockedTools( self, data )
 	if self.cl == nil then self.cl = {} end
 	self.cl.toolsGuest = ( data and data.guest ) or {}
 	self.cl.toolsHost = ( data and data.host ) or {}
+
+	-- GuardedTools reads this by NAME, because a tool script has no idea which
+	-- uuid it was instantiated from.
+	g_swBlockedNames = {}
+	for _, name in pairs( sm.isHost and self.cl.toolsHost or self.cl.toolsGuest ) do
+		g_swBlockedNames[name] = true
+	end
 end
 
 function Game.client_onFixedUpdate( self, dt )
@@ -347,7 +356,6 @@ end
 
 function Game.client_dropTool( self, data )
 	local name = type( data ) == "table" and data.name or data
-	local removed = type( data ) == "table" and data.removed or false
 
 	-- forceTool is client-side only: the server can see what you hold, but only
 	-- your own client can put it away. The server has already taken the item out
@@ -355,15 +363,14 @@ function Game.client_dropTool( self, data )
 	pcall( sm.tool.forceTool, nil )
 
 	if self.cl == nil then self.cl = {} end
-	if self.cl.lastDropWarn == name and not removed then
+	if self.cl.lastDropWarn == name then
 		return                      -- do not narrate the same ban over and over
 	end
 	self.cl.lastDropWarn = name
 
 	sm.gui.chatMessage( ( name == "lift" )
-		and "The lift is host only on this server -- taken from your inventory."
-		or string.format( "The %s is disabled on this server -- taken from your inventory.",
-			tostring( name ) ) )
+		and "The lift is host only on this server."
+		or string.format( "The %s is disabled on this server.", tostring( name ) ) )
 end
 
 function Game.client_onCreate( self )
