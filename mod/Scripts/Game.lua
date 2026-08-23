@@ -210,8 +210,17 @@ function Game.sv_checkToolGuard( self, tick )
 		if p == host then hosts[#hosts + 1] = p else guests[#guests + 1] = p end
 	end
 
-	local drop = function( player, name )
-		self.network:sendToClient( player, "client_dropTool", name )
+	-- Only speak when something was actually taken. The old version messaged on
+	-- every poll while the tool stayed in the player's hands, which is how a ban
+	-- turned into a wall of chat instead of a removal.
+	self.sv.toolWarned = self.sv.toolWarned or {}
+	local drop = function( player, name, wasRemoved )
+		self.network:sendToClient( player, "client_dropTool",
+			{ name = name, removed = wasRemoved } )
+		if wasRemoved then
+			sm.log.info( string.format( "[ServerWorks] took %s from %s",
+				tostring( name ), tostring( player.name ) ) )
+		end
 	end
 	local blocked = self.sv.blockedTools
 	local guestBlocked = self:sv_toolPayload().guest
@@ -326,7 +335,8 @@ function Game.client_onFixedUpdate( self, dt )
 
 	pcall( sm.tool.forceTool, nil )
 
-	-- One message per pickup, not one per tick.
+	-- One message per pickup, not one per tick. The server strips the item on its
+	-- own poll; this just makes the hand empty immediately.
 	if self.cl.lastBlockedWarn ~= name then
 		self.cl.lastBlockedWarn = name
 		sm.gui.chatMessage( ( name == "lift" )
@@ -335,13 +345,25 @@ function Game.client_onFixedUpdate( self, dt )
 	end
 end
 
-function Game.client_dropTool( self, name )
+function Game.client_dropTool( self, data )
+	local name = type( data ) == "table" and data.name or data
+	local removed = type( data ) == "table" and data.removed or false
+
 	-- forceTool is client-side only: the server can see what you hold, but only
-	-- your own client can put it away.
+	-- your own client can put it away. The server has already taken the item out
+	-- of the inventory; this is what clears it from the hand this instant.
 	pcall( sm.tool.forceTool, nil )
+
+	if self.cl == nil then self.cl = {} end
+	if self.cl.lastDropWarn == name and not removed then
+		return                      -- do not narrate the same ban over and over
+	end
+	self.cl.lastDropWarn = name
+
 	sm.gui.chatMessage( ( name == "lift" )
-		and "The lift is host only on this server."
-		or string.format( "The %s is disabled on this server.", tostring( name ) ) )
+		and "The lift is host only on this server -- taken from your inventory."
+		or string.format( "The %s is disabled on this server -- taken from your inventory.",
+			tostring( name ) ) )
 end
 
 function Game.client_onCreate( self )

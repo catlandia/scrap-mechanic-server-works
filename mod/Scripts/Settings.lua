@@ -470,16 +470,53 @@ function Settings.Sv_HazardTools()
 	return blocked
 end
 
--- The item stays in the creative menu -- Lua cannot edit that list -- but the
--- moment it is equipped the client is told to drop it, so it never gets used.
+-- The item stays in the creative MENU -- Lua cannot edit that list -- but it does
+-- not have to stay in the player's hands or their inventory.
+--
+-- sm.tool.forceTool( nil ) alone was not enough: it unequips, and the player just
+-- picks the thing straight back up, which is why a banned tool only ever produced
+-- a stream of "disabled" messages. Taking the item OUT is the fix, and vanilla
+-- shows how -- setItem with a nil uuid inside a transaction
+-- (ChallengeGame.lua:86, BuilderWorld.lua:121).
+--
+-- Returns the name of whatever was taken, or nil.
+function Settings.Sv_StripBlocked( player, blocked )
+	local removed = nil
+	local ok = pcall( function()
+		sm.container.beginTransaction()
+		for _, container in ipairs( { player:getInventory(), player:getCarry() } ) do
+			if container and sm.exists( container ) then
+				for i = 0, container:getSize() - 1 do
+					local item = container:getItem( i )
+					if item and item.uuid then
+						local name = blocked[tostring( item.uuid )]
+						if name then
+							sm.container.setItem( container, i, sm.uuid.getNil(), 0 )
+							removed = name
+						end
+					end
+				end
+			end
+		end
+		sm.container.endTransaction()
+	end )
+	if not ok then
+		pcall( sm.container.abortTransaction )
+		return nil
+	end
+	return removed
+end
+
 function Settings.Sv_CheckTools( players, blocked, notify )
 	for _, player in ipairs( players ) do
+		-- take it out of the inventory first; that is what actually sticks
+		local taken = Settings.Sv_StripBlocked( player, blocked )
+
 		local ok, uuid = pcall( function() return player:getCurrentToolUuid() end )
-		if ok and uuid then
-			local name = blocked[tostring( uuid )]
-			if name then
-				notify( player, name )
-			end
+		local held = ok and uuid and blocked[tostring( uuid )] or nil
+
+		if taken or held then
+			notify( player, taken or held, taken ~= nil )
 		end
 	end
 end
