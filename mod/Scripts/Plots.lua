@@ -416,8 +416,12 @@ Plots.METAL2 = "1016cafc-9f6b-40c9-8713-9019d399783f"     -- blk_metal2
 Plots.CONCRETE_COLOR = "8d8f89"
 Plots.METAL2_COLOR = "68615c"
 
+Plots.METAL3 = "c0dfdea5-a39d-433a-b94a-299345a5df46"     -- blk_metal3
+Plots.METAL3_COLOR = "4a4a4a"
+
 Plots.DECK_Z = 4        -- blocks above ground that the city deck sits at
 Plots.PILLAR = 4        -- pillar footprint, blocks square
+Plots.SPAWN = 50        -- spawn plaza, blocks square, centred on world origin
 
 local function child( uuid, colour, x, y, z, sx, sy, sz )
 	return {
@@ -432,6 +436,39 @@ end
 
 local function blueprint( childs )
 	return { version = 4, bodies = { { childs = childs } }, joints = {} }
+end
+
+-- The spawn plaza occupies the middle of the city, so the plots that would sit
+-- under it are simply not built. A city with a square hole in the centre is what
+-- a plaza looks like; overlapping geometry is what a bug looks like.
+function Plots.sv_spawnBounds( self )
+	local half = math.floor( Plots.SPAWN / 2 )
+	return -half, -half, half, half        -- in blocks, inclusive-exclusive
+end
+
+function Plots.sv_plotHitsSpawn( self, col, row )
+	if Plots.SPAWN <= 0 then return false end
+	local g = self.grid
+	local s = self:sv_stride()
+	local ox, oy = self:sv_originBlocks()
+	local x0, y0 = ox + col * s, oy + row * s
+	local x1, y1 = x0 + g.plot, y0 + g.plot
+	local sx0, sy0, sx1, sy1 = self:sv_spawnBounds()
+	return x0 < sx1 and x1 > sx0 and y0 < sy1 and y1 > sy0
+end
+
+-- The plaza: a metal 3 plate on its own pillar, centred on the world origin.
+function Plots.sv_spawnBlueprint( self )
+	if Plots.SPAWN <= 0 then return nil end
+	local x0, y0 = self:sv_spawnBounds()
+	local pil = math.max( Plots.PILLAR, math.floor( Plots.SPAWN / 4 ) )
+	local inset = math.floor( ( Plots.SPAWN - pil ) / 2 )
+	return blueprint{
+		child( Plots.METAL3, Plots.METAL3_COLOR,
+			x0 + inset, y0 + inset, 0, pil, pil, Plots.DECK_Z ),
+		child( Plots.METAL3, Plots.METAL3_COLOR,
+			x0, y0, Plots.DECK_Z, Plots.SPAWN, Plots.SPAWN, 1 ),
+	}
 end
 
 -- One plot: pillar plus slab, contiguous, so it imports as a single body that a
@@ -460,30 +497,44 @@ function Plots.sv_walkwayBlueprint( self )
 	local ox, oy = self:sv_originBlocks()
 	local childs = {}
 
+	local sx0, sy0, sx1, sy1 = self:sv_spawnBounds()
+	local function clear( x, y, w, h )
+		if Plots.SPAWN <= 0 then return true end
+		return not ( x < sx1 and x + w > sx0 and y < sy1 and y + h > sy0 )
+	end
+
 	for row = 0, g.rows - 1 do
 		for col = 0, g.cols - 1 do
 			-- the line after this plot on the Y side, plot-width only so it never
 			-- overlaps the full-height strips below
-			childs[#childs + 1] = child( Plots.METAL2, Plots.METAL2_COLOR,
-				ox + col * s, oy + row * s + g.plot, Plots.DECK_Z, g.plot, g.gap, 1 )
+			local ax, ay = ox + col * s, oy + row * s + g.plot
+			if clear( ax, ay, g.plot, g.gap ) then
+				childs[#childs + 1] = child( Plots.METAL2, Plots.METAL2_COLOR,
+					ax, ay, Plots.DECK_Z, g.plot, g.gap, 1 )
+			end
 			-- the line after each column, full cell height, filling the crossings
-			childs[#childs + 1] = child( Plots.METAL2, Plots.METAL2_COLOR,
-				ox + col * s + g.plot, oy + row * s, Plots.DECK_Z, g.gap, s, 1 )
+			local bx, by = ox + col * s + g.plot, oy + row * s
+			if clear( bx, by, g.gap, s ) then
+				childs[#childs + 1] = child( Plots.METAL2, Plots.METAL2_COLOR,
+					bx, by, Plots.DECK_Z, g.gap, s, 1 )
+			end
 		end
 	end
+	if #childs == 0 then return nil end
 	return blueprint( childs )
 end
 
--- Walkways are the one part of the city that must never be erased, and they are
--- identifiable because nothing can ever be built on them: a body made entirely of
--- metal 2 sitting at deck height is a walkway and nothing else.
+-- Streets and the spawn plaza are the parts of the city that must never be
+-- erased, and they are identifiable because nothing can ever be built on them: a
+-- body made entirely of metal 2 or metal 3 sitting at deck height is scenery and
+-- nothing else. Plot slabs are concrete, so they never match this.
 --
 -- The plot slabs deliberately are NOT protected this way. A player's build welds
 -- onto its slab, so the slab is part of their creation and follows the ordinary
 -- plot rules -- which is exactly what makes the whole plot exportable as one
 -- piece. The cost is that an owner can erase their own floor; /plotbuild puts it
 -- back.
-function Plots.sv_isWalkway( self, body )
+function Plots.sv_isScenery( self, body )
 	local ok, pos = pcall( function() return body.worldPosition end )
 	if not ok or pos == nil then return false end
 	if pos.z > ( Plots.DECK_Z + 2 ) * Plots.BLOCK then return false end
@@ -491,7 +542,8 @@ function Plots.sv_isWalkway( self, body )
 	local got, shapes = pcall( function() return body:getShapes() end )
 	if not got or shapes == nil or #shapes == 0 then return false end
 	for _, shape in ipairs( shapes ) do
-		if tostring( shape.shapeUuid ) ~= Plots.METAL2 then
+		local u = tostring( shape.shapeUuid )
+		if u ~= Plots.METAL2 and u ~= Plots.METAL3 then
 			return false
 		end
 	end

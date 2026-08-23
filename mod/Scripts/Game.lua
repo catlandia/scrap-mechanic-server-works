@@ -115,6 +115,15 @@ function Game.server_onCreate( self )
 	self.sv.pendingRestore = nil
 end
 
+-- CreativeGame drops new players at 16,16, which with a centred city is somebody
+-- else's plot. Spawn on the plaza instead. CreativeBaseWorld.sv_e_spawnNewCharacter
+-- spherecasts straight down from z=1024 at the given x,y, so it lands on top of
+-- whatever is there -- the plate, once it is built.
+function Game.sv_createNewPlayer( self, world, x, y, player )
+	sm.event.sendToWorld( self.sv.saved.world, "sv_e_spawnNewCharacter",
+		{ player = player, x = 0, y = 0 } )
+end
+
 function Game.sv_world( self )
 	return self.sv.saved and self.sv.saved.world or nil
 end

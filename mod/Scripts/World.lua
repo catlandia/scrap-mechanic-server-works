@@ -68,10 +68,10 @@ function World.server_onCreate( self )
 	g_swProtection:sv_onCreate( Settings.Get( "protection" ) )
 
 	g_swProtection:sv_setResolver( function( body )
-		-- Walkways are scenery and can never be built on, so they are always
+		-- Streets and the spawn plaza can never be built on, so they are always
 		-- locked -- otherwise the "sweep" profile that keeps litter clearable off
 		-- shared ground would let anyone delete the streets too.
-		if g_swPlots:sv_isWalkway( body ) then
+		if g_swPlots:sv_isScenery( body ) then
 			return "locked"
 		end
 		-- Rule 3: nothing is buildable at all until the host opens building.
@@ -607,11 +607,18 @@ function World.sv_buildFloor( self, reply )
 
 	local g = g_swPlots.grid
 	local queue = {}
+	local skipped = 0
 	for row = 0, g.rows - 1 do
 		for col = 0, g.cols - 1 do
-			queue[#queue + 1] = { col = col, row = row }
+			-- plots under the spawn plaza are simply not built
+			if g_swPlots:sv_plotHitsSpawn( col, row ) then
+				skipped = skipped + 1
+			else
+				queue[#queue + 1] = { col = col, row = row }
+			end
 		end
 	end
+	self.sw.plazaSkipped = skipped
 	self.sw.cityJob = { queue = queue, cursor = 1, built = 0, failed = 0, walkway = false }
 	reply( string.format( "building %d plots...", #queue ) )
 end
@@ -664,13 +671,18 @@ function World.sv_stepCity( self )
 	if job.cursor > #job.queue then
 		if not job.walkway then
 			job.walkway = true
-			local bp = g_swPlots:sv_walkwayBlueprint()
-			if bp then
-				local bodies, err = self:sv_importBlueprint( bp )
-				if bodies then
-					pinCity( bodies, false )     -- nobody builds on the streets
-				else
-					sm.log.warning( "[ServerWorks] walkway import failed: " .. tostring( err ) )
+			for label, bp in pairs( {
+				streets = g_swPlots:sv_walkwayBlueprint(),
+				plaza = g_swPlots:sv_spawnBlueprint(),
+			} ) do
+				if bp then
+					local bodies, err = self:sv_importBlueprint( bp )
+					if bodies then
+						pinCity( bodies, false )   -- nobody builds on shared ground
+					else
+						sm.log.warning( string.format( "[ServerWorks] %s import failed: %s",
+							label, tostring( err ) ) )
+					end
 				end
 			end
 		end
@@ -678,9 +690,13 @@ function World.sv_stepCity( self )
 		sm.log.info( string.format( "[ServerWorks] city built: %d plots, %d failed",
 			job.built, job.failed ) )
 		self:sv_broadcast( string.format(
-			"City built: %d plots of %d blocks on pillars, %d block streets.%s",
-			job.built, g.plot, g.gap,
+			"City built: %d plots of %d blocks on pillars, %d block streets, %dx%d spawn plaza.%s",
+			job.built, g.plot, g.gap, Plots.SPAWN, Plots.SPAWN,
 			job.failed > 0 and string.format( " %d failed.", job.failed ) or "" ) )
+		if ( self.sw.plazaSkipped or 0 ) > 0 then
+			self:sv_broadcast( string.format( "%d plots left out for the plaza.",
+				self.sw.plazaSkipped ) )
+		end
 		self.sw.cityJob = nil
 	end
 end
