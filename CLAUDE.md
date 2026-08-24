@@ -79,6 +79,20 @@ Template `config.json` shape is at `Data/ExampleMods/Templates/Survival Custom G
 `CreativeFlatWorld`, `CreativeTerrainWorld`, `CreativeCustomWorld`,
 `ClassicCreativeTerrainWorld` — all in `Data/Scripts/game/worlds/`.
 
+### Anti-grief: the whole argument is in docs/ANTI-GRIEF.md
+
+Why it cannot be prevention, where griefing is still possible and why each of
+those places is a consequence rather than an oversight, what the alarm actually
+measures, and what it cannot do. Read it before changing anything about
+protection, plots or the alarm.
+
+The short version: the engine fires no callback when a block is placed or
+destroyed, so there is no moment to intervene in — everything is state plus a
+patrol. Body flags are per-body, so "only your own plot" is approximated by
+presence. And an event needs plots buildable *while the event runs*, so damage by
+somebody with legitimate access is not preventable at all. That is the gap the
+alarm exists to detect, contain and reverse.
+
 ### Anti-grief is an engine primitive, not something we invent
 
 Bodies carry the whole permission set: `setBuildable`, `setErasable`, `setConnectable`,
