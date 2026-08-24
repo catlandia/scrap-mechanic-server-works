@@ -629,6 +629,28 @@ Plots.BORDER = 1
 -- its body position dragged up above any height test, so the old test missed it
 -- and a rebuild imported a fresh slab into the same space. That is what
 -- "some stuff is overlaid" looked like.
+-- Above this world height, a block of our own materials is SOMEBODY'S BUILD.
+--
+-- REPORTED: "whatever the block is metal 2 or concrete it counts as part of the
+-- city whatever of it actualy being so." Right, and the slop was the cause.
+--
+-- The city's top layer is block z = DECK_Z, which spans world z 1.00 to 1.25. A
+-- player builds ON it, so their first block is the layer above: 1.25 to 1.50.
+-- The old test allowed anything up to 1.30 -- so if shape.worldPosition is the
+-- MINIMUM CORNER rather than the centre, a player's first block sat at exactly
+-- 1.25 and was classed as city floor. The cleaner then refused to delete it and
+-- CLEAR CITY would have taken it.
+--
+-- 1.1875 is three quarters of the way up our own layer, which clears both
+-- readings with room on either side:
+--
+--   our deck      min corner 1.0000   centre 1.1250   -> city
+--   their block   min corner 1.2500   centre 1.3750   -> not city
+--
+-- Guessing between two possible meanings of worldPosition is not something to
+-- rely on, so the threshold is set where both give the same answer.
+Plots.CITY_CEILING = ( Plots.DECK_Z + 0.75 ) * Plots.BLOCK
+
 Plots.CITY_UUIDS = {
 	[Plots.CONCRETE] = true, [Plots.METAL2] = true, [Plots.METAL3] = true,
 }
@@ -826,7 +848,5 @@ function Plots.sv_isCityShape( self, shape )
 	if not ok or not Plots.CITY_UUIDS[u] then return false end
 	local got, pos = pcall( function() return shape.worldPosition end )
 	if not got or pos == nil then return false end
-	-- The deck is at DECK_Z, the pillar runs from 0 up to it. Anything at or
-	-- below the deck's top surface is ours; anything above it is somebody's build.
-	return pos.z <= ( Plots.DECK_Z + 1 ) * Plots.BLOCK + 0.05
+	return pos.z < Plots.CITY_CEILING
 end

@@ -172,6 +172,35 @@ plaza and the pillar. It never bit anyone only because it was a chat command
 nobody ran. The guard is per SHAPE, not per body, because a build welded to a
 plot slab is one body with our concrete in it.
 
+### A profile that exists is not a profile any body receives
+
+**V34 shipped the polish profile with a check that passed and a feature that did
+nothing**, and the shape of that mistake is worth more than the fix.
+
+The check read the PROFILES table and asserted `polish` was paintable, usable and
+not buildable. All true. But `sv_applyEventPhase` sets `buildopen = false` for
+every phase that is not `build`, and the resolver's blanket
+
+    if Settings.Get( "buildopen" ) == false then return false end
+
+fired first and returned `locked`. **Buffer time was identical to prep.** The
+profile was correct and unreachable.
+
+Two rules out of it:
+
+- **`buildopen` is a HOST toggle and must not override a MODE that already
+  denies building.** `Protection.sv_modeClosesBuilding` says whether the current
+  mode's own profile is already `buildable = false`; if it is, the blanket has
+  nothing to add and does real harm.
+- **Check the resolver, not the table.** `dev/test_logic.py` now builds a real
+  `Protection`, a real `Plots`, the actual resolver, and a body standing on a
+  real plot, then asks what that body would be given. Reading a data table can
+  only ever prove the data.
+
+The fixture stands on `Layout.plotCentre( grid, 1 )` and asserts the zone is a
+buildable plot first — the origin is the **plaza**, which resolves to `sweep`,
+and a check written there would have passed for entirely the wrong reason.
+
 ### Protection modes short-circuit, so anything that closes building must set one
 
 `Protection.profileFor` begins:
@@ -380,6 +409,28 @@ starts at 1.25. A build welded to a slab shares the slab's body and is pinned
 with it, which is correct: it is part of the ground now.
 
 A check asserts every return path in `profileFor` goes through the pin.
+
+### Our own materials are ordinary blocks — only HEIGHT tells them apart
+
+Metal 2, metal 3 and concrete are what the city is made of *and* what people
+build with. The only thing separating them is where they sit.
+
+    our top layer   block z = DECK_Z    world z 1.00 .. 1.25
+    their first     block z = DECK_Z+1  world z 1.25 .. 1.50
+
+**And `shape.worldPosition` might be the minimum corner or the centre** — no
+vanilla call settles it. With a threshold of 1.30 the min-corner reading put a
+player's first block at exactly 1.25 and classed it as city floor: the cleaner
+refused to delete it, and CLEAR CITY would have taken it. REPORTED as *"whatever
+the block is metal 2 or concrete it counts as part of the city whatever of it
+actualy being so."*
+
+`Plots.CITY_CEILING` is `( DECK_Z + 0.75 ) * BLOCK` = **1.1875** — three quarters
+of the way up our own layer, which gives the same answer under both readings with
+room on either side. The check tests both.
+
+`CleanerTool` restates the number because a tool script may not share the
+Game/World environment, and a check asserts the two never drift apart.
 
 ### One body's `childs` array IS the weld group
 

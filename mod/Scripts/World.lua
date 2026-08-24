@@ -99,8 +99,14 @@ function World.server_onCreate( self )
 			return "sweep"
 		end
 
-		-- Rule 3: nothing is buildable at all until the host opens building.
-		if Settings.Get( "buildopen" ) == false then
+		-- Rule 3: nothing is buildable at all until the host opens building --
+		-- UNLESS the mode already says so on its own, in which case this blanket
+		-- has nothing to add and does real harm. See
+		-- Protection.sv_modeClosesBuilding: during buffer time it was replacing
+		-- the polish profile with `locked`, so buffer behaved exactly like prep
+		-- and the paint, seats and controllers a buffer exists for were gone.
+		if Settings.Get( "buildopen" ) == false
+			and not g_swProtection:sv_modeClosesBuilding() then
 			return false
 		end
 		return zone

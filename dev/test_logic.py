@@ -585,6 +585,109 @@ def the_city_floor_is_never_liftable_or_dynamic():
     assert len(returns) >= 5, f"only found {len(returns)} return paths -- parse is wrong"
 
 
+def buffer_time_actually_reaches_the_polish_profile():
+    """Having the right profile is not the same as a body ever getting it.
+
+    REPORTED: "please make as I said to the buffer time. because it doesnt work
+    this way yet."
+
+    V34 added the polish profile and pointed the buffer phase at it, and the
+    check for that passed -- because it only checked the TABLE. What actually
+    happened in game: sv_applyEventPhase sets buildopen = false for every phase
+    that is not build, and the resolver's blanket
+
+        if Settings.Get( "buildopen" ) == false then return false end
+
+    fired FIRST and returned `locked`. Buffer was identical to prep. The polish
+    profile was correct and unreachable.
+
+    So this runs the resolver itself, which is the only thing that could have
+    caught it.
+    """
+    lua = fresh("Layout.lua", "Settings.lua", "Protection.lua", "Plots.lua", "Event.lua")
+    lua.globals().Settings.Sv_Load(False)
+    P, Prot = lua.globals().Plots, lua.globals().Protection
+
+    plots = lua.eval("Plots()")
+    P.sv_onCreate(plots, lua.table_from({"grid": lua.table_from({}), "enabled": True}))
+    plots["enabled"] = True
+    lua.globals().g_swPlots = plots
+
+    prot = lua.eval("Protection()")
+    Prot.sv_onCreate(prot, "open")
+    lua.globals().g_swProtection = prot
+
+    # the resolver, transcribed from World.server_onCreate. If World's copy and
+    # this one ever disagree the check below is worthless, so it is asserted
+    # against the real source afterwards.
+    resolver = lua.execute("""
+        return function( body )
+            if g_swPlots:sv_isScenery( body ) then return "locked" end
+            local zone = g_swPlots:sv_bodyIsOpen( body )
+            if zone == "sweep" then return "sweep" end
+            if Settings.Get( "buildopen" ) == false
+                and not g_swProtection:sv_modeClosesBuilding() then
+                return false
+            end
+            return zone
+        end
+    """)
+    world_src = io.open(SCRIPTS / "World.lua", encoding="utf-8").read()
+    assert "sv_modeClosesBuilding()" in world_src, (
+        "World.lua's resolver no longer consults sv_modeClosesBuilding, so buffer "
+        "time is blanket-locked again")
+
+    Prot.sv_setResolver(prot, resolver)
+
+    # A body standing on a PLOT, made of a player's own blocks.
+    #
+    # Not at the origin: the origin is the plaza, which resolves to "sweep" and
+    # would have made this check pass for entirely the wrong reason. Ask Layout
+    # where a real plot is.
+    bx, by = lua.globals().Layout.plotCentre(plots["layout"], 1)
+    assert bx is not None, "plot 1 does not exist -- the fixture is wrong"
+    block = float(P.BLOCK)
+    make_body = lua.execute("""
+        return function( x, y, z )
+            local b = { worldPosition = { x = x, y = y, z = z } }
+            function b:getShapes() return { { shapeUuid = "not-ours" } } end
+            function b:getWorldAabb()
+                return { x = x, y = y, z = z }, { x = x, y = y, z = z + 1 }
+            end
+            return b
+        end
+    """)
+    body = make_body(float(bx) * block, float(by) * block, 1.5)
+
+    zone = P.sv_bodyIsOpen(plots, body)
+    assert zone is True, (
+        f"the fixture is not standing on a buildable plot -- sv_bodyIsOpen says "
+        f"{zone!r}, so this check would pass for the wrong reason")
+
+    def flags(mode, buildopen):
+        Prot.sv_setMode(prot, mode)
+        lua.globals().Settings.Sv_SetQuiet("buildopen", buildopen)
+        # profileFor returns ( profile, name ), so lupa hands back a tuple
+        got = Prot.sv_profileForTest(prot, body)
+        return got[0] if isinstance(got, tuple) else got
+
+    # buffer: buildopen is false, and the mode must still decide
+    got = flags("polish", False)
+    assert got is not None, "no profile came back at all"
+    assert got["buildable"] is False, "buffer let somebody place a block"
+    assert got["erasable"] is False, "buffer let somebody break a block"
+    assert got["paintable"] is True, (
+        "buffer is not paintable -- the buildopen blanket is locking it again, "
+        "which is the exact bug this check exists for")
+    assert got["connectable"] is True, "buffer cannot rewire a controller"
+    assert got["usable"] is True, "buffer cannot sit in a seat or press a button"
+
+    # and the blanket still works where it should: open mode, host closes building
+    shut = flags("open", False)
+    assert shut["buildable"] is False and shut["paintable"] is False, (
+        "closing building in OPEN mode no longer locks anything")
+
+
 def buffer_time_lets_you_polish_but_not_place_or_break():
     """The buffer phase resolves to a profile that adjusts, never builds.
 
@@ -745,6 +848,60 @@ def an_unclaimed_empty_plot_stays_open():
         {"x": bx * 0.25, "y": by * 0.25, "z": 1.3})})
     assert P.sv_bodyIsOpen(plots, body) is True, (
         "an unclaimed plot with nobody on it should not be locked")
+
+
+def a_players_block_of_our_materials_is_not_the_city():
+    """Metal 2 and concrete are ordinary building blocks. Height decides.
+
+    REPORTED: "whatever the block is metal 2 or concrete it counts as part of the
+    city whatever of it actualy being so."
+
+    The city's top layer is block z = DECK_Z, world z 1.00 to 1.25. A player
+    builds ON it, so their first block is 1.25 to 1.50. The old test allowed
+    anything up to 1.30 -- so if shape.worldPosition means the MINIMUM CORNER
+    rather than the centre, a player's first block sat at exactly 1.25 and was
+    classed as city floor: the cleaner refused to delete it and CLEAR CITY would
+    have taken it.
+
+    Both readings are checked, because which one the engine means is a guess and
+    the threshold is set where the guess stops mattering.
+    """
+    lua, plots = plots_lua()
+    P = lua.globals().Plots
+    B, DECK_Z = float(P.BLOCK), int(P.DECK_Z)
+
+    def shape_at(uuid, z):
+        return lua.table_from({"shapeUuid": uuid,
+                               "worldPosition": lua.table_from({"x": 0.0, "y": 0.0,
+                                                                "z": z})})
+
+    ours = [str(P.CONCRETE), str(P.METAL2), str(P.METAL3)]
+    deck_readings = {"min corner": DECK_Z * B, "centre": (DECK_Z + 0.5) * B}
+    build_readings = {"min corner": (DECK_Z + 1) * B, "centre": (DECK_Z + 1.5) * B}
+
+    for uuid in ours:
+        for how, z in deck_readings.items():
+            assert P.sv_isCityShape(plots, shape_at(uuid, z)) is True, (
+                f"our own deck at z={z} ({how}) was not recognised as city -- "
+                "CLEAR CITY would leave it behind")
+        for how, z in build_readings.items():
+            assert P.sv_isCityShape(plots, shape_at(uuid, z)) is False, (
+                f"a PLAYER's block at z={z} ({how}) was called city floor. It is "
+                "the layer directly above ours and it is theirs to delete.")
+
+    # and a block that is not one of our materials is never city, at any height
+    other = "b63c6440-dfc2-4da7-acdb-3c385080b2e4"
+    for z in list(deck_readings.values()) + list(build_readings.values()):
+        assert P.sv_isCityShape(plots, shape_at(other, z)) is False
+
+    # the cleaner restates the threshold because a tool script may not share the
+    # Game/World environment -- the two numbers must not drift apart
+    tool = io.open(SCRIPTS / "CleanerTool.lua", encoding="utf-8").read()
+    ceiling = float(P.CITY_CEILING)
+    assert f"{ceiling:g}" in tool, (
+        f"CleanerTool does not use the same ceiling ({ceiling:g}) as "
+        "Plots.CITY_CEILING, so the tool and the city would disagree about "
+        "which blocks are deletable")
 
 
 def the_decking_is_safe_but_litter_on_it_is_not():
@@ -1911,6 +2068,8 @@ def main():
     check("plots: public ground belongs to nobody", public_ground_belongs_to_nobody)
     check("plots: spawn is the middle of the map", spawn_is_the_middle_of_the_map)
     check("plots: an empty unclaimed plot stays open", an_unclaimed_empty_plot_stays_open)
+    check("plots: a player's block of our materials is not the city",
+          a_players_block_of_our_materials_is_not_the_city)
     check("plots: the decking is safe but litter standing on it is not",
           the_decking_is_safe_but_litter_on_it_is_not)
     check("plots: the city is many separate bodies",
@@ -1921,6 +2080,8 @@ def main():
           the_cleaner_is_wired_to_the_same_uuid_everywhere)
     check("protection: the city floor is never liftable or dynamic",
           the_city_floor_is_never_liftable_or_dynamic)
+    check("protection: buffer time actually reaches the polish profile",
+          buffer_time_actually_reaches_the_polish_profile)
     check("protection: buffer time polishes but never places or breaks",
           buffer_time_lets_you_polish_but_not_place_or_break)
     check("plots: junk outside the city stays clearable", outside_the_city_is_sweepable)

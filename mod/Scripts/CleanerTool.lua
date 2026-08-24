@@ -149,10 +149,18 @@ local function isCity( shape )
 	local got, uuid = pcall( function() return tostring( shape.shapeUuid ) end )
 	if not got then return true end                    -- unreadable: keep it
 	if not CITY[uuid] then return false end
-	-- Our decking is a slab a metre off the ground. Somebody's build made of the
-	-- same blocks, higher up, is theirs to delete.
+	-- Our decking is one block layer, world z 1.00 to 1.25. Somebody's build made
+	-- of the same materials starts on TOP of it, at 1.25. 1.1875 is three
+	-- quarters of the way up our own layer, which separates the two whether
+	-- worldPosition means the minimum corner or the centre -- the same number and
+	-- the same reason as Plots.CITY_CEILING, restated because a tool script may
+	-- not share that environment.
+	--
+	-- It used to be 1.35, which swallowed the whole first layer of everybody's
+	-- build: "whatever the block is metal 2 or concrete it counts as part of the
+	-- city whatever of it actualy being so."
 	local ok, pos = pcall( function() return shape.worldPosition end )
-	return ok and pos ~= nil and pos.z <= 1.35
+	return ok and pos ~= nil and pos.z < 1.1875
 end
 
 function CleanerTool.sv_n_swDelete( self, params, player )

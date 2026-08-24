@@ -333,6 +333,19 @@ function Protection.sv_setResolver( self, fn )
 	self.resolver = fn
 end
 
+-- Does the current MODE already deny building on its own?
+--
+-- `polish` (buffer time) is buildable = false and erasable = false in its own
+-- right, so the separate `buildopen` blanket has nothing left to add -- and
+-- applying it anyway replaced the polish profile with `locked`, which took away
+-- the paint, the seats and the controllers that are the entire point of a
+-- buffer. Buffer was identical to prep. REPORTED as "please make as I said to
+-- the buffer time. because it doesnt work this way yet."
+function Protection.sv_modeClosesBuilding( self )
+	local p = PROFILES[self.mode]
+	return p ~= nil and p.buildable == false
+end
+
 function Protection.sv_getMode( self )
 	return self.mode
 end
@@ -421,6 +434,14 @@ end
 
 -- Whole-world shape count as of the last completed patrol cycle, or nil before
 -- the first one finishes.
+-- The resolved profile for one body. Exists so dev/test_logic.py can ask the
+-- real resolver what a body would get, rather than reading the profile table and
+-- assuming a body ever receives it -- which is how buffer time shipped with the
+-- right profile and no way to reach it.
+function Protection.sv_profileForTest( self, body )
+	return profileFor( self, body )
+end
+
 function Protection.sv_census( self )
 	return self.census
 end

@@ -10,6 +10,59 @@ was most of them.
 
 ---
 
+## V41 — buffer time never actually ran, and your blocks were mistaken for the city
+
+### "whatever the block is metal 2 or concrete it counts as part of the city"
+
+Right, and the slop was the cause. The city's top layer is block `z = DECK_Z`,
+world z **1.00 to 1.25**. People build *on* it, so their first block is the layer
+above: **1.25 to 1.50**.
+
+**And `shape.worldPosition` might be the minimum corner or the centre** — nothing
+in the base game settles which. The test allowed anything up to 1.30, so under
+the min-corner reading a player's first block sat at exactly 1.25 and was classed
+as city floor: the cleaner refused to delete it, and CLEAR CITY would have taken
+it with the rest.
+
+`Plots.CITY_CEILING` is now `( DECK_Z + 0.75 ) * BLOCK` = **1.1875** — three
+quarters of the way up our own layer, which gives the same answer whichever way
+`worldPosition` is meant, with room on both sides. The check tests both readings
+against all three materials. `CleanerTool` restates the number, because a tool
+script may not share the Game/World environment, and a check asserts the two
+never drift apart.
+
+### "please make as I said to the buffer time. because it doesnt work this way yet"
+
+It did not, and V34's check passed anyway — which is the more useful half of this.
+
+V34 added the `polish` profile and pointed buffer at it. The check read the
+PROFILES table and asserted polish was paintable, usable and not buildable. All
+true. But `sv_applyEventPhase` sets `buildopen = false` for every phase that is
+not `build`, and the resolver's blanket
+
+    if Settings.Get( "buildopen" ) == false then return false end
+
+fired **first** and returned `locked`. **Buffer time was identical to prep.** The
+profile was correct and completely unreachable.
+
+Two things changed:
+
+- **`buildopen` is a host toggle and must not override a mode that already denies
+  building.** `Protection.sv_modeClosesBuilding` reports whether the current
+  mode's own profile is already `buildable = false`; when it is, the blanket has
+  nothing to add and does real harm.
+- **The check now runs the resolver**, not the table. It builds a real
+  `Protection`, a real `Plots`, the actual resolver and a body standing on a real
+  plot, then asks what that body would be given. Reading a data table can only
+  ever prove the data.
+
+The fixture stands on `Layout.plotCentre( grid, 1 )` and asserts the zone is a
+buildable plot *before* testing anything — the origin is the **plaza**, which
+resolves to `sweep`, and a check written there would have passed for entirely the
+wrong reason. It caught that on the first run.
+
+---
+
 ## V40 — type your own times, and the sweep is gone
 
 ### The sweep is removed
