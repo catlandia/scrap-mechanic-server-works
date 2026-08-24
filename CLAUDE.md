@@ -336,6 +336,28 @@ table:
 `enableCreations = false` on every vanilla creative world — so it does not mean
 player blueprints.
 
+### The city floor must be PINNED in every profile
+
+`PROFILES.open` — the profile the whole city runs under during **build time** —
+sets `liftable = true` and `convertibleToDynamic = true`. A plot slab is not
+scenery (`sv_isScenery` needs every shape to be metal; a plot has concrete in
+it), so during an event **every plot floor in the city was liftable and
+convertible**: anyone with a lift could carry off somebody's plot, and a slab
+that converts to dynamic is a floating object with nothing holding it.
+
+`World.sv_pinCity` does set both false at import. The patrol reapplies the full
+profile over the top of it seconds later, so that pinning never survived. **It
+has to be in the profile or it does not exist.**
+
+Every profile now has a twin with those two flags forced false, and
+`Protection.sv_setGroundTest` decides which bodies get the twin —
+`Plots.sv_isGround`, one AABB call, because the heights are unambiguous: the deck
+is at z 0.75, a plot slab at 1.00, and anything merely *standing* on the floor
+starts at 1.25. A build welded to a slab shares the slab's body and is pinned
+with it, which is correct: it is part of the ground now.
+
+A check asserts every return path in `profileFor` goes through the pin.
+
 ### One body's `childs` array IS the weld group
 
 **MEASURED**, from a reference creation the owner built in game and saved so the

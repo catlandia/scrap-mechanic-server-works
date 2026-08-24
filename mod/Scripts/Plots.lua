@@ -736,6 +736,27 @@ end
 -- plot rules -- which is exactly what makes the whole plot exportable as one
 -- piece. The cost is that an owner can erase their own floor; /plotbuild puts it
 -- back.
+-- Is this body part of the city floor, or welded to it?
+--
+-- ONE aabb call, not a walk over every shape, because this runs per body per
+-- patrol slice and a player's 500-block build would otherwise be 500 uuid
+-- comparisons every cycle.
+--
+-- The heights are unambiguous and that is what makes the cheap test correct:
+--
+--   deck body   min z = BASE_Z * 0.25          = 0.75
+--   plot slab   min z = DECK_Z * 0.25          = 1.00
+--   anything merely STANDING on the floor      = 1.25
+--
+-- A player's build welded onto a plot slab is ONE body with the slab, so it
+-- keeps the slab's 1.00 and is pinned too -- which is right: their tower is part
+-- of the ground now and must not be liftable either.
+function Plots.sv_isGround( self, body )
+	local ok, aabbMin = pcall( function() return body:getWorldAabb() end )
+	if not ok or aabbMin == nil then return false end
+	return aabbMin.z <= ( Plots.DECK_Z + 0.4 ) * Plots.BLOCK
+end
+
 function Plots.sv_isScenery( self, body )
 	local ok, pos = pcall( function() return body.worldPosition end )
 	if not ok or pos == nil then return false end

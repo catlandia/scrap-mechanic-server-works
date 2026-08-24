@@ -69,6 +69,12 @@ function World.server_onCreate( self )
 	g_swProtection = Protection()
 	g_swProtection:sv_onCreate( Settings.Get( "protection" ) )
 
+	-- The city floor is never liftable and never converts to dynamic, whatever
+	-- profile it is otherwise running. See the PINNED note in Protection.lua.
+	g_swProtection:sv_setGroundTest( function( body )
+		return g_swPlots:sv_isGround( body )
+	end )
+
 	g_swProtection:sv_setResolver( function( body )
 		-- The city's own decking is permanent in every mode. This is the ONLY
 		-- thing protecting it, and it is a far better test than "the plaza is

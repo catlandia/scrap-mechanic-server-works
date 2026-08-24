@@ -470,6 +470,53 @@ def the_cleaner_is_wired_to_the_same_uuid_everywhere():
         "third argument of client_onEquippedUpdate is the only place Lua sees it")
 
 
+def the_city_floor_is_never_liftable_or_dynamic():
+    """No profile may leave the ground liftable or convertible to dynamic.
+
+    REPORTED, repeatedly, as "the concrete is not attached" -- and this is the
+    most literal sense in which it was not: `open`, the profile the whole city
+    runs under during BUILD TIME, sets liftable = true and
+    convertibleToDynamic = true, and a plot slab is not scenery (sv_isScenery
+    needs every shape to be metal; a plot has concrete in it). So during an event
+    anyone with a lift could pick up somebody's plot floor, and the slab could
+    convert to dynamic with nothing holding it up.
+
+    World.sv_pinCity does pin both at import -- and the patrol reapplies the full
+    profile over the top of it seconds later. The pin has to be in the profile.
+    """
+    lua = fresh("Settings.lua", "Protection.lua")
+    src = io.open(SCRIPTS / "Protection.lua", encoding="utf-8").read()
+
+    # PROFILES and PINNED are both locals; re-declare the block that builds them.
+    body = src[src.index("local PROFILES = {"):src.index("Protection.MODES")]
+    lua.execute(body.replace("local PROFILES", "PROFILES", 1)
+                    .replace("local PINNED", "PINNED", 1))
+    PROFILES, PINNED = lua.globals().PROFILES, lua.globals().PINNED
+
+    assert PINNED is not None, "there is no PINNED table -- the ground is not pinned"
+    for name in PROFILES:
+        assert PINNED[name] is not None, f"no pinned twin for the {name!r} profile"
+        assert PINNED[name]["liftable"] is False, (
+            f"pinned {name!r} is liftable -- a plot floor could be carried off")
+        assert PINNED[name]["convertibleToDynamic"] is False, (
+            f"pinned {name!r} converts to dynamic -- the floor could come loose")
+        # and the twin must be the profile in every OTHER respect
+        for flag in ("buildable", "erasable", "paintable", "connectable", "usable",
+                     "destructable"):
+            assert PINNED[name][flag] == PROFILES[name][flag], (
+                f"pinned {name!r} changed {flag}; it may only pin the two")
+
+    # every path out of profileFor has to go through the pin
+    fn = src[src.index("local function profileFor"):]
+    fn = fn[:fn.index(chr(10) + "end")]
+    returns = [ln.strip() for ln in fn.splitlines()
+               if ln.strip().startswith("return") or "then return" in ln]
+    for line in returns:
+        assert "forBody(" in line, (
+            f"profileFor returns without the ground pin: {line!r}")
+    assert len(returns) >= 5, f"only found {len(returns)} return paths -- parse is wrong"
+
+
 def buffer_time_lets_you_polish_but_not_place_or_break():
     """The buffer phase resolves to a profile that adjusts, never builds.
 
@@ -1714,6 +1761,8 @@ def main():
           a_plot_is_one_welded_body_of_concrete_and_metal)
     check("tools: the cleaner is wired to one uuid everywhere",
           the_cleaner_is_wired_to_the_same_uuid_everywhere)
+    check("protection: the city floor is never liftable or dynamic",
+          the_city_floor_is_never_liftable_or_dynamic)
     check("protection: buffer time polishes but never places or breaks",
           buffer_time_lets_you_polish_but_not_place_or_break)
     check("plots: junk outside the city stays clearable", outside_the_city_is_sweepable)

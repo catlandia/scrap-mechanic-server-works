@@ -10,6 +10,38 @@ was most of them.
 
 ---
 
+## V38 — the plot floor could be carried away with a lift
+
+Checking what else the blueprint answered turned up a live bug, and it is the
+most literal possible reading of *"the concrete is not attached"*.
+
+`PROFILES.open` — the profile the whole city runs under during **build time** —
+sets `liftable = true` and `convertibleToDynamic = true`. A plot slab is not
+scenery, because `sv_isScenery` requires every shape to be metal and a plot has
+concrete in it. So during an event **every plot floor in the city was liftable
+and convertible to dynamic**. Anyone holding a lift could pick up somebody's
+plot, and a slab that converts to dynamic is a floating object with nothing
+holding it up.
+
+`World.sv_pinCity` does pin both at import. The patrol then reapplies the full
+profile over the top of it a second later, so the pinning never survived a single
+cycle. It has to be in the profile or it does not exist.
+
+Every profile now has a twin with those two flags forced false, and a ground test
+decides which bodies get it: `Plots.sv_isGround`, **one AABB call**, because the
+heights leave no ambiguity — the deck sits at z 0.75, a plot slab at 1.00, and
+anything merely *standing* on the floor starts at 1.25. One call rather than a
+walk over every shape matters, because this runs per body per patrol slice and a
+500-block build would otherwise be 500 uuid comparisons every cycle.
+
+A build welded to a slab is one body with it and gets pinned too, which is right:
+it is part of the ground now, and the ground does not get carried off.
+
+A check asserts every return path in `profileFor` goes through the pin — six of
+them — and it was written by taking the pin off one and watching it fail.
+
+---
+
 ## V37 — the theory pass over the cleaner
 
 *"because I cant test right now. just on theory. make sure it works."*

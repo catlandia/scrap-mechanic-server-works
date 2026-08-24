@@ -163,6 +163,34 @@ PROFILES.open_destructible = {
 	convertibleToDynamic = true,
 }
 
+-- THE GROUND IS PINNED, WHATEVER ELSE ITS PROFILE ALLOWS.
+--
+-- Every profile above gets a twin with liftable and convertibleToDynamic forced
+-- false, and any body that is part of the city floor gets the twin.
+--
+-- This is a real bug being fixed and it is worth writing down. `open` -- the
+-- profile the whole city runs under during build time -- sets liftable = true
+-- and convertibleToDynamic = true. Plot slabs are not scenery (sv_isScenery
+-- requires every shape to be metal, and a plot has concrete in it), so during an
+-- event EVERY PLOT FLOOR IN THE CITY was liftable and convertible. Anyone with a
+-- lift could pick up somebody's plot, and a slab that converts to dynamic is a
+-- floating object with nothing holding it.
+--
+-- World.sv_pinCity does set both to false at import, but the protection patrol
+-- reapplies the full profile over the top of it seconds later, so the pinning
+-- never survived. It has to live in the profile or it does not live at all.
+--
+-- REPORTED, repeatedly, as "the concrete is not attached" -- and a floor you can
+-- carry away with a lift is not attached in the most literal sense there is.
+local PINNED = {}
+for name, profile in pairs( PROFILES ) do
+	local twin = {}
+	for flag, value in pairs( profile ) do twin[flag] = value end
+	twin.liftable = false
+	twin.convertibleToDynamic = false
+	PINNED[name] = twin
+end
+
 Protection.MODES = { "open", "locked", "display", "sweep", "polish" }
 
 local function isLockedMode( mode )
@@ -219,6 +247,18 @@ end
 -- Returns the profile AND its name, so a sweep can say what it decided rather
 -- than only how many bodies it touched. "99 bodies, 99 changed" does not tell
 -- you whether the plots came out buildable; "open 96, locked 2, sweep 1" does.
+-- The ground's twin, if this body is the ground. One place, so every return path
+-- below goes through it and none can forget.
+local function forBody( self, profile, name, body )
+	if self.groundTest then
+		local ok, ground = pcall( self.groundTest, body )
+		if ok and ground and PINNED[name] then
+			return PINNED[name], name
+		end
+	end
+	return profile, name
+end
+
 local function profileFor( self, body )
 	if isLockedMode( self.mode ) then
 		-- One thing escapes a locked world: litter on ground nobody may build on.
@@ -233,10 +273,10 @@ local function profileFor( self, body )
 		if self.resolver then
 			local verdict = self.resolver( body )
 			if verdict == "sweep" then
-				return PROFILES.sweep, "sweep"
+				return forBody( self, PROFILES.sweep, "sweep", body )
 			end
 		end
-		return PROFILES[self.mode], self.mode
+		return forBody( self, PROFILES[self.mode], self.mode, body )
 	end
 	-- What "you may build here" resolves to depends on the MODE, not just on the
 	-- settings. In polish mode a plot you are allowed to touch gets the polish
@@ -253,16 +293,16 @@ local function profileFor( self, body )
 	if self.resolver then
 		local verdict = self.resolver( body )
 		-- true/false for the common two, or a profile name for anything else.
-		if verdict == true then return openProfile, openName end
-		if verdict == false then return PROFILES.locked, "locked" end
+		if verdict == true then return forBody( self, openProfile, openName, body ) end
+		if verdict == false then return forBody( self, PROFILES.locked, "locked", body ) end
 		if type( verdict ) == "string" and PROFILES[verdict] then
-			return PROFILES[verdict], verdict
+			return forBody( self, PROFILES[verdict], verdict, body )
 		end
 	end
 	if self.mode == "open" then
-		return openProfile, openName
+		return forBody( self, openProfile, openName, body )
 	end
-	return PROFILES[self.mode], self.mode
+	return forBody( self, PROFILES[self.mode], self.mode, body )
 end
 
 function Protection.sv_onCreate( self, storedMode )
@@ -282,6 +322,11 @@ function Protection.sv_onCreate( self, storedMode )
 	-- Optional per-body override, set by Game when the plot system is on.
 	-- Returns true (open), false (locked) or nil (defer to the global mode).
 	self.resolver = nil
+end
+
+-- Which bodies are the city floor. Set by World; see Plots.sv_isGround.
+function Protection.sv_setGroundTest( self, fn )
+	self.groundTest = fn
 end
 
 function Protection.sv_setResolver( self, fn )
