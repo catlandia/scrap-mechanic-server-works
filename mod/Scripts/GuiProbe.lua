@@ -24,10 +24,26 @@
 -- at and rewrites itself when a press lands, so the answer is on the screen and
 -- does not need the log.
 --
---   1  game script,   tree built in Lua        <- what we ship today
---   2  game script,   tree from vanilla's .gui
---   3  player script, tree built in Lua
---   4  player script, tree from vanilla's .gui
+--   1  game script,   jsonGui, tree built in Lua   <- what we ship today
+--   2  game script,   jsonGui, tree from a .gui file
+--   3  player script, jsonGui, tree built in Lua
+--   4  player script, jsonGui, tree from a .gui file
+--   5  game script,   createGuiFromLayout          <- the OTHER gui api
+--
+-- Test 5 exists because of a late find, and it may be the whole answer. There
+-- are TWO gui systems, and vanilla's Game script uses the other one:
+--
+--     self.cl.confirmClearGui = sm.gui.createGuiFromLayout(
+--         "$GAME_DATA/Gui/Layouts/PopUp/PopUp_YN.layout" )
+--     self.cl.confirmClearGui:setButtonCallback( "Yes", "cl_onClearConfirmButtonClick" )
+--     self.cl.confirmClearGui:open()
+--
+-- CreativeGame.lua:283-288, and the handler at :246 is on the Game script. So a
+-- Game script CAN own a working button -- through createGuiFromLayout, which is
+-- a .layout file, has open() as well as close(), and is used 37 times across the
+-- base game. sm.jsonGui is the newer, freer system: a widget tree instead of a
+-- layout file. Whether it dispatches clicks to a Game script is exactly what has
+-- never been established.
 --
 -- Whichever tests report CLICK RECEIVED say what a button needs, and that goes
 -- in CLAUDE.md as a rule rather than as another guess.
@@ -41,21 +57,25 @@ GuiProbe.H = 300
 -- first test that passes is the smallest change that would fix the mod.
 GuiProbe.MODES = {
 	{ owner = "game", tree = "lua",
-	  title = "TEST 1 of 4",
+	  title = "TEST 1 of 5",
 	  what = "GAME script, tree built in Lua",
 	  note = "this is exactly what the mod ships today" },
 	{ owner = "game", tree = "file",
-	  title = "TEST 2 of 4",
+	  title = "TEST 2 of 5",
 	  what = "GAME script, tree from vanilla's own .gui file",
 	  note = "if 1 fails and 2 works, the tree is the problem" },
 	{ owner = "player", tree = "lua",
-	  title = "TEST 3 of 4",
+	  title = "TEST 3 of 5",
 	  what = "PLAYER script, tree built in Lua",
 	  note = "if 1 fails and 3 works, the Game script is the problem" },
 	{ owner = "player", tree = "file",
-	  title = "TEST 4 of 4",
+	  title = "TEST 4 of 5",
 	  what = "PLAYER script, tree from vanilla's own .gui file",
-	  note = "the fully vanilla arrangement. if this fails, nothing here works" },
+	  note = "the fully vanilla jsonGui arrangement" },
+	{ owner = "game", tree = "layout",
+	  title = "TEST 5 of 5",
+	  what = "GAME script, createGuiFromLayout -- the OTHER gui api",
+	  note = "vanilla's own creative CLEAR dialog is exactly this. See CreativeGame.lua:283" },
 }
 
 local BG = "0.055 0.062 0.078 1"

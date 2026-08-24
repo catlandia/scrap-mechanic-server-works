@@ -1,62 +1,63 @@
 # Next session
 
-V31 is installed. **Restart Scrap Mechanic**, then do this first:
+V32 is installed. **Restart Scrap Mechanic** — scripts are read at world load, so
+a running game will not pick it up.
 
-## Run /guitest four times. It takes a minute and it ends the guessing.
+## Try the three host buttons first
 
-Three versions have gone on "the buttons dont work". Each fix was a real bug and
-none of them was the whole story, so this stops reasoning about it and measures
-it.
+Your screenshot named the bug. EVENT CLOCK, CITY LAYOUT and SERVER SETTINGS are
+the only three entries that open **a second panel**; the ones above them answer
+in chat, and those had been working. Being host was never the problem — the menu
+hides host entries from guests, so a visible button means that check passed.
 
-Type `/guitest`. A small panel appears. **Press both buttons on it.** If the
-panel rewrites itself to say **CLICK RECEIVED**, that arrangement works. Then
-type `/guitest` again for the next test. Four tests:
+A json GUI has no `destroy()`: `close()` hides it and the object stays. The mod
+made one per panel, so opening a second panel meant two live interactive GUIs on
+one script, which nothing in the base game ever does. They all share one now.
+
+`/menu` → CITY LAYOUT should open the city panel. Then BACK, then SERVER
+SETTINGS, then EVENT CLOCK.
+
+## If they still do nothing, run /guitest — five times
+
+Type `/guitest`, press both buttons on the panel that appears, then `/guitest`
+again for the next test. If the panel rewrites itself to say **CLICK RECEIVED**,
+that arrangement works.
 
 | test | what it is |
 |---|---|
-| 1 | Game script, tree built in Lua — exactly what the mod ships today |
-| 2 | Game script, tree loaded from vanilla's own `.gui` file |
-| 3 | Player script, tree built in Lua |
-| 4 | Player script, tree loaded from vanilla's own `.gui` file |
+| 1 | Game script, jsonGui, tree built in Lua — what the mod ships |
+| 2 | Game script, jsonGui, tree from vanilla's own `.gui` file |
+| 3 | Player script, jsonGui, tree built in Lua |
+| 4 | Player script, jsonGui, tree from vanilla's own `.gui` file |
+| 5 | Game script, **createGuiFromLayout** — the other GUI api |
 
-Tell me which ones said CLICK RECEIVED. That single answer decides the fix:
+Test 5 is new and it matters: there are two GUI systems, and vanilla's Game
+script uses the *other* one for its creative CLEAR dialog
+(`CreativeGame.lua:283`). That proves a Game script can own a working button; it
+does not prove `sm.jsonGui` can.
 
-- **1 works** → buttons are fine and the problem is downstream (the trace below
-  will say where).
-- **1 fails, 3 works** → a Game script does not receive GUI clicks, and every
-  panel moves to the player script.
-- **1 fails, 2 works** → a hand-built widget tree is the problem and the panels
-  become `.gui` files.
-- **nothing works** → it is environmental, and the canvas line the probe prints
-  is the next clue.
+Tell me which tests said CLICK RECEIVED and that decides the fix.
 
-Test 1 has two buttons on purpose: one carries a data table, one does not. If
-only the second works, the data table is what breaks it.
+## The menu path is traced
 
-## And the real menu is traced now
-
-Clicking anything on `/menu` writes four lines to `Logs/game-*.log`. The last one
-printed is where it stops:
+One click on `/menu` writes four lines to `Logs/game-*.log`. The last one printed
+is where it stops:
 
     [ServerWorks] gui 1/4 menu click: widget=B6 data=table
     [ServerWorks] gui 2/4 server got menu open: what=city host=true
     [ServerWorks] gui 3/4 sending the city panel
     [ServerWorks] gui 4/4 client rendering the city panel
 
-If all four print, the panel is being built and rendered and the problem is that
-you cannot see it — wrong coordinates, wrong layer, or drawn behind something.
+All four printing means the panel is being built and rendered, and the problem is
+that you cannot see it.
 
-## Everything known about buttons is written down
+## What you have to do for a panel to open
 
-`docs/BUTTONS.md` — the tree, the callback signatures, the lifecycle, the
-coordinate space, and the close rule, each with the vanilla file and line it came
-from. It marks what is confirmed and what `/guitest` is there to settle.
-
-## What V30 fixed, which you have not been able to see yet
-
-Closing a json GUI from inside its own click callback kills the rest of the
-callback, so the hub menu closed and never sent the request. That was real and it
-is fixed. Whether it was the last thing in the way is what `/guitest` answers.
+Written up in `docs/BUTTONS.md`, but the one that matters: **when a panel is up,
+do you get a mouse cursor?** If not, your clicks are going to the world and no
+amount of fixing the panel will help. Also: not seated, nothing else holding the
+mouse (Tab inventory, handbook, pause menu, the lift's blueprint window), and the
+game restarted since the last sync.
 
 ## Still to verify from V29 — none of it has been seen yet
 

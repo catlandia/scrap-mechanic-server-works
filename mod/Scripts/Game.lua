@@ -872,17 +872,8 @@ function Game.client_openSettingsGui( self, data )
 	-- and makes the whole thing flicker. Re-rendering is what vanilla does
 	-- (HideoutTrader rebuilds its item list this way).
 
-	local root = SettingsGui.Build( data.values, self.cl.settingsGroup,
-		self.cl.settingsPage, self.cl.settingsStatus )
-	if self.cl.settingsGui == nil or not sm.exists( self.cl.settingsGui ) then
-		self.cl.settingsGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
-	end
-	-- render() IS the show. A json GUI has neither open() nor destroy() --
-	-- MEASURED: "Unknown member 'open' in userdata" at Game.lua:473, thrown on
-	-- every render, and the throw is what shut the panel again on every click.
-	-- Vanilla only ever calls createGui / render / close
-	-- (CreativePlayer.cl_e_unstuck).
-	self.cl.settingsGui:render( root )
+	self:cl_showPanel( "settings", SettingsGui.Build( data.values,
+		self.cl.settingsGroup, self.cl.settingsPage, self.cl.settingsStatus ) )
 end
 
 -- ( self, widgetName, data ) -- NOT ( self, data ). Confirmed against
@@ -892,12 +883,13 @@ end
 function Game.cl_onSettingsGuiClick( self, widgetName, data )
 	if type( data ) ~= "table" then return end
 	if data.action == "close" then
-		self:cl_closeLater( "settings" )
+		self:cl_closeLater( "panel" )
 		return
 	end
 	if data.action == "back" then
+		-- No close: the hub renders into this same GUI a moment from now, and a
+		-- queued close would land on top of it.
 		self.network:sendToServer( "sv_n_openMenu", {} )
-		self:cl_closeLater( "settings" )
 		return
 	end
 
@@ -908,7 +900,7 @@ function Game.cl_onSettingsGuiClick( self, widgetName, data )
 		self.cl.settingsGroup = data.group
 		self.cl.settingsPage = 1
 		self.cl.settingsStatus = nil
-		self.cl.settingsGui:render( SettingsGui.Build(
+		self:cl_showPanel( "settings", SettingsGui.Build(
 			self.cl.settingsValues, self.cl.settingsGroup, 1 ) )
 		return
 	end
@@ -919,7 +911,7 @@ function Game.cl_onSettingsGuiClick( self, widgetName, data )
 		if page < 1 then page = pages elseif page > pages then page = 1 end
 		self.cl.settingsPage = page
 		self.cl.settingsStatus = nil
-		self.cl.settingsGui:render( SettingsGui.Build(
+		self:cl_showPanel( "settings", SettingsGui.Build(
 			self.cl.settingsValues, self.cl.settingsGroup, page ) )
 		return
 	end
@@ -932,15 +924,62 @@ function Game.cl_onSettingsGuiClick( self, widgetName, data )
 end
 
 function Game.cl_onSettingsGuiClose( self, widgetName )
-	self:cl_forgetGui( "settingsGui" )
+	self:cl_forgetPanel()
 end
 
-function Game.cl_closeSettingsGui( self )
+
+
+--[[ ONE panel, re-rendered ]]
+
+-- Every interactive panel in the mod shares a single jsonGui object.
+--
+-- It used to make one per panel -- menu, city, settings, event, my plot,
+-- confirm -- six live objects on one client script. Nothing in the base game
+-- does that: vanilla creates ONE interactive jsonGui per script and re-renders
+-- it when the content changes (HideoutTrader rebuilds its whole item list that
+-- way, Survival/.../HideoutTrader.lua:1242).
+--
+-- It matters because a json GUI has no destroy(). close() hides it; the object
+-- stays. So every /menu and every panel added another one that could never be
+-- disposed of, and the moment a second interactive GUI existed the mod was in
+-- territory the engine is never asked to handle by its own content.
+--
+-- REPORTED, with a screenshot of the host section of the menu: "these buttons
+-- dont work for no reason. I am the host." What separates those three entries
+-- from the four above them is not the host check -- the menu hides host entries
+-- from guests, so a visible button means the check already passed. It is that
+-- MY PLOT, SERVER RULES, WHO IS HERE and COMMANDS answer in CHAT, while EVENT
+-- CLOCK, CITY LAYOUT and SERVER SETTINGS all try to open A SECOND PANEL. The
+-- ones that worked are exactly the ones that never needed a second GUI.
+--
+-- One object also makes switching panels free: there is no close, no gap, and no
+-- window where two interactive GUIs are both alive. Going from the menu to the
+-- city layout is one render call.
+function Game.cl_panelGui( self )
+	if self.cl == nil then self.cl = {} end
+	if self.cl.panelGui == nil or not sm.exists( self.cl.panelGui ) then
+		self.cl.panelGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
+	end
+	return self.cl.panelGui
+end
+
+-- render() IS the show. A json GUI has neither open() nor destroy() -- MEASURED,
+-- as "Unknown member 'open' in userdata" thrown on every render, which is what
+-- shut the panel again on every click.
+function Game.cl_showPanel( self, name, tree )
+	if self.cl == nil then self.cl = {} end
+	self.cl.panelName = name
+	self:cl_panelGui():render( tree )
+end
+
+function Game.cl_closePanel( self )
 	if self.cl == nil then return end
-	local gui = self.cl.settingsGui
+	local gui = self.cl.panelGui
 	-- Cleared BEFORE closing: close() fires onClose, which calls back into here,
-	-- and without this the second pass would close an already-closing GUI.
-	self.cl.settingsGui = nil
+	-- and the second pass would otherwise close a GUI that is already closing.
+	self.cl.panelGui = nil
+	self.cl.panelName = nil
+	self.cl.confirm = nil
 	if gui and sm.exists( gui ) then
 		pcall( function() gui:close() end )
 	end
@@ -953,7 +992,7 @@ end
 -- line of ordering.
 --
 --   function Game.cl_onMenuClick( self, widgetName, data )
---       self:cl_closeMenu()                                 -- <-- destroys
+--       self:cl_closePanel()                                 -- <-- destroys
 --       self.network:sendToServer( "sv_n_menuOpen", ... )   -- <-- never runs
 --
 -- close() destroys the widget whose onClick is CURRENTLY ON THE LUA STACK, and
@@ -984,9 +1023,8 @@ function Game.cl_closeLater( self, which )
 end
 
 local CLOSERS = {
-	menu = "cl_closeMenu", plots = "cl_closePlotsGui", probe = "cl_closeProbe",
-	settings = "cl_closeSettingsGui", event = "cl_closeEventGui",
-	myplot = "cl_closeMyPlotGui", confirm = "cl_closeConfirm",
+	panel = "cl_closePanel",
+	probe = "cl_closeProbe",
 }
 
 function Game.cl_drainCloses( self )
@@ -1004,6 +1042,13 @@ end
 -- GUI from inside its own callback, which is the bug this section is about.
 function Game.cl_forgetGui( self, field )
 	if self.cl then self.cl[field] = nil end
+end
+
+function Game.cl_forgetPanel( self )
+	if self.cl == nil then return end
+	self.cl.panelGui = nil
+	self.cl.panelName = nil
+	self.cl.confirm = nil
 end
 
 
@@ -1028,6 +1073,27 @@ function Game.cl_onGuiTest( self, params )
 	sm.gui.chatMessage( "  " .. GuiProbe.CanvasLine() )
 	sm.log.info( string.format( "[ServerWorks] guitest %d: %s owner=%s tree=%s  %s",
 		mode, m.what, m.owner, m.tree, GuiProbe.CanvasLine() ) )
+
+	if m.tree == "layout" then
+		-- The other gui api, exactly as vanilla's Game script uses it. open() is a
+		-- real method here; a jsonGui has no such thing.
+		self:cl_closeLater( "probe" )
+		local ok, err = pcall( function()
+			local gui = sm.gui.createGuiFromLayout( "$GAME_DATA/Gui/Layouts/PopUp/PopUp_YN.layout" )
+			gui:setButtonCallback( "Yes", "cl_onProbeLayoutClick" )
+			gui:setButtonCallback( "No", "cl_onProbeLayoutClick" )
+			gui:setText( "Title", "TEST 5 of 5" )
+			gui:setText( "Message", "createGuiFromLayout, from the GAME script. Press YES." )
+			gui:setOnCloseCallback( "cl_onProbeLayoutClose" )
+			gui:open()
+			self.cl.probeLayoutGui = gui
+		end )
+		if not ok then
+			sm.gui.chatMessage( "  createGuiFromLayout failed: " .. tostring( err ) )
+			sm.log.warning( "[ServerWorks] guitest 5 failed: " .. tostring( err ) )
+		end
+		return
+	end
 
 	if m.owner == "player" then
 		-- Hand the whole test to the player script, which is where every vanilla
@@ -1087,11 +1153,29 @@ function Game.cl_onProbeClose( self )
 	self:cl_forgetGui( "probeGui" )
 end
 
+-- createGuiFromLayout hands the callback ( self, buttonName ) -- no data table.
+-- CreativeGame.cl_onClearConfirmButtonClick( self, name ) is the shape.
+function Game.cl_onProbeLayoutClick( self, buttonName )
+	sm.gui.chatMessage( "CLICK RECEIVED on the GAME script via createGuiFromLayout: "
+		.. tostring( buttonName ) )
+	sm.log.info( "[ServerWorks] guitest: layout click " .. tostring( buttonName ) )
+	local gui = self.cl.probeLayoutGui
+	self.cl.probeLayoutGui = nil
+	if gui and sm.exists( gui ) then pcall( function() gui:close() end ) end
+end
+
+function Game.cl_onProbeLayoutClose( self )
+	if self.cl then self.cl.probeLayoutGui = nil end
+end
+
 function Game.cl_closeProbe( self )
 	if self.cl == nil then return end
 	local gui = self.cl.probeGui
 	self.cl.probeGui = nil
 	if gui and sm.exists( gui ) then pcall( function() gui:close() end ) end
+	local layout = self.cl.probeLayoutGui
+	self.cl.probeLayoutGui = nil
+	if layout and sm.exists( layout ) then pcall( function() layout:close() end ) end
 end
 
 
@@ -1106,11 +1190,7 @@ function Game.sv_openMenu( self, player )
 end
 
 function Game.client_openMenu( self, data )
-	if self.cl == nil then self.cl = {} end
-	if self.cl.menuGui == nil or not sm.exists( self.cl.menuGui ) then
-		self.cl.menuGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
-	end
-	self.cl.menuGui:render( MenuGui.Build( data.host ) )
+	self:cl_showPanel( "menu", MenuGui.Build( data.host ) )
 end
 
 -- The hub is the one panel that DOES close on a click, because what it opens
@@ -1123,10 +1203,17 @@ function Game.cl_onMenuClick( self, widgetName, data )
 	sm.log.info( string.format( "[ServerWorks] gui 1/4 menu click: widget=%s data=%s",
 		tostring( widgetName ), type( data ) ) )
 	if type( data ) ~= "table" then return end
-	if data.action ~= "close" then
-		self.network:sendToServer( "sv_n_menuOpen", { what = data.action } )
+	if data.action == "close" then
+		self:cl_closeLater( "panel" )
+		return
 	end
-	self:cl_closeLater( "menu" )
+	self.network:sendToServer( "sv_n_menuOpen", { what = data.action } )
+	-- Only entries that answer in CHAT close the menu. An entry that opens
+	-- another panel leaves it alone: the reply renders straight into this same
+	-- GUI, and queueing a close here would race it and shut what just arrived.
+	if not data.panel then
+		self:cl_closeLater( "panel" )
+	end
 end
 
 -- BACK, from any sub-panel.
@@ -1135,15 +1222,9 @@ function Game.sv_n_openMenu( self, data, player )
 end
 
 function Game.cl_onMenuClose( self, widgetName )
-	self:cl_forgetGui( "menuGui" )
+	self:cl_forgetPanel()
 end
 
-function Game.cl_closeMenu( self )
-	if self.cl == nil then return end
-	local gui = self.cl.menuGui
-	self.cl.menuGui = nil
-	if gui and sm.exists( gui ) then pcall( function() gui:close() end ) end
-end
 
 function Game.sv_n_menuOpen( self, data, player )
 	local isHost = ( player == sm.player.getHostPlayer() )
@@ -1214,10 +1295,7 @@ function Game.client_openPlotsGui( self, cfg )
 	sm.log.info( "[ServerWorks] gui 4/4 client rendering the city panel" )
 	if self.cl == nil then self.cl = {} end
 	self.cl.plotCfg = cfg
-	if self.cl.plotsGui == nil or not sm.exists( self.cl.plotsGui ) then
-		self.cl.plotsGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
-	end
-	self.cl.plotsGui:render( PlotsGui.Build( cfg ) )
+	self:cl_showPanel( "city", PlotsGui.Build( cfg ) )
 end
 
 --[[ my plot panel ]]
@@ -1229,30 +1307,12 @@ end
 function Game.client_openMyPlotGui( self, state )
 	if self.cl == nil then self.cl = {} end
 	self.cl.myPlotState = state
-	if self.cl.myPlotGui == nil or not sm.exists( self.cl.myPlotGui ) then
-		self.cl.myPlotGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
-	end
-	self.cl.myPlotGui:render( MyPlotGui.Build( state ) )
+	self:cl_showPanel( "myplot", MyPlotGui.Build( state ) )
 end
 
-function Game.cl_closeMyPlotGui( self )
-	-- A json GUI has no destroy() and no open(); render() IS the show and close()
-	-- is the hide. Measured twice, as "Unknown member 'destroy' in userdata" and
-	-- then again as "Unknown member 'open'".
-	--
-	-- Cleared BEFORE closing, the way cl_closeSettingsGui is: close() fires
-	-- onClose, which calls straight back into here, and the second pass would
-	-- otherwise close a GUI that is already closing.
-	if self.cl == nil then return end
-	local gui = self.cl.myPlotGui
-	self.cl.myPlotGui = nil
-	if gui and sm.exists( gui ) then
-		pcall( function() gui:close() end )
-	end
-end
 
 function Game.cl_onMyPlotClose( self )
-	self:cl_forgetGui( "myPlotGui" )
+	self:cl_forgetPanel()
 end
 
 -- Nothing here closes the panel except CLOSE and BACK.
@@ -1266,12 +1326,13 @@ end
 function Game.cl_onMyPlotClick( self, widgetName, data )
 	if type( data ) ~= "table" then return end
 	if data.action == "close" then
-		self:cl_closeLater( "myplot" )
+		self:cl_closeLater( "panel" )
 		return
 	end
 	if data.action == "back" then
+		-- No close: the hub renders into this same GUI a moment from now, and a
+		-- queued close would land on top of it.
 		self.network:sendToServer( "sv_n_openMenu", {} )
-		self:cl_closeLater( "myplot" )
 		return
 	end
 	self.network:sendToServer( "sv_n_myPlotAction", { action = data.action } )
@@ -1339,23 +1400,12 @@ end
 function Game.client_openEventGui( self, state )
 	if self.cl == nil then self.cl = {} end
 	self.cl.eventCfg = state
-	if self.cl.eventGui == nil or not sm.exists( self.cl.eventGui ) then
-		self.cl.eventGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
-	end
-	self.cl.eventGui:render( EventGui.Build( state ) )
+	self:cl_showPanel( "event", EventGui.Build( state ) )
 end
 
-function Game.cl_closeEventGui( self )
-	if self.cl == nil then return end
-	local gui = self.cl.eventGui
-	self.cl.eventGui = nil
-	if gui and sm.exists( gui ) then
-		pcall( function() gui:close() end )
-	end
-end
 
 function Game.cl_onEventGuiClose( self )
-	self:cl_forgetGui( "eventGui" )
+	self:cl_forgetPanel()
 end
 
 function Game.cl_onEventGuiClick( self, widgetName, data )
@@ -1367,16 +1417,17 @@ function Game.cl_onEventGuiClick( self, widgetName, data )
 	-- server yet, so there is nothing to round trip.
 	if data.action == "step" then
 		cfg[data.key] = EventGui.Step( data.key, cfg[data.key] or 0, data.dir )
-		self.cl.eventGui:render( EventGui.Build( cfg ) )
+		self:cl_showPanel( "event", EventGui.Build( cfg ) )
 		return
 	end
 	if data.action == "close" then
-		self:cl_closeLater( "event" )
+		self:cl_closeLater( "panel" )
 		return
 	end
 	if data.action == "back" then
+		-- No close: the hub renders into this same GUI a moment from now, and a
+		-- queued close would land on top of it.
 		self.network:sendToServer( "sv_n_openMenu", {} )
-		self:cl_closeLater( "event" )
 		return
 	end
 	-- Stays open. Running an event means pressing several of these in a row --
@@ -1429,32 +1480,15 @@ end
 function Game.client_openConfirm( self, state )
 	if self.cl == nil then self.cl = {} end
 	self.cl.confirm = state
-	-- A confirmation is modal. Every other panel stays open across its own
-	-- actions now, so without this the question would be drawn on top of the
-	-- panel that asked it and both would be taking clicks. `back` says which one
-	-- to bring back afterwards.
-	self:cl_closeLater( "plots" )
-	self:cl_closeLater( "event" )
-	self:cl_closeLater( "settings" )
-	self:cl_closeLater( "myplot" )
-	if self.cl.confirmGui == nil or not sm.exists( self.cl.confirmGui ) then
-		self.cl.confirmGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
-	end
-	self.cl.confirmGui:render( ConfirmGui.Build( state ) )
+	-- Modal, and free: it renders into the same one GUI, so the panel that asked
+	-- the question is simply replaced by the question. `back` says what to put
+	-- back afterwards.
+	self:cl_showPanel( "confirm", ConfirmGui.Build( state ) )
 end
 
-function Game.cl_closeConfirm( self )
-	if self.cl == nil then return end
-	local gui = self.cl.confirmGui
-	self.cl.confirmGui = nil
-	self.cl.confirm = nil
-	if gui and sm.exists( gui ) then
-		pcall( function() gui:close() end )
-	end
-end
 
 function Game.cl_onConfirmClose( self )
-	self:cl_forgetGui( "confirmGui" )
+	self:cl_forgetPanel()
 	if self.cl then self.cl.confirm = nil end
 end
 
@@ -1468,18 +1502,23 @@ function Game.cl_onConfirmClick( self, widgetName, data )
 		sm.gui.chatMessage( ( data.action == "no" )
 			and "Cancelled. Nothing was deleted."
 			or "Cancelled. Nothing was deleted (unrecognised button)." )
-		if back then self.network:sendToServer( "sv_n_openPanel", { panel = back } ) end
-		self:cl_closeLater( "confirm" )
+		if back then
+			-- The panel that asked comes back; do not close over the top of it.
+			self.network:sendToServer( "sv_n_openPanel", { panel = back } )
+		else
+			self:cl_closeLater( "panel" )
+		end
 		return
 	end
 	if ( c.step or 1 ) < 2 then
 		-- The first yes does not count, which is the whole point.
 		c.step = 2
-		self.cl.confirmGui:render( ConfirmGui.Build( c ) )
+		self:cl_showPanel( "confirm", ConfirmGui.Build( c ) )
 		return
 	end
+	-- The server does the work and sends the panel back with the result written
+	-- on it (sv_e_swPanelRefresh), so nothing is closed here either.
 	self.network:sendToServer( "sv_n_confirmed", { what = c.what } )
-	self:cl_closeLater( "confirm" )
 end
 
 function Game.sv_n_confirmed( self, data, player )
@@ -1511,8 +1550,8 @@ function Game.cl_onPlotsGuiClick( self, widgetName, data )
 
 	if data.action == "step" then
 		cfg[data.key] = PlotsGui.Step( data.key, cfg[data.key], data.dir )
-		cfg.status = nil                                       -- stale the moment they edit
-		self.cl.plotsGui:render( PlotsGui.Build( cfg ) )       -- local, instant
+		cfg.status = nil                                  -- stale the moment they edit
+		self:cl_showPanel( "city", PlotsGui.Build( cfg ) ) -- local, instant
 		return
 	end
 	if data.action == "reset" then
@@ -1524,16 +1563,17 @@ function Game.cl_onPlotsGuiClick( self, widgetName, data )
 			roadevery = d.roadevery, roadwidth = d.roadwidth, plazacells = d.plazacells,
 			claimed = cfg.claimed or {}, mine = cfg.mine, team = cfg.team,
 			status = "reset to the defaults -- nothing is built until you press BUILD" }
-		self.cl.plotsGui:render( PlotsGui.Build( self.cl.plotCfg ) )
+		self:cl_showPanel( "city", PlotsGui.Build( self.cl.plotCfg ) )
 		return
 	end
 	if data.action == "close" then
-		self:cl_closeLater( "plots" )
+		self:cl_closeLater( "panel" )
 		return
 	end
 	if data.action == "back" then
+		-- No close: the hub renders into this same GUI a moment from now, and a
+		-- queued close would land on top of it.
 		self.network:sendToServer( "sv_n_openMenu", {} )
-		self:cl_closeLater( "plots" )
 		return
 	end
 	-- build and clear are the server's business. The panel STAYS OPEN; the
@@ -1542,17 +1582,9 @@ function Game.cl_onPlotsGuiClick( self, widgetName, data )
 end
 
 function Game.cl_onPlotsGuiClose( self, widgetName )
-	self:cl_forgetGui( "plotsGui" )
+	self:cl_forgetPanel()
 end
 
-function Game.cl_closePlotsGui( self )
-	if self.cl == nil then return end
-	local gui = self.cl.plotsGui
-	self.cl.plotsGui = nil
-	if gui and sm.exists( gui ) then
-		pcall( function() gui:close() end )
-	end
-end
 
 function Game.sv_n_plotsGuiAction( self, data, player )
 	if player ~= sm.player.getHostPlayer() then return end

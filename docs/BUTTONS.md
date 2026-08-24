@@ -6,7 +6,7 @@ fix was a real bug that turned out not to be the whole story, so this file
 separates **confirmed** from **not yet known**, and says how the unknown parts
 get settled.
 
-Run `/guitest` in game — four times — to settle them. See the end of this file.
+Run `/guitest` in game — five times — to settle them. See the end of this file.
 
 ---
 
@@ -88,6 +88,68 @@ end
 
 ---
 
+## There are TWO gui systems, and they are not interchangeable
+
+This was found late and it may be the whole answer.
+
+| | `sm.jsonGui.createGui` | `sm.gui.createGuiFromLayout` |
+|---|---|---|
+| content | a widget **tree**, built in Lua or read from a `.gui` file | a MyGUI **`.layout`** file |
+| show | `render( tree )` | `open()` |
+| hide | `close()` | `close()` |
+| buttons | `widget.onClick = "name"` | `gui:setButtonCallback( "Yes", "name" )` |
+| callback | `( self, widgetName )`, or `( self, widgetName, data )` with `onClickData` | `( self, buttonName )` |
+| text | set `Caption` in the tree, re-render | `gui:setText( "Title", "..." )` |
+| close hook | `root.onClose = "name"` | `gui:setOnCloseCallback( "name" )` |
+| used by a **Game script** in vanilla | never | **yes** — `CreativeGame.lua:283` |
+
+Vanilla's creative "clear everything?" dialog is the second kind, owned by a Game
+script, and its buttons work:
+
+```lua
+self.cl.confirmClearGui = sm.gui.createGuiFromLayout(
+    "$GAME_DATA/Gui/Layouts/PopUp/PopUp_YN.layout" )
+self.cl.confirmClearGui:setButtonCallback( "Yes", "cl_onClearConfirmButtonClick" )
+self.cl.confirmClearGui:setText( "Title", "#{MENU_YN_TITLE_ARE_YOU_SURE}" )
+self.cl.confirmClearGui:open()
+```
+
+`setButtonCallback` is used 37 times across the base game. `sm.jsonGui` is the
+newer and much freer system — an arbitrary widget tree instead of a fixed layout
+file, which is what makes a live city map possible — but **whether it dispatches
+clicks to a Game script has never been established.** That is `/guitest` test 5.
+
+Note that `CreativeGame.cl_onClearConfirmButtonClick` closes its GUI and *then*
+sends to the server, which is the opposite of the jsonGui rule below. The two
+systems do not have to behave the same way here, and only the jsonGui behaviour
+has been measured.
+
+## Confirmed: ONE interactive GUI per script, re-rendered
+
+A json GUI has **no `destroy()`**. `close()` hides it; the object stays forever.
+So making one per panel means every panel you ever open adds another live
+interactive GUI to the same script — and nothing in the base game ever does that.
+Vanilla creates **one** and re-renders it when the content changes
+(`HideoutTrader.lua:1242` rebuilds its entire item list that way).
+
+This mod had six: menu, city, settings, event, my plot, confirm.
+
+That maps exactly onto what was reported. With a screenshot of the menu: *"these
+buttons dont work for no reason. I am the host."* The three entries in the shot
+— EVENT CLOCK, CITY LAYOUT, SERVER SETTINGS — are the only ones that open **a
+second panel**. The four above them (MY PLOT aside) answer in the **chat log**,
+and those always worked. The host check was never involved: the menu hides host
+entries from guests, so a visible button means the check already passed.
+
+Everything now renders into `Game.cl_showPanel( name, tree )`. Switching panels
+is one render call — no close, no gap, and no moment when two interactive GUIs
+are both alive. `dev/test_logic.py` fails if a second one appears.
+
+**Corollary: never queue a close on a click that is about to open something.**
+The close lands a tick later and can shut the panel that just arrived. Only a
+real CLOSE button closes; BACK, a cancelled confirmation and every menu entry
+that opens a panel leave the GUI alone and let the reply render into it.
+
 ## Confirmed: the lifecycle
 
 ```lua
@@ -156,6 +218,36 @@ own callback is running if the close happens after that callback has returned.
 
 ---
 
+## What YOU have to do for a panel to open
+
+Nothing clever — but there are real preconditions, and any of them will make a
+panel look broken from the outside.
+
+1. **The mouse cursor has to appear.** A panel is created with
+   `needsCursor = true`, and the moment it opens the game should release the
+   mouse and show a pointer. **If the panel appears and there is no cursor, your
+   clicks are going to the world, not to the panel** — that is a different fault
+   from a dead button and it is the first thing to look at.
+2. **Nothing else can own the mouse.** Close the inventory (Tab), the handbook,
+   the pause menu, and the lift's blueprint window before opening a panel. Only
+   one thing gets the cursor.
+3. **Get out of the seat.** A seat captures input. Same for anything you are
+   driving or controlling.
+4. **Be on the ground, in the world.** Not on the loading screen, not mid
+   teleport.
+5. **Be the host, for host-only panels** — CITY LAYOUT, SERVER SETTINGS, EVENT
+   CLOCK. The menu hides those from guests, so **if you can see the button, you
+   are the host** and that is not the problem.
+6. **The chat has to be closed.** Typing `/menu` and pressing Enter closes it for
+   you, so this is usually automatic.
+7. **Restart the game after a `--sync`.** Scripts are read at world load. A mod
+   updated while the game is running does nothing until you load the world again.
+
+None of these are things you can get wrong quietly except the first one, so the
+question worth answering is: **when the panel is up, do you get a mouse cursor?**
+
+---
+
 ## NOT YET KNOWN — and this is what `/guitest` settles
 
 Two things about our GUIs that **no vanilla GUI does**:
@@ -176,12 +268,13 @@ Type `/guitest` in game. A small panel appears saying which test it is. Press
 both buttons on it. If the panel rewrites itself to say **CLICK RECEIVED**, that
 arrangement works. Then type `/guitest` again for the next test.
 
-| test | owner | tree | what it tells us |
+| test | owner | how | what it tells us |
 |---|---|---|---|
-| 1 | Game script | built in Lua | exactly what the mod ships today |
-| 2 | Game script | vanilla's `.gui` file | if 1 fails and 2 works, the **tree** is the problem |
-| 3 | Player script | built in Lua | if 1 fails and 3 works, the **Game script** is the problem |
-| 4 | Player script | vanilla's `.gui` file | fully vanilla. If this fails, nothing here works |
+| 1 | Game script | jsonGui, tree built in Lua | exactly what the mod ships today |
+| 2 | Game script | jsonGui, vanilla's `.gui` file | if 1 fails and 2 works, the **tree** is the problem |
+| 3 | Player script | jsonGui, tree built in Lua | if 1 fails and 3 works, the **Game script** is the problem |
+| 4 | Player script | jsonGui, vanilla's `.gui` file | the fully vanilla jsonGui arrangement |
+| 5 | Game script | **createGuiFromLayout** | the other api. Vanilla's own creative CLEAR dialog is exactly this |
 
 Each panel also prints the canvas and screen sizes, and every press is written to
 `Logs/game-*.log` as `[ServerWorks] guitest: ...`.

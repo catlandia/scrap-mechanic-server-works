@@ -10,6 +10,47 @@ was most of them.
 
 ---
 
+## V32 — one GUI, not six
+
+**REPORTED**, with a screenshot of the host section of the menu: *"these buttons
+dont work for no reason. I am the host. let me use them."*
+
+The screenshot is what named it. The three entries in it — EVENT CLOCK, CITY
+LAYOUT, SERVER SETTINGS — are exactly the three that open **a second panel**. The
+four above them answer in the **chat log**, and those had been working since V30.
+The host check was never involved: the menu hides host entries from guests, so a
+visible button means the check already passed.
+
+A json GUI has **no `destroy()`**. `close()` hides it and the object stays. The
+mod made one per panel — menu, city, settings, event, my plot, confirm — so
+opening a second panel meant a second live interactive GUI on the same client
+script, and nothing in the base game ever does that. Vanilla creates **one** and
+re-renders it (`HideoutTrader.lua:1242` rebuilds its whole item list that way).
+
+They all share `Game.cl_showPanel( name, tree )` now. Switching panels is one
+render call: no close, no gap, no window where two interactive GUIs are both
+alive. A check fails if a second one appears; it was written by putting one back
+and watching it fail.
+
+**And the close race that fell out of it.** Once panels share a GUI, queueing a
+close on a click that is about to open something can shut the panel that just
+arrived. So only a real CLOSE closes. BACK, a cancelled confirmation, and every
+menu entry that opens a panel now leave the GUI alone and let the reply render
+into it — which is also, finally, what "make so that the menu doesnt close after
+every action" actually looks like.
+
+**Also found**: there are two GUI systems. `sm.gui.createGuiFromLayout` takes a
+`.layout` file, has `open()`, and uses `setButtonCallback` — and vanilla's Game
+script uses it for the creative CLEAR dialog (`CreativeGame.lua:283`), which
+proves a Game script can own a working button. `sm.jsonGui` is the newer, freer
+one we use. `/guitest` test 5 compares them directly.
+
+`docs/BUTTONS.md` now carries the lot: the tree, both APIs, the callback
+signatures, the lifecycle, the coordinate space, the close rule, the one-GUI
+rule, and a plain checklist of what a *player* has to do for a panel to open.
+
+---
+
 ## V30 — the actual reason no button has ever worked
 
 V29 said one button was dead. That was true and it was not the story.

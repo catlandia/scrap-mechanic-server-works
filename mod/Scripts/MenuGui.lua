@@ -52,8 +52,17 @@ local function button( name, caption, x, y, w, h, skin, data, font )
 	return b
 end
 
+-- `panel` means this entry REPLACES the menu with another panel, rather than
+-- answering in the chat log. It decides whether the click queues a close, and
+-- getting that wrong is a race: queue a close on an entry that is about to open
+-- something and the close can land on the panel that just arrived.
+--
+-- It is also the line the reported bug falls on. "these buttons dont work for no
+-- reason. I am the host" came with a screenshot of the three host entries -- and
+-- those three are exactly the ones with panel = true. The four above them answer
+-- in chat and always worked.
 MenuGui.ENTRIES = {
-	{ action = "myplot", label = "MY PLOT",
+	{ action = "myplot", label = "MY PLOT", panel = true,
 	  help = "claim ground, find it again, see your team", host = false },
 	{ action = "rules", label = "SERVER RULES",
 	  help = "the limits currently in force", host = false },
@@ -61,11 +70,11 @@ MenuGui.ENTRIES = {
 	  help = "everyone online, with their ids", host = false },
 	{ action = "help", label = "COMMANDS",
 	  help = "everything you can type", host = false },
-	{ action = "event", label = "EVENT CLOCK",
+	{ action = "event", label = "EVENT CLOCK", panel = true,
 	  help = "prep, build and buffer times -- start it here", host = true },
-	{ action = "city", label = "CITY LAYOUT",
+	{ action = "city", label = "CITY LAYOUT", panel = true,
 	  help = "plots, roads and plaza, with a live map", host = true },
-	{ action = "settings", label = "SERVER SETTINGS",
+	{ action = "settings", label = "SERVER SETTINGS", panel = true,
 	  help = "every toggle and limit", host = true },
 }
 
@@ -104,7 +113,8 @@ function MenuGui.Build( isHost )
 			-- proven to draw its caption, and it stays visually distinct from the guest
 			-- entries.
 			kids[#kids + 1] = button( "B" .. i, e.label, 24, y, MenuGui.W - 48, 34,
-				e.host and "StyledButtonLarge" or "SecondaryButton", { action = e.action } )
+				e.host and "StyledButtonLarge" or "SecondaryButton",
+				{ action = e.action, panel = e.panel == true } )
 			kids[#kids + 1] = text( "H" .. i, e.help, 26, y + 36, MenuGui.W - 52, 16,
 				"SM_TextTiny", DIM, "Left" )
 			y = y + 58

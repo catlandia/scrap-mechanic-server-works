@@ -843,6 +843,32 @@ def read(name):
     return io.open(SCRIPTS / name, encoding="utf-8").read()
 
 
+def only_one_interactive_gui_exists():
+    """All the panels share a single jsonGui object.
+
+    A json GUI has no destroy(). close() hides it and the object stays, so one
+    per panel meant six live interactive GUIs on one client script -- something
+    no vanilla script does. Vanilla creates ONE and re-renders it when the
+    content changes (HideoutTrader.lua:1242).
+
+    REPORTED with a screenshot of the menu: "these buttons dont work for no
+    reason. I am the host." The three host entries all try to open a SECOND
+    panel; the four guest entries above them answer in chat. The ones that
+    worked were exactly the ones that never needed a second GUI.
+    """
+    import re
+    game = read("Game.lua")
+    made = re.findall(r"(\w+)\s*=\s*sm\.jsonGui\.createGui\(([^)]*)\)", game)
+    interactive = [f for f, opts in made if "isInteractive = true" in opts]
+    assert interactive, "no interactive GUI is created at all"
+    # probeGui is /guitest, a diagnostic that is only ever up on its own.
+    allowed = {"panelGui", "probeGui"}
+    extra = sorted(set(interactive) - allowed)
+    assert not extra, (
+        "more than one interactive jsonGui object: " + ", ".join(extra) +
+        ". They share self.cl.panelGui -- see Game.cl_showPanel.")
+
+
 def no_gui_callback_closes_its_own_panel():
     """A click handler must never call close() -- directly or via a helper.
 
@@ -1463,6 +1489,8 @@ def main():
     check("plumbing: every button reaches a branch", every_button_reaches_a_branch)
     check("plumbing: no gui callback closes its own panel",
           no_gui_callback_closes_its_own_panel)
+    check("plumbing: the panels share one interactive gui",
+          only_one_interactive_gui_exists)
 
     check("gui: the menu fits, for host and guest", the_menu_panel_fits)
     check("gui: every settings page fits and nothing is buried",
