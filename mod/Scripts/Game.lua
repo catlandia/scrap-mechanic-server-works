@@ -1595,6 +1595,11 @@ function Game.sv_n_plotsGuiAction( self, data, player )
 	elseif data.action == "build" then
 		self:sv_toWorld( "/plotapply", {}, player,
 			{ cfg = data.cfg, panel = "city" } )
+	elseif data.action == "sweep" then
+		-- No confirmation. It only ever removes things off ground nobody is
+		-- allowed to build on, so there is nothing here anyone can lose.
+		self:sv_toWorld( "/purge", { "/purge", "walkways" }, player,
+			{ panel = "city" } )
 	end
 end
 

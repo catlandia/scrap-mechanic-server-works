@@ -140,6 +140,38 @@ toolset now adds `5cc12f03`, which is the case that works.
 
 The general rule: **before blaming a script, check the uuid is even loaded.**
 
+### Litter must never become permanent, and it takes three rules to guarantee it
+
+REPORTED: *"you need to fix the unremovable craft bots, gems and others."* Three
+separate places all locked shared ground, and each one alone was enough.
+
+1. **The plaza returned `"locked"`.** It was meant to stop a guest deleting
+   spawn — but the plaza is where everyone arrives, so it is exactly where
+   dropped craftbots land, and locking the ground locked them with it. The
+   decking is defended by `sv_isScenery` one step earlier, which is the better
+   test anyway: our plaza is metal at deck height, a craftbot standing on it is
+   not. The plaza is `"sweep"` now, like every other street.
+2. **`buildopen == false` locked everything, before the zone was consulted.**
+   Prep, buffer and the end of an event all close building, and the world stays
+   locked *between* events — so anything dropped during any of those was
+   permanent. The zone verdict is asked for first now, and a `"sweep"` verdict
+   wins.
+3. **A locked mode short-circuited before the resolver ran at all.** `/lockdown`
+   froze the rubbish along with the builds. A `"sweep"` verdict now escapes even
+   a locked world; nothing else does.
+
+**Carryable props are a separate problem with no script fix.** Gems, crates and
+harvestables are *picked up* by the remove tool rather than erased, so making
+them erasable does not make them removable. Script-side `destroyShape()` ignores
+every permission flag — vanilla's own `sv_e_clear` relies on that — so `/purge`
+and the SWEEP LITTER button on the city panel are the only way to be rid of one.
+
+**Any bulk purge must skip bodies holding a city shape.** `/purge walkways`
+deleted every body not standing on a plot, which is the deck, the streets, the
+plaza and the pillar. It never bit anyone only because it was a chat command
+nobody ran. The guard is per SHAPE, not per body, because a build welded to a
+plot slab is one body with our concrete in it.
+
 ### Protection modes short-circuit, so anything that closes building must set one
 
 `Protection.profileFor` begins:

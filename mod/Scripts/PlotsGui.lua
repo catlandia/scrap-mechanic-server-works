@@ -219,9 +219,15 @@ function PlotsGui.Build( cfg )
 		"SecondaryButton", { action = "clear" } )
 	kids[#kids + 1] = button( "Reset", "DEFAULTS", PAD + 162, fy, 130, 34,
 		"SecondaryButton", { action = "reset" } )
-	kids[#kids + 1] = button( "Back", "BACK", PAD + 304, fy, 110, 34,
+	-- One press, because the alternative is a chat command nobody remembers at
+	-- the moment they need it. Carryable props -- craftbots, gems, crates -- are
+	-- PICKED UP by the remove tool instead of erased, so for those there is no
+	-- ordinary way to be rid of them at all and this is the only answer.
+	kids[#kids + 1] = button( "Sweep", "SWEEP LITTER", PAD + 304, fy, 190, 34,
+		"SecondaryButton", { action = "sweep" } )
+	kids[#kids + 1] = button( "Back", "BACK", PAD + 506, fy, 110, 34,
 		"SecondaryButton", { action = "back" } )
-	kids[#kids + 1] = button( "Close", "CLOSE", PAD + 426, fy, 110, 34,
+	kids[#kids + 1] = button( "Close", "CLOSE", PAD + 628, fy, 110, 34,
 		"SecondaryButton", { action = "close" } )
 	kids[#kids + 1] = button( "Build", "BUILD CITY", PlotsGui.W - PAD - 180, fy, 180, 34,
 		"StyledButtonLarge", { action = "build" } )

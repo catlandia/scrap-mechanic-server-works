@@ -70,17 +70,34 @@ function World.server_onCreate( self )
 	g_swProtection:sv_onCreate( Settings.Get( "protection" ) )
 
 	g_swProtection:sv_setResolver( function( body )
-		-- Streets and the spawn plaza can never be built on, so they are always
-		-- locked -- otherwise the "sweep" profile that keeps litter clearable off
-		-- shared ground would let anyone delete the streets too.
+		-- The city's own decking is permanent in every mode. This is the ONLY
+		-- thing protecting it, and it is a far better test than "the plaza is
+		-- locked" ever was: our decking is metal at deck height, and a craftbot
+		-- standing on top of it is not.
 		if g_swPlots:sv_isScenery( body ) then
 			return "locked"
 		end
+
+		-- SHARED GROUND STAYS CLEARABLE EVEN WHEN BUILDING IS SHUT, and this
+		-- order is the whole point. REPORTED: "you need to fix the unremovable
+		-- craft bots, gems and others."
+		--
+		-- Nothing legitimate can be built on a road or the plaza, so anything
+		-- sitting there is litter. Locking it the moment building closes is how
+		-- spawn spam wins: protect the world and the litter is protected with
+		-- it, permanently -- prep, buffer and the end of an event all shut
+		-- building, and the world stays locked between events. So the zone
+		-- verdict has to be asked for BEFORE the blanket lock, not after.
+		local zone = g_swPlots:sv_bodyIsOpen( body )
+		if zone == "sweep" then
+			return "sweep"
+		end
+
 		-- Rule 3: nothing is buildable at all until the host opens building.
 		if Settings.Get( "buildopen" ) == false then
 			return false
 		end
-		return g_swPlots:sv_bodyIsOpen( body )
+		return zone
 	end )
 
 	g_swRules = Rules()
@@ -370,6 +387,27 @@ function World.sv_e_swEventPhase( self, params )
 	end
 end
 
+-- Does this body contain any of the city itself?
+--
+-- The guard on every bulk purge, and it was missing. /purge walkways removed
+-- every body that was not standing on a plot -- which is the deck, the streets,
+-- the plaza and the pillar, i.e. the entire city floor. It survived only because
+-- it was a chat command nobody ran; putting it behind a SWEEP LITTER button
+-- would have made one press delete the world.
+--
+-- Per SHAPE, not per body, because the moment somebody builds on a plot their
+-- build and our slab are one body -- so this protects their work too.
+local function holdsCity( body )
+	local ok, shapes = pcall( function() return body:getShapes() end )
+	if not ok or shapes == nil then return true end     -- unreadable: keep it
+	for _, shape in ipairs( shapes ) do
+		if sm.exists( shape ) and g_swPlots:sv_isCityShape( shape ) then
+			return true
+		end
+	end
+	return false
+end
+
 function World.sv_e_swCommand( self, params )
 	local cmd, args, player = params.cmd, params.args, params.player
 
@@ -532,7 +570,7 @@ function World.sv_e_swCommand( self, params )
 			if not ( character and sm.exists( character ) ) then reply( "no character" ) return end
 			local origin = character.worldPosition
 			for _, body in ipairs( sm.body.getAllBodies() ) do
-				if sm.exists( body ) and not isGhostBody( body )
+				if sm.exists( body ) and not isGhostBody( body ) and not holdsCity( body )
 					and ( body.worldPosition - origin ):length() <= radius then
 					for _, shape in ipairs( body:getShapes() ) do shape:destroyShape() end
 					removed = removed + 1
@@ -541,7 +579,7 @@ function World.sv_e_swCommand( self, params )
 			reply( string.format( "cleared %d bodies within %g m", removed, radius ) )
 		elseif what == "walkways" then
 			for _, body in ipairs( sm.body.getAllBodies() ) do
-				if sm.exists( body ) and not isGhostBody( body ) then
+				if sm.exists( body ) and not isGhostBody( body ) and not holdsCity( body ) then
 					local z = g_swPlots:sv_locate( body.worldPosition )
 					if z == nil or z.kind ~= "plot" then
 						for _, shape in ipairs( body:getShapes() ) do shape:destroyShape() end
@@ -549,7 +587,9 @@ function World.sv_e_swCommand( self, params )
 					end
 				end
 			end
-			reply( string.format( "cleared %d bodies off walkways and open ground", removed ) )
+			reply( ( removed == 0 )
+				and "nothing to sweep -- the streets and the plaza are clear"
+				or string.format( "swept %d things off the streets and the plaza", removed ) )
 		end
 		if removed > 0 then
 			self:sv_quietAlarm( 20 )       -- our own cleanup must not trip the alarm

@@ -221,6 +221,21 @@ end
 -- you whether the plots came out buildable; "open 96, locked 2, sweep 1" does.
 local function profileFor( self, body )
 	if isLockedMode( self.mode ) then
+		-- One thing escapes a locked world: litter on ground nobody may build on.
+		--
+		-- /lockdown and the end of an event both lock everything, and that used
+		-- to include the craftbots and gems dropped on the plaza -- which made
+		-- them permanent, since the world stays locked between events. Freezing
+		-- the builds is the point; freezing the rubbish with them is not.
+		--
+		-- Only a "sweep" verdict gets through. Everything the resolver considers
+		-- buildable ground is still locked, which is what /lockdown means.
+		if self.resolver then
+			local verdict = self.resolver( body )
+			if verdict == "sweep" then
+				return PROFILES.sweep, "sweep"
+			end
+		end
 		return PROFILES[self.mode], self.mode
 	end
 	-- What "you may build here" resolves to depends on the MODE, not just on the

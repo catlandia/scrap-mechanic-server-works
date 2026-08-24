@@ -584,13 +584,105 @@ def an_unclaimed_empty_plot_stays_open():
         "an unclaimed plot with nobody on it should not be locked")
 
 
-def shared_ground_never_becomes_erasable_scenery():
+def the_decking_is_safe_but_litter_on_it_is_not():
+    """The city's own decking is permanent. Anything standing on it is litter.
+
+    REPORTED: "you need to fix the unremovable craft bots, gems and others."
+
+    The plaza used to resolve to "locked" as a way of stopping a guest deleting
+    spawn. That defended the right thing in the wrong place: the plaza is where
+    everyone arrives, so it is exactly where dropped craftbots and gems land, and
+    locking the ground locked them too -- permanently, because the world stays
+    locked between events.
+
+    The decking is defended by sv_isScenery instead, which is a much better test:
+    our plaza is metal at deck height, and a craftbot standing on top of it is
+    not. So this asserts both halves.
+    """
     lua, plots = plots_lua({"cols": 10, "rows": 10, "plazacells": 2})
     P = lua.globals().Plots
-    body = lua.table_from({"worldPosition": lua.table_from({"x": 0.0, "y": 0.0, "z": 1.2})})
-    assert P.sv_bodyIsOpen(plots, body) == "locked", (
-        "the plaza resolved to something other than locked -- if it is ever "
-        "'sweep' a guest can delete spawn")
+
+    # Built in Lua, not Python: these are called as body:getShapes(), so they
+    # need a real self parameter and real multiple returns.
+    at = lua.execute("""
+        return function( x, y, z, uuids )
+            local shapes = {}
+            for _, u in ipairs( uuids ) do
+                shapes[#shapes + 1] = { shapeUuid = u }
+            end
+            local body = { worldPosition = { x = x, y = y, z = z } }
+            function body:getShapes() return shapes end
+            function body:getWorldAabb()
+                return { x = x, y = y, z = z - 0.2 }, { x = x, y = y, z = z + 0.05 }
+            end
+            return body
+        end
+    """)
+
+    def make(x, y, z, uuids):
+        return at(x, y, z, lua.table_from(uuids))
+
+    METAL2, METAL3 = str(P.METAL2), str(P.METAL3)
+    CONCRETE = str(P.CONCRETE)
+
+    # our own plaza decking -- metal, at deck height
+    deck = make(0.0, 0.0, 1.1, [METAL3, METAL2])
+    assert P.sv_isScenery(plots, deck) is True, (
+        "the decking is not recognised as scenery, so nothing is protecting "
+        "spawn from being erased")
+
+    # a craftbot standing on the plaza is not decking, whatever else it is
+    litter = make(0.0, 0.0, 1.1, ["b63c6440-dfc2-4da7-acdb-3c385080b2e4"])
+    assert P.sv_isScenery(plots, litter) is False, (
+        "a craftbot on the plaza was classed as city scenery and would be "
+        "locked forever")
+    assert P.sv_bodyIsOpen(plots, litter) == "sweep", (
+        "litter on the plaza must stay clearable by anyone -- the plaza is "
+        "where everyone spawns, so it is where the spam lands")
+
+    # and a build made of concrete at deck height is never scenery either
+    build = make(0.0, 0.0, 1.1, [CONCRETE, METAL2])
+    assert P.sv_isScenery(plots, build) is False
+
+
+def a_bulk_purge_never_touches_the_city():
+    """Every bulk purge skips anything holding a piece of the city.
+
+    /purge walkways removed every body not standing on a plot -- which is the
+    deck, the streets, the plaza and the pillar. It survived only because it was
+    a chat command nobody ran; putting it behind a SWEEP LITTER button would have
+    made one press delete the world.
+
+    The guard is per SHAPE, not per body, because a build welded to a plot slab
+    is one body with our concrete in it -- so the same test protects player work.
+    """
+    src = io.open(SCRIPTS / "World.lua", encoding="utf-8").read()
+    assert "local function holdsCity(" in src, (
+        "World.lua has no holdsCity guard at all")
+
+    # every bulk loop over getAllBodies that destroys shapes must consult it
+    import re
+    for name in ("walkways", "here"):
+        start = src.index('what == "%s"' % name)
+        chunk = src[start:start + 1200]
+        assert "destroyShape" in chunk, f"/purge {name} no longer destroys anything"
+        assert "holdsCity( body )" in chunk, (
+            f"/purge {name} destroys bodies without checking holdsCity -- it "
+            "would take the city floor with the litter")
+
+    # and the shape test it leans on actually recognises our own materials
+    lua, plots = plots_lua()
+    P = lua.globals().Plots
+    for uuid, is_city in [(str(P.METAL2), True), (str(P.METAL3), True),
+                          (str(P.CONCRETE), True),
+                          ("b63c6440-dfc2-4da7-acdb-3c385080b2e4", False)]:
+        shape = lua.table_from({
+            "shapeUuid": uuid,
+            "worldPosition": lua.table_from({"x": 0.0, "y": 0.0, "z": 1.1}),
+        })
+        got = P.sv_isCityShape(plots, shape)
+        assert bool(got) is is_city, (
+            f"sv_isCityShape said {got} for {uuid}, expected {is_city}")
 
 
 def outside_the_city_is_sweepable():
@@ -1568,13 +1660,15 @@ def main():
     check("plots: public ground belongs to nobody", public_ground_belongs_to_nobody)
     check("plots: spawn is the middle of the map", spawn_is_the_middle_of_the_map)
     check("plots: an empty unclaimed plot stays open", an_unclaimed_empty_plot_stays_open)
-    check("plots: the plaza can never be swept away",
-          shared_ground_never_becomes_erasable_scenery)
+    check("plots: the decking is safe but litter standing on it is not",
+          the_decking_is_safe_but_litter_on_it_is_not)
     check("plots: a plot is one welded body of concrete and metal",
           a_plot_is_one_welded_body_of_concrete_and_metal)
     check("protection: buffer time polishes but never places or breaks",
           buffer_time_lets_you_polish_but_not_place_or_break)
     check("plots: junk outside the city stays clearable", outside_the_city_is_sweepable)
+    check("plots: a bulk purge never touches the city",
+          a_bulk_purge_never_touches_the_city)
     check("plots: the grid and its claims survive a restart", grid_survives_a_save_and_load)
 
     check("teams: a link must be front, behind, left or right", a_link_must_be_orthogonal)

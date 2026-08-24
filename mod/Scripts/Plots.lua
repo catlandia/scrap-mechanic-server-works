@@ -327,11 +327,20 @@ function Plots.sv_bodyIsOpen( self, body )
 	if z == nil then
 		return "sweep"        -- outside the city
 	end
-	-- The plaza is the city itself, not shared standing room: it is permanent
-	-- scenery and must never become erasable, or "anywhere you cannot build,
-	-- anyone can clean" would let a guest delete spawn.
+	-- The plaza used to return "locked" here, to stop "anywhere you cannot build,
+	-- anyone can clean" from letting a guest delete spawn. That was the wrong
+	-- place to defend it, and it is why craftbots and gems dropped on the plaza
+	-- could never be removed by anybody: the plaza is where everyone spawns, so
+	-- it is exactly where the spam lands.
+	--
+	-- The decking is already safe. sv_isScenery catches it one step earlier in
+	-- the resolver and locks it in every mode, and it is a much better test --
+	-- our own plaza is metal at deck height, and a craftbot standing on top of it
+	-- is not. So the plaza is shared ground like the roads: nothing legitimate
+	-- can be built on it, which means anything sitting there is litter and anyone
+	-- may clear it.
 	if z.kind == "plaza" then
-		return "locked"
+		return "sweep"
 	end
 	if z.kind == "corner" or z.kind == "road" then
 		return "sweep"

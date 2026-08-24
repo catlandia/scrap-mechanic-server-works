@@ -10,6 +10,49 @@ was most of them.
 
 ---
 
+## V35 — unremovable craftbots, and a sweep button that would have deleted the city
+
+**REPORTED:** *"you need to fix the unremovable craft bots, gems and others."*
+
+Three separate rules were locking shared ground, and any one of them alone was
+enough to make a dropped craftbot permanent.
+
+1. **The plaza returned `"locked"`.** That line existed to stop a guest deleting
+   spawn — but the plaza is where everyone arrives, so it is precisely where the
+   spam lands, and locking the ground locked the spam with it. The decking never
+   needed that defence: `sv_isScenery` catches it one step earlier and is a much
+   better test, because our plaza is metal at deck height and a craftbot standing
+   on top of it is not. The plaza is shared ground now, like every street.
+2. **`buildopen == false` locked everything before the zone was consulted.**
+   Prep, buffer and the end of an event all close building, and the world stays
+   locked *between* events — so anything dropped during any of those was
+   permanent from that moment. The zone verdict is asked for first now.
+3. **A locked mode never reached the resolver at all.** `/lockdown` froze the
+   rubbish along with the builds. A `sweep` verdict escapes a locked world now;
+   nothing else does, so lockdown still means lockdown.
+
+### Carryable props cannot be erased at all, so the sweep is a button
+
+Gems, crates and harvestables are **picked up** by the remove tool rather than
+erased, so making them erasable does not make them removable. Script-side
+`destroyShape()` ignores every permission flag, which is the only way to be rid
+of one — so **SWEEP LITTER** is now a button on the city panel rather than a chat
+command nobody would remember at the moment they needed it.
+
+### And wiring that button found a much worse bug
+
+`/purge walkways` removed every body **not standing on a plot** — which is the
+deck, the streets, the plaza and the pillar. The entire city floor. It had never
+bitten anyone only because it was a chat command nobody ran; one press of a
+SWEEP LITTER button would have deleted the world.
+
+Every bulk purge now skips any body holding a city shape. The guard is per
+SHAPE, not per body, because the moment somebody builds on a plot their build and
+our slab are one body — so the same test protects their work. A check asserts it,
+written by taking the guard back out and watching it fail.
+
+---
+
 ## V34 — buffer time polishes, the lift is everyone's, and a plot is one welded body
 
 ### Buffer time is for polishing, not waiting
