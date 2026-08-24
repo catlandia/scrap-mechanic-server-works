@@ -166,20 +166,64 @@ never seen, so this hits mods and nothing else.
 drew `HOST` as `⊠OST`, `YOU OWN` as `⊠O⊠ OW⊠`, `TOP DOWN` as `TO⊠ DOW⊠`. Five
 strings, five exact matches.
 
-**It is backwards from intuition: a font name that does not exist is SAFE.**
-MyGUI falls back to a complete font, which is the only reason `SM_Label`,
-`SM_HeaderSmall_Medium` and `SM_NumberSmall` — none of which appear in
-`Data/Gui/Fonts/ManualFontDataInput.xml` — render anything at all. The real fonts
-are the dangerous ones.
+**A font name that does not exist is NOT safe, and an earlier version of this
+file said it was.** MyGUI does fall back to a complete font, so the text draws —
+but the engine writes an error *and a full Lua traceback* every time it renders
+that widget. **MEASURED**, 2026-08-24 log, once a second for the whole session:
 
-Safe real fonts (present in the definitions, absent from the limited atlas):
-`SM_Text` `SM_TextTiny` `SM_TextSmall` `SM_TextLarge` `SM_LabelTiny`
-`SM_ButtonLarge` `SM_HeaderSmall` `SM_Header` `SM_ListItem`. Plus
-`SM_HeaderLarge_Medium`, which is limited but holds a full A-Z.
+    [Gui] ERROR: MyGUI_FontManager.cpp:101 | Font 'SM_HeaderSmall_Medium' not
+                 found. Replaced with default font.
+    [Lua] ----- Lua Error Traceback -----
+          Game.lua:620: in function 'cl_updateEventHud'
 
-Dangerous: `SM_LabelMini` `SM_Button` `SM_TabSmall` `SM_SubHeader` `SM_Label`(*)
-`SM_HeaderTiny` — all glyph-limited. `dev/test_logic.py` checks every caption
-against the atlas; do not add a font without it.
+The event HUD redraws once a second, so that is 3,600 tracebacks an hour written
+to disk. Log spam is the largest performance bug this project has measured (see
+the 1.79 GB single-player log above), so "it renders" was never the bar.
+
+**Two files together are the font registry**, and neither is complete alone:
+`Data/Gui/Fonts/ManualFontDataInput.xml` declares most of them, and
+`Cache/Fonts/English/LimitedFontData.xml` names eleven more that are real and
+glyph-limited — `SM_Label` `SM_NumberSmall` `SM_LabelSmall` `SM_Tab`
+`SM_TextDesc` `SM_NumberHuge` `SM_HeaderLarge_Narrow` and four `X_*`. A font in
+neither is the kind that spams. `SM_HeaderSmall_Medium` is in neither and never
+existed.
+
+So there are three tiers, not two:
+
+| tier | example | what happens |
+|---|---|---|
+| known, no `<Codes>` | `SM_Text` `SM_TextTiny` `SM_LabelTiny` `SM_ButtonLarge` `SM_ButtonSmall` `SM_Header` `SM_HeaderSmall` `SM_TextSmall` `SM_TextLarge` `SM_ListItem` | **use these.** Full character set, silent |
+| known, glyph-limited | `SM_Label` = `0123456789:EIMQTestu`, `SM_LabelMini` = `0123456789ACDEILORSTVW`, `SM_Button`, `SM_SubHeader`, `SM_TabSmall`, `SM_HeaderTiny`, `SM_NumberSmall`, `SM_HeaderLarge_Medium` | letters outside the set draw as hollow boxes |
+| not a font at all | `SM_HeaderSmall_Medium` | draws via fallback, logs an error + traceback **per render** |
+
+The mod now uses seven fonts and every one is tier 1. `dev/test_logic.py`
+enforces both rules — existence first, then glyphs — over every caption of every
+panel in every state.
+
+### The GUI canvas is the real screen, and a panel is positioned from its CENTRE
+
+**MEASURED**, 2026-08-24: `[ServerWorks] gui canvas 3440x1440` on a 3440x1440
+monitor. Widget units are screen pixels here, one to one, so a 760-wide panel is
+760 pixels — not scaled, as an earlier guess in this file had it.
+
+`sm.jsonGui.getViewSize()` is the binding vanilla itself uses for this
+(`Survival/Scripts/game/SurvivalPlayer.lua:424`,
+`ChallengeData/Scripts/game/ChallengePlayer.lua:180`).
+
+And the arithmetic next to it says what a root widget's `x`/`y` mean, which is
+not obvious and is not documented anywhere:
+
+    StatusPanelGui.root.x = math.floor( -screenWidth / 2 + root.width * 0.5 )
+    StatusPanelGui.root.y = math.floor( screenHeight / 2 - root.height * 0.5 )
+
+That puts the panel bottom-left. Solve it and the meaning falls out: **x,y is the
+widget's CENTRE, measured from the centre of the screen, with +y downwards.** So
+top-right with a margin is
+
+    x =  screenW / 2 - width  / 2 - margin
+    y = -screenH / 2 + height / 2 + margin
+
+`Anchor = "TopRight"` is not a value the engine accepts; `"Center"` is.
 
 ### GUI skins that draw no text
 
@@ -240,6 +284,35 @@ table:
 `enableCreations = false` on every vanilla creative world — so it does not mean
 player blueprints.
 
+### The city is one platform, and it cannot be one body
+
+REPORTED three sessions running: *"the plot is not attached to the rest of the
+build"*, then *"I dont think the concrete sticks to the borders still"*. Asked
+what it actually looked like, the answer was **flush, but a visible seam /
+separate body** — so the arithmetic was never wrong. `dev/test_layout.py` proves
+the geometry is a gapless partition over 13 configurations and it always was.
+The city just *read* as a hundred loose tiles, because that is what it was: one
+creation per plot, plus one for the streets.
+
+**They cannot be welded into one body.** A plot slab has to stay its own creation
+because a player's build welds onto it, and `World.sv_plotOfBody` — which is what
+makes per-plot snapshot and per-plot restore possible at all — finds a build by
+asking which plot its *body* sits on. Weld the city together and every player's
+work joins one enormous body, `/restore` stops being per-plot, and the grief this
+project exists to undo becomes all-or-nothing again.
+
+So the platform goes **under** them. `Plots.BASE_Z = DECK_Z - 1` is one
+continuous slab over the whole footprint, welded into the deck creation, with the
+concrete plots and the metal streets inlaid flush in its top surface. The city
+becomes a raised platform two blocks thick with a proper edge all the way round,
+and every plot stays the separate creation the rest of the system needs. The
+central pillar stops at `BASE_Z` rather than `DECK_Z`, because two shapes in one
+block is how an import quietly loses one of them.
+
+The base is deliberately **not** a `Layout.deckPieces` entry: it overlaps every
+one of them, one block lower, and `deckPieces` has to stay a partition for the
+layout check to mean anything.
+
 ### Lifts are a plot primitive the engine already tracks
 
 `body:getLift()`, `body:isOnLift()`, `body:isOnVirtualLift()`, `sm.player.placeLift()`,
@@ -253,6 +326,33 @@ starting point than geometric regions.
 variants, with `sm.areaTrigger.filter.dynamicBody + staticBody`. Vanilla's Challenge builder
 already ships an `obj_interactive_buildarea` part using exactly this
 (`BuilderWorld.server_onInteractableCreated`).
+
+### A panel that closes on every click cannot be told from a broken one
+
+REPORTED: *"you should fix the buttons. since they sadly dont work. like I mean I
+press them and menu closes."* There was exactly **one** dead button in that build
+— CLEAR CITY sent `/citycensus` to the world and `World.sv_e_swCommand` had no
+branch for it — and from the outside it was indistinguishable from the nine live
+ones, because every button closed its own panel whether it worked or not.
+
+The convention now, and every panel follows it:
+
+- **only CLOSE and BACK close a panel.** An action runs, the server re-sends the
+  panel's whole state, and it re-renders in place.
+- **every panel carries a status line** under its header saying what the last
+  press did. It is the only feedback a click gets.
+- **a confirmation is modal**: it closes whatever asked it and names, in `back`,
+  what to reopen afterwards.
+- **replies are collected, not just chatted.** A world command sent by a panel
+  carries `panel = "..."`; `sv_e_swCommand` gathers every `reply()` into a status
+  line for it. Chat is behind the panel; the person who just pressed a button is
+  looking at the button.
+
+Two checks in `dev/test_logic.py` walk that plumbing from both ends — every
+`sv_toWorld("...")` string in `Game.lua` must have a `cmd == "..."` branch in
+`World.lua`, and every `action = "..."` a panel can emit must be named in
+`Game.lua`. Both are string matching, but a name that appears on one side of the
+bridge and nowhere on the other is always a bug, and it was this one.
 
 ### Chat commands are the admin surface, and they have a real bug
 
@@ -360,6 +460,8 @@ credit it with fixing the thing that actually degraded.
     mod/Scripts/EventHud.lua    top-right timer + handover to the warehouse timer
     mod/Scripts/MyPlotGui.lua   the panel players use: claim, find, team, leave
     mod/Scripts/PlotMarker.lua  "find my plot", on the game's own compass HUD
+                                driven from Player.lua -- compassSetIconWorldPosition
+                                is world-dependent and Game.lua has no world
 
     dev/check_all.py            all four checks below; --sync installs afterwards
     dev/check_lua.py            compiles every mod script through a real Lua parser

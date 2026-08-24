@@ -10,6 +10,108 @@ was most of them.
 
 ---
 
+## V29 — the buttons answer back, and the city becomes one platform
+
+Three things reported, all three real, and the log named two of them outright.
+
+### One dead button, and nine that looked exactly like it
+
+**REPORTED:** *"you should fix the buttons. since they sadly dont work. like I
+mean I press them and menu closes."*
+
+There was exactly one dead button in V28 and it was **CLEAR CITY**. The panel
+sent `/citycensus` to the world; `World.sv_e_swCommand` had no branch for it. The
+command was written on one side of the bridge and never on the other, so the
+panel shut and the world did nothing.
+
+What made it a report about *the buttons* rather than about one button is that
+every panel closed on every click, so a button that worked and a button that
+didn't looked identical from the outside. That is fixed as a convention, not as a
+patch:
+
+- **only CLOSE and BACK close a panel.** Everything else runs, and the panel
+  re-renders in place with the world's answer on it.
+- **every panel has a status line** under its header saying what the last press
+  did. PAUSE says it paused. CLAIM on somebody else's ground says whose.
+- **a confirmation is modal** and names what to reopen when it is done, so
+  cancelling CLEAR CITY puts you back on the city panel rather than nowhere.
+- **BACK on every panel** returns to `/menu`, so the hub is a hub.
+
+The city panel also gains a **CLOSE** button, which it never had — the only way
+out of it was the escape key.
+
+Two checks now walk that plumbing from both ends: every `sv_toWorld("...")`
+string in `Game.lua` must have a `cmd == "..."` branch in `World.lua`, and every
+`action = "..."` a panel can emit must be named in `Game.lua`. Both are string
+matching, but a name that appears on one side of a bridge and nowhere on the
+other is always a bug — and it was this one.
+
+### The city is one platform now
+
+**REPORTED:** *"I dont think the concrete sticks to the borders still"*, the
+third time this has come up. Asked what it actually looked like, the answer was
+**flush, but a visible seam / separate body** — so the geometry was never wrong.
+`test_layout.py` proves it is a gapless partition and always did. The city simply
+read as a hundred loose tiles, because that is what it was.
+
+They cannot be welded into one body: a plot slab must stay its own creation,
+because a player's build welds onto it and `sv_plotOfBody` finds that build by
+asking which plot its *body* is on. Weld the city and per-plot restore collapses
+into all-or-nothing, which is the exact failure this project exists to prevent.
+
+So the platform goes **underneath**. One continuous slab across the whole
+footprint, one block below the deck, welded into the deck creation, with the
+concrete plots and metal streets inlaid flush in its top surface. The city is now
+a raised platform two blocks thick with a proper edge all the way round — and
+every plot is still the separate creation everything else needs. The central
+pillar stops one block lower to make room, because two shapes in one block is how
+an import quietly loses one of them.
+
+### The log was writing a traceback every second
+
+**MEASURED**, and this one corrects a claim in `CLAUDE.md` that was wrong:
+
+    [Gui] ERROR: MyGUI_FontManager.cpp:101 | Font 'SM_HeaderSmall_Medium' not
+                 found. Replaced with default font.
+    [Lua] ----- Lua Error Traceback -----
+          Game.lua:620: in function 'cl_updateEventHud'
+
+once a second, for the whole session. `CLAUDE.md` said a font name that does not
+exist is *safe* because MyGUI falls back to a complete font. It does fall back —
+and it logs an error with a full Lua traceback every time it renders. The event
+HUD redraws once a second, so that is 3,600 tracebacks an hour written to disk,
+and log spam is the largest performance bug this project has ever measured.
+
+Three of the fonts in use did not exist (`SM_HeaderSmall_Medium`) or were
+glyph-limited (`SM_Label` holds only `0123456789:EIMQTestu`; `SM_NumberSmall` is
+worse). All seven fonts the mod now uses are real and unlimited. The font check
+tests existence *first*, then glyphs, and the registry is the union of two files
+— `ManualFontDataInput.xml` and `LimitedFontData.xml` — because eleven real fonts
+appear only in the second.
+
+### The compass marker never worked, and said so
+
+    WARNING: [ServerWorks] compass marker unavailable: PlotMarker.lua:72:
+             Calling world dependent functions in a no world script!
+
+`compassSetIconWorldPosition` needs a world, and every vanilla caller of it is a
+world-attached script. It was being called from `Game.lua`, which has no world —
+the same trap that moved every `sm.body.*` call into `World.lua` on day one. It
+runs from `Player.lua` now, reached the way `CreativeGame` reaches
+`CreativePlayer` for the unstuck popup: `sm.event.sendToPlayer`.
+
+### Measured while looking
+
+- **The GUI canvas is the real screen resolution**, 1:1 — `gui canvas 3440x1440`
+  on a 3440x1440 monitor. No scaling, contrary to an earlier guess.
+- **A root widget's `x`/`y` is its CENTRE, from the centre of the screen, +y
+  down.** Derived from vanilla's own status-panel arithmetic; written down in
+  `CLAUDE.md` so the next HUD does not have to be found by screenshot.
+- **DEFAULTS on the city panel** was resetting to `spawn = 50`, a field that
+  stopped existing in V28. It reads `Layout.DEFAULT` now.
+
+---
+
 ## V28 — the plaza stops being a wasteland, and the clock actually works
 
 ### "I cant build when prep time is out"

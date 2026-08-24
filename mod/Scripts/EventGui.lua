@@ -103,13 +103,19 @@ function EventGui.Build( state )
 	kids[#kids + 1] = fill( "HeaderBand", 0, 0, EventGui.W, 68, PANEL, 0.05 )
 	kids[#kids + 1] = fill( "HeaderRule", 0, 68, EventGui.W, 2, ACCENT, 1 )
 	kids[#kids + 1] = text( "Title", "EVENT CLOCK", PAD, 18, 460, 34,
-		"SM_HeaderLarge_Medium", LABEL, "Left" )
+		"SM_Header", LABEL, "Left" )
 
 	local sub = running
 		and string.format( "%s -- %s left%s", Event.LABELS[phase] or phase,
 			Event.Clock( state.remaining ), state.paused and "  PAUSED" or "" )
 		or "nothing running"
-	kids[#kids + 1] = text( "Sub", sub, PAD, 46, 600, 20, "SM_TextTiny", DIM, "Left" )
+	kids[#kids + 1] = text( "Sub", sub, PAD, 46, 380, 20, "SM_TextTiny", DIM, "Left" )
+	-- What the last press did. The panel stays open across every control now, so
+	-- this is where PAUSE says it paused.
+	if state.status then
+		kids[#kids + 1] = text( "Status", state.status, PAD + 390, 46,
+			EventGui.W - PAD * 2 - 390, 20, "SM_TextTiny", ACCENT, "Right" )
+	end
 
 	--[[ the three durations ]]
 	local rowW = EventGui.W - PAD * 2
@@ -167,6 +173,8 @@ function EventGui.Build( state )
 			PAD, by + 54, rowW, 18, "SM_TextTiny", DIM, "Left" )
 	end
 
+	kids[#kids + 1] = button( "Back", "BACK", PAD, EventGui.H - 52, 130, 36,
+		"SecondaryButton", { action = "back" } )
 	kids[#kids + 1] = button( "Close", "CLOSE", EventGui.W - PAD - 140,
 		EventGui.H - 52, 140, 36, "SecondaryButton", { action = "close" } )
 	return root

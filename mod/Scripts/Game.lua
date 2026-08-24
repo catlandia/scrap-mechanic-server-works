@@ -523,17 +523,29 @@ end
 -- The plot marker. The server says where it is; only this client is ever told,
 -- so nobody else's compass shows it -- which is the behaviour the owner wanted
 -- and, on the compass HUD, the only behaviour available.
+--
+-- MEASURED, and it is the same trap as sm.body.* :
+--
+--   WARNING: [ServerWorks] compass marker unavailable: PlotMarker.lua:72:
+--            Calling world dependent functions in a no world script!
+--
+-- compassSetIconWorldPosition needs a world to turn a world position into a
+-- bearing, and every vanilla caller of it is a world-attached script -- a
+-- character, an interactable, a manager. This is the Game script, which has no
+-- world, so the marker has never once appeared.
+--
+-- The hop to the player script is vanilla's own idiom for exactly this:
+-- CreativeGame.client_onCreate:244 does sm.event.sendToPlayer( localPlayer,
+-- "cl_e_unstuck" ) to reach CreativePlayer. Player.lua is attached to a
+-- character in a world, so the call is legal there.
 function Game.client_setPlotMarker( self, data )
 	if self.cl == nil then self.cl = {} end
-	if data == nil or data.position == nil then
-		self.cl.plotMarker = nil
-		PlotMarker.Cl_Hide()
-		return
-	end
-	self.cl.plotMarker = data.position
-	PlotMarker.Cl_Show( data.position )
-	if data.ping then
-		PlotMarker.Cl_Ping()
+	self.cl.plotMarker = data and data.position or nil
+	local ok, err = pcall( sm.event.sendToPlayer, sm.localPlayer.getPlayer(),
+		"cl_e_swPlotMarker", data or {} )
+	if not ok and not self.cl.markerFaulted then
+		self.cl.markerFaulted = true
+		sm.log.warning( "[ServerWorks] plot marker hop failed: " .. tostring( err ) )
 	end
 end
 
@@ -816,13 +828,13 @@ end
 -- asks, the server decides and saves, the server sends the new values back and
 -- the panel re-renders. That keeps a guest's client from ever being the
 -- authority on what the server allows.
-function Game.sv_openSettingsGui( self, player, group, page )
+function Game.sv_openSettingsGui( self, player, group, page, status )
 	local values = {}
 	for _, row in ipairs( Settings.SCHEMA ) do
 		values[row.key] = Settings.Get( row.key )
 	end
 	self.network:sendToClient( player, "client_openSettingsGui",
-		{ values = values, group = group, page = page } )
+		{ values = values, group = group, page = page, status = status } )
 end
 
 function Game.sv_n_settingsGuiClick( self, data, player )
@@ -830,8 +842,11 @@ function Game.sv_n_settingsGuiClick( self, data, player )
 		return
 	end
 
+	local status = nil
+
 	if data.action == "preset" then
 		local ok, detail = Settings.Sv_ApplyPreset( data.preset )
+		status = detail
 		if ok then
 			self.sv.blockedTools = Settings.Sv_BlockedTools()
 			self.sv.hazardTools = Settings.Sv_HazardTools()
@@ -855,6 +870,7 @@ function Game.sv_n_settingsGuiClick( self, data, player )
 				local raw = ( row.kind == "bool" ) and ( nextValue and "on" or "off" )
 					or tostring( nextValue )
 				local ok, detail = Settings.Sv_Set( row.key, raw )
+				status = detail
 				if ok then
 					self.sv.blockedTools = Settings.Sv_BlockedTools()
 					self:sv_toWorld( "/settingschanged", {}, player )
@@ -864,7 +880,7 @@ function Game.sv_n_settingsGuiClick( self, data, player )
 		end
 	end
 
-	self:sv_openSettingsGui( player, data.group, data.page or 1 )
+	self:sv_openSettingsGui( player, data.group, data.page or 1, status )
 end
 
 function Game.client_openSettingsGui( self, data )
@@ -872,13 +888,15 @@ function Game.client_openSettingsGui( self, data )
 	self.cl.settingsValues = data.values
 	self.cl.settingsGroup = data.group or "safety"
 	self.cl.settingsPage = data.page or 1
+	self.cl.settingsStatus = data.status
 
 	-- Reuse the GUI and just render the new tree into it. Closing and recreating
 	-- on every click threw the panel away and built another, which is wasteful
 	-- and makes the whole thing flicker. Re-rendering is what vanilla does
 	-- (HideoutTrader rebuilds its item list this way).
 
-	local root = SettingsGui.Build( data.values, self.cl.settingsGroup, self.cl.settingsPage )
+	local root = SettingsGui.Build( data.values, self.cl.settingsGroup,
+		self.cl.settingsPage, self.cl.settingsStatus )
 	if self.cl.settingsGui == nil or not sm.exists( self.cl.settingsGui ) then
 		self.cl.settingsGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
 	end
@@ -900,6 +918,11 @@ function Game.cl_onSettingsGuiClick( self, widgetName, data )
 		self:cl_closeSettingsGui()
 		return
 	end
+	if data.action == "back" then
+		self:cl_closeSettingsGui()
+		self.network:sendToServer( "sv_n_openMenu", {} )
+		return
+	end
 
 	-- Switching tab or page is pure presentation, so it re-renders locally
 	-- instead of round-tripping to the server. Only a value change needs the
@@ -907,6 +930,7 @@ function Game.cl_onSettingsGuiClick( self, widgetName, data )
 	if data.action == "group" then
 		self.cl.settingsGroup = data.group
 		self.cl.settingsPage = 1
+		self.cl.settingsStatus = nil
 		self.cl.settingsGui:render( SettingsGui.Build(
 			self.cl.settingsValues, self.cl.settingsGroup, 1 ) )
 		return
@@ -917,6 +941,7 @@ function Game.cl_onSettingsGuiClick( self, widgetName, data )
 		local page = data.page
 		if page < 1 then page = pages elseif page > pages then page = 1 end
 		self.cl.settingsPage = page
+		self.cl.settingsStatus = nil
 		self.cl.settingsGui:render( SettingsGui.Build(
 			self.cl.settingsValues, self.cl.settingsGroup, page ) )
 		return
@@ -963,11 +988,19 @@ function Game.client_openMenu( self, data )
 	self.cl.menuGui:render( MenuGui.Build( data.host ) )
 end
 
+-- The hub is the one panel that DOES close on a click, because what it opens
+-- would otherwise be drawn on top of it. Everything it opens carries a BACK
+-- button that comes straight back here.
 function Game.cl_onMenuClick( self, widgetName, data )
 	if type( data ) ~= "table" then return end
 	self:cl_closeMenu()
 	if data.action == "close" then return end
 	self.network:sendToServer( "sv_n_menuOpen", { what = data.action } )
+end
+
+-- BACK, from any sub-panel.
+function Game.sv_n_openMenu( self, data, player )
+	self:sv_openMenu( player )
 end
 
 function Game.cl_onMenuClose( self, widgetName )
@@ -1006,7 +1039,7 @@ end
 
 --[[ city layout panel ]]
 
-function Game.sv_openPlotsGui( self, player )
+function Game.sv_openPlotsGui( self, player, status )
 	-- Read the live grid back out of the world; the Game script does not own it.
 	local cfg
 	if g_swPlots then
@@ -1039,6 +1072,7 @@ function Game.sv_openPlotsGui( self, player )
 		cfg = Layout.config( {} )
 		cfg.claimed = {}
 	end
+	cfg.status = status
 	self.network:sendToClient( player, "client_openPlotsGui", cfg )
 end
 
@@ -1070,8 +1104,15 @@ function Game.cl_closeMyPlotGui( self )
 	-- A json GUI has no destroy() and no open(); render() IS the show and close()
 	-- is the hide. Measured twice, as "Unknown member 'destroy' in userdata" and
 	-- then again as "Unknown member 'open'".
-	if self.cl and self.cl.myPlotGui and sm.exists( self.cl.myPlotGui ) then
-		self.cl.myPlotGui:close()
+	--
+	-- Cleared BEFORE closing, the way cl_closeSettingsGui is: close() fires
+	-- onClose, which calls straight back into here, and the second pass would
+	-- otherwise close a GUI that is already closing.
+	if self.cl == nil then return end
+	local gui = self.cl.myPlotGui
+	self.cl.myPlotGui = nil
+	if gui and sm.exists( gui ) then
+		pcall( function() gui:close() end )
 	end
 end
 
@@ -1079,23 +1120,50 @@ function Game.cl_onMyPlotClose( self )
 	self:cl_closeMyPlotGui()
 end
 
+-- Nothing here closes the panel except CLOSE and BACK.
+--
+-- REPORTED: "I press them and menu closes. and make so that the menu doesnt
+-- close after every action alright?" -- and they were right twice over. Every
+-- action used to shut its own panel, so a button that worked and a button that
+-- did nothing looked identical from the outside, and the one dead button in the
+-- build (CLEAR CITY, see World.sv_cityCensus) was indistinguishable from the
+-- nine live ones.
 function Game.cl_onMyPlotClick( self, widgetName, data )
 	if type( data ) ~= "table" then return end
 	if data.action == "close" then
 		self:cl_closeMyPlotGui()
 		return
 	end
+	if data.action == "back" then
+		self:cl_closeMyPlotGui()
+		self.network:sendToServer( "sv_n_openMenu", {} )
+		return
+	end
 	self.network:sendToServer( "sv_n_myPlotAction", { action = data.action } )
-	self:cl_closeMyPlotGui()
 end
 
 function Game.sv_n_myPlotAction( self, data, player )
 	if type( data ) ~= "table" then return end
 	local map = { claim = "claim", leave = "leave" }
+	-- panel = "myplot" tells the world to redraw the panel with the reply on it
+	-- rather than only writing to a chat log that is behind the panel.
 	if data.action == "find" then
-		self:sv_toWorld( "/home", {}, player )
+		self:sv_toWorld( "/home", {}, player, { panel = "myplot" } )
 	elseif map[data.action] then
-		self:sv_toWorld( "/plot", { "/plot", map[data.action] }, player )
+		self:sv_toWorld( "/plot", { "/plot", map[data.action] }, player,
+			{ panel = "myplot" } )
+	elseif data.action == "refresh" then
+		self:sv_toWorld( "/myplot", {}, player )
+	end
+end
+
+-- The world finished something a panel asked for and wants that panel redrawn.
+-- Only the Game script has a network to reach a client with, so it comes back
+-- through here the same way replies and markers do.
+function Game.sv_e_swPanelRefresh( self, params )
+	if params.player == nil or not sm.exists( params.player ) then return end
+	if params.panel == "city" then
+		self:sv_openPlotsGui( params.player, params.status )
 	end
 end
 
@@ -1106,7 +1174,7 @@ function Game.sv_e_swCityCensus( self, params )
 	local lines = {}
 	for _, l in pairs( params.lines or {} ) do lines[#lines + 1] = l end
 	self:sv_askConfirm( params.player, "clearcity",
-		"DELETE THE WHOLE CITY?", lines )
+		"DELETE THE WHOLE CITY?", lines, "city" )
 end
 
 function Game.sv_e_swMyPlot( self, params )
@@ -1116,7 +1184,7 @@ end
 
 --[[ event panel ]]
 
-function Game.sv_openEventGui( self, player )
+function Game.sv_openEventGui( self, player, status )
 	if player ~= sm.player.getHostPlayer() then
 		self.network:sendToClient( player, "client_showMessage", "Host only." )
 		return
@@ -1129,6 +1197,7 @@ function Game.sv_openEventGui( self, player )
 		prep = g_swEvent.prepMinutes,
 		build = g_swEvent.buildMinutes,
 		buffer = g_swEvent.bufferMinutes,
+		status = status,
 	} )
 end
 
@@ -1142,8 +1211,11 @@ function Game.client_openEventGui( self, state )
 end
 
 function Game.cl_closeEventGui( self )
-	if self.cl and self.cl.eventGui and sm.exists( self.cl.eventGui ) then
-		self.cl.eventGui:close()
+	if self.cl == nil then return end
+	local gui = self.cl.eventGui
+	self.cl.eventGui = nil
+	if gui and sm.exists( gui ) then
+		pcall( function() gui:close() end )
 	end
 end
 
@@ -1167,16 +1239,29 @@ function Game.cl_onEventGuiClick( self, widgetName, data )
 		self:cl_closeEventGui()
 		return
 	end
+	if data.action == "back" then
+		self:cl_closeEventGui()
+		self.network:sendToServer( "sv_n_openMenu", {} )
+		return
+	end
+	-- Stays open. Running an event means pressing several of these in a row --
+	-- pause, look, +5 min, resume -- and re-opening the panel between each one
+	-- was the difference between a control surface and a set of one-shot
+	-- commands wearing buttons.
 	self.network:sendToServer( "sv_n_eventGuiAction",
 		{ action = data.action, n = data.n,
 		  prep = cfg.prep, build = cfg.build, buffer = cfg.buffer } )
-	self:cl_closeEventGui()
 end
 
 function Game.sv_n_eventGuiAction( self, data, player )
 	if player ~= sm.player.getHostPlayer() then return end
 	if g_swEvent == nil or type( data ) ~= "table" then return end
+
+	-- Collected, not just chatted: the panel is still open in front of the chat
+	-- log and it is the thing the host is looking at.
+	local said = {}
 	local function reply( text )
+		said[#said + 1] = tostring( text )
 		self.network:sendToClient( player, "client_showMessage", text )
 	end
 
@@ -1192,6 +1277,8 @@ function Game.sv_n_eventGuiAction( self, data, player )
 		if data.action == "add" then params[3] = data.n end
 		self:sv_eventCommand( params, reply )
 	end
+
+	self:sv_openEventGui( player, ( #said > 0 ) and said[1] or nil )
 end
 
 
@@ -1199,14 +1286,22 @@ end
 
 -- Anything that destroys work goes through here twice. See ConfirmGui.lua for
 -- why the buttons swap sides between the two steps.
-function Game.sv_askConfirm( self, player, what, title, lines )
+function Game.sv_askConfirm( self, player, what, title, lines, back )
 	self.network:sendToClient( player, "client_openConfirm",
-		{ step = 1, what = what, title = title, lines = lines } )
+		{ step = 1, what = what, title = title, lines = lines, back = back } )
 end
 
 function Game.client_openConfirm( self, state )
 	if self.cl == nil then self.cl = {} end
 	self.cl.confirm = state
+	-- A confirmation is modal. Every other panel stays open across its own
+	-- actions now, so without this the question would be drawn on top of the
+	-- panel that asked it and both would be taking clicks. `back` says which one
+	-- to bring back afterwards.
+	self:cl_closePlotsGui()
+	self:cl_closeEventGui()
+	self:cl_closeSettingsGui()
+	self:cl_closeMyPlotGui()
 	if self.cl.confirmGui == nil or not sm.exists( self.cl.confirmGui ) then
 		self.cl.confirmGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
 	end
@@ -1214,10 +1309,13 @@ function Game.client_openConfirm( self, state )
 end
 
 function Game.cl_closeConfirm( self )
-	if self.cl and self.cl.confirmGui and sm.exists( self.cl.confirmGui ) then
-		self.cl.confirmGui:close()
+	if self.cl == nil then return end
+	local gui = self.cl.confirmGui
+	self.cl.confirmGui = nil
+	self.cl.confirm = nil
+	if gui and sm.exists( gui ) then
+		pcall( function() gui:close() end )
 	end
-	if self.cl then self.cl.confirm = nil end
 end
 
 function Game.cl_onConfirmClose( self )
@@ -1227,9 +1325,15 @@ end
 function Game.cl_onConfirmClick( self, widgetName, data )
 	if type( data ) ~= "table" or self.cl == nil or self.cl.confirm == nil then return end
 	local c = self.cl.confirm
+	local back = c.back
+	-- "no" cancels, and so does anything unrecognised: on a dialog that deletes a
+	-- city, the branch you fall into by accident has to be the safe one.
 	if data.action ~= "yes" then
 		self:cl_closeConfirm()
-		sm.gui.chatMessage( "Cancelled. Nothing was deleted." )
+		sm.gui.chatMessage( ( data.action == "no" )
+			and "Cancelled. Nothing was deleted."
+			or "Cancelled. Nothing was deleted (unrecognised button)." )
+		if back then self.network:sendToServer( "sv_n_openPanel", { panel = back } ) end
 		return
 	end
 	if ( c.step or 1 ) < 2 then
@@ -1246,9 +1350,21 @@ function Game.sv_n_confirmed( self, data, player )
 	if player ~= sm.player.getHostPlayer() then return end
 	if type( data ) ~= "table" then return end
 	if data.what == "clearcity" then
-		self:sv_toWorld( "/plotclear", {}, player )
-	elseif data.what == "buildcity" then
-		self:sv_toWorld( "/plotapply", {}, player, { cfg = self.cl and nil } )
+		self:sv_toWorld( "/plotclear", {}, player, { panel = "city" } )
+	end
+end
+
+-- Reopen a named panel. Used by BACK and by a cancelled confirmation.
+function Game.sv_n_openPanel( self, data, player )
+	if type( data ) ~= "table" then return end
+	if data.panel == "city" then
+		self:sv_openPlotsGui( player, "nothing was deleted" )
+	elseif data.panel == "event" then
+		self:sv_openEventGui( player )
+	elseif data.panel == "settings" then
+		self:sv_openSettingsGui( player, "safety", 1 )
+	elseif data.panel == "myplot" then
+		self:sv_toWorld( "/myplot", {}, player )
 	end
 end
 
@@ -1259,13 +1375,19 @@ function Game.cl_onPlotsGuiClick( self, widgetName, data )
 
 	if data.action == "step" then
 		cfg[data.key] = PlotsGui.Step( data.key, cfg[data.key], data.dir )
+		cfg.status = nil                                       -- stale the moment they edit
 		self.cl.plotsGui:render( PlotsGui.Build( cfg ) )       -- local, instant
 		return
 	end
 	if data.action == "reset" then
-		self.cl.plotCfg = { plot = 20, gap = 1, cols = 10, rows = 10,
-			roadevery = 0, roadwidth = 6, spawn = 50,
-			claimed = self.cl.plotCfg and self.cl.plotCfg.claimed or {} }
+		-- Layout.DEFAULT, not a second copy of it. The old copy here still said
+		-- spawn = 50 months after `spawn` became `plazacells`, so DEFAULTS reset
+		-- the panel to a layout the builder no longer speaks.
+		local d = Layout.DEFAULT
+		self.cl.plotCfg = { plot = d.plot, gap = d.gap, cols = d.cols, rows = d.rows,
+			roadevery = d.roadevery, roadwidth = d.roadwidth, plazacells = d.plazacells,
+			claimed = cfg.claimed or {}, mine = cfg.mine, team = cfg.team,
+			status = "reset to the defaults -- nothing is built until you press BUILD" }
 		self.cl.plotsGui:render( PlotsGui.Build( self.cl.plotCfg ) )
 		return
 	end
@@ -1273,9 +1395,14 @@ function Game.cl_onPlotsGuiClick( self, widgetName, data )
 		self:cl_closePlotsGui()
 		return
 	end
-	-- build and clear are the server's business
+	if data.action == "back" then
+		self:cl_closePlotsGui()
+		self.network:sendToServer( "sv_n_openMenu", {} )
+		return
+	end
+	-- build and clear are the server's business. The panel STAYS OPEN; the
+	-- server sends it back with a status line when the work has started.
 	self.network:sendToServer( "sv_n_plotsGuiAction", { action = data.action, cfg = cfg } )
-	self:cl_closePlotsGui()
 end
 
 function Game.cl_onPlotsGuiClose( self, widgetName )
@@ -1298,7 +1425,8 @@ function Game.sv_n_plotsGuiAction( self, data, player )
 		-- world has to count it, so the ask happens from there.
 		self:sv_toWorld( "/citycensus", {}, player )
 	elseif data.action == "build" then
-		self:sv_toWorld( "/plotapply", {}, player, { cfg = data.cfg } )
+		self:sv_toWorld( "/plotapply", {}, player,
+			{ cfg = data.cfg, panel = "city" } )
 	end
 end
 

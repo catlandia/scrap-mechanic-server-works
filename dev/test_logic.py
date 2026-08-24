@@ -823,6 +823,56 @@ def the_client_state_is_small_and_complete():
     assert st["phase"] == "build" and st["panic"] is True
 
 
+# --------------------------------------------------------------- plumbing ---
+#
+# A button that does nothing looks exactly like a button that works, because the
+# panel used to shut either way.
+#
+# REPORTED: "you should fix the buttons. since they sadly dont work. like I mean
+# I press them and menu closes." There was exactly one dead button in the build
+# and it was CLEAR CITY: the panel sent "/citycensus" to the world and nothing in
+# World.sv_e_swCommand answered it, so the panel closed and the world did
+# nothing. The command was written on one side of the bridge only.
+#
+# These two checks walk the bridge from both ends. They are string matching, not
+# execution -- the network and the world are the engine's -- but a name that
+# appears on one side and nowhere on the other is always a bug, and it is the
+# exact bug that shipped.
+
+def read(name):
+    return io.open(SCRIPTS / name, encoding="utf-8").read()
+
+
+def every_command_a_panel_sends_is_answered():
+    import re
+    game, world = read("Game.lua"), read("World.lua")
+    sent = set(re.findall(r'sv_toWorld\(\s*"([^"]+)"', game))
+    assert sent, "no sv_toWorld calls found -- the parse is wrong, not the code"
+    handled = set(re.findall(r'cmd == "([^"]+)"', world))
+    dead = sorted(sent - handled)
+    assert not dead, (
+        f"Game.lua sends {dead} to the world and World.sv_e_swCommand has no "
+        "branch for it. The panel will close and nothing will happen.")
+
+
+def every_button_reaches_a_branch():
+    """Every action a panel can emit is named in the script that handles clicks."""
+    import re
+    game = read("Game.lua")
+    panels = ["MenuGui.lua", "PlotsGui.lua", "SettingsGui.lua",
+              "EventGui.lua", "MyPlotGui.lua", "ConfirmGui.lua"]
+    orphans = []
+    for name in panels:
+        for action in sorted(set(re.findall(r'action = "([^"]+)"', read(name)))):
+            # Handled means the literal is tested or forwarded somewhere in the
+            # game script -- as data.action == "x", or in a lookup table.
+            if f'"{action}"' not in game:
+                orphans.append(f"{name}:{action}")
+    assert not orphans, (
+        f"{len(orphans)} button action(s) are never named in Game.lua, so "
+        f"pressing them does nothing: {orphans}")
+
+
 # ------------------------------------------------------------------ fonts ---
 #
 # Scrap Mechanic does not ship whole fonts. It ships a GLYPH ATLAS per font,
@@ -843,11 +893,25 @@ def the_client_state_is_small_and_complete():
 # matches, no exceptions -- so the atlas is authoritative for a font that is
 # real and limited.
 #
-# The counter-intuitive part, and the reason this went unnoticed: a font name
-# that DOES NOT EXIST is safe. MyGUI falls back to a complete font, so
-# "SM_Label", "SM_HeaderSmall_Medium" and "SM_NumberSmall" -- none of which are
-# in ManualFontDataInput.xml -- render anything at all. It is the real fonts that
-# are dangerous.
+# A font name that does not exist is NOT safe, and an earlier version of this
+# file said it was. MyGUI does fall back to a complete font, so the text draws --
+# but the engine writes an error AND A FULL LUA TRACEBACK every single time it
+# renders that widget. MEASURED, from the 24 Aug log:
+#
+#   [Gui] ERROR: MyGUI_FontManager.cpp:101 | Font 'SM_HeaderSmall_Medium' not
+#                found. Replaced with default font.
+#   [Lua] ----- Lua Error Traceback -----
+#         Game.lua:620: in function 'cl_updateEventHud'
+#
+# once a second, for the whole session, because the event HUD redraws once a
+# second. Log spam is this project's largest measured performance bug (see the
+# 1.79 GB single-player log in CLAUDE.md), so "it renders" is not the bar. The
+# bar is that the font EXISTS.
+#
+# Two files together are the font registry, and neither is complete on its own:
+# ManualFontDataInput.xml declares most of them, and LimitedFontData.xml names
+# eleven more (SM_Label, SM_NumberSmall, SM_LabelSmall, SM_Tab ...) that are real
+# and glyph-limited. A font absent from BOTH is the one that spams.
 
 GAME = pathlib.Path(r"D:\SteamLibrary\steamapps\common\Scrap Mechanic")
 ATLAS = GAME / "Cache" / "Fonts" / "English" / "LimitedFontData.xml"
@@ -875,12 +939,15 @@ def font_tables():
             chars.update(range(int(a), int(b) + 1))
         limited[m.group(1)] = chars
 
+    # Known = declared anywhere the engine reads. LimitedFontData names every
+    # font the engine built an atlas for, including the eleven that never appear
+    # in ManualFontDataInput; the union is the registry.
+    known = set(re.findall(r'<Resource type="[^"]*" name="([^"]+)"', text))
     defs = GAME / "Data" / "Gui" / "Fonts" / "ManualFontDataInput.xml"
-    real = set()
     if defs.is_file():
-        real = set(re.findall(r'name="([A-Za-z_0-9]+)"',
-                              io.open(defs, encoding="utf-8", errors="replace").read()))
-    return limited, real
+        known |= set(re.findall(r'name="([A-Za-z_0-9]+)"',
+                                io.open(defs, encoding="utf-8", errors="replace").read()))
+    return limited, known
 
 
 def every_caption_can_be_drawn():
@@ -937,17 +1004,25 @@ def every_caption_can_be_drawn():
 
     assert captions, "no captions collected -- the panels built nothing"
 
-    bad = []
+    bad, ghosts = [], set()
     for where, font, cap in captions:
         if font not in real:
-            continue                       # not a real font: full fallback, safe
+            # Draws, via fallback -- and logs an error with a traceback on every
+            # single render while it does. See the note above this function.
+            ghosts.add(f"{where} [{font}]")
+            continue
         allowed = limited.get(font)
         if allowed is None:
-            continue                       # real but not glyph-limited: safe
+            continue                       # real and not glyph-limited: safe
         missing = sorted({c for c in str(cap) if ord(c) not in allowed})
         if missing:
             bad.append((where, font, str(cap)[:44], "".join(missing)))
 
+    if ghosts:
+        raise AssertionError(
+            f"{len(ghosts)} widget(s) name a font the game does not have. It "
+            "renders via fallback and logs a MyGUI error plus a Lua traceback "
+            "on EVERY redraw: " + ", ".join(sorted(ghosts)[:6]))
     if bad:
         lines = [f"{w} [{f}] {c!r} cannot draw: {m}" for w, f, c, m in bad[:6]]
         raise AssertionError(
@@ -1335,6 +1410,10 @@ def main():
           the_event_hud_reads_correctly_in_every_phase)
 
     check("fonts: every caption can actually be drawn", every_caption_can_be_drawn)
+
+    check("plumbing: every command a panel sends is answered",
+          every_command_a_panel_sends_is_answered)
+    check("plumbing: every button reaches a branch", every_button_reaches_a_branch)
 
     check("gui: the menu fits, for host and guest", the_menu_panel_fits)
     check("gui: every settings page fits and nothing is buried",

@@ -552,8 +552,35 @@ Plots.METAL2_COLOR = "68615c"
 Plots.ROAD_COLOR = "3c3c40"
 Plots.METAL3_COLOR = "4a4a4a"
 Plots.PLAZA_COLOR = "5a5651"
+-- Darker than anything on top of it, so the two-block edge of the platform
+-- reads as structure from ground level instead of as a second deck.
+Plots.BASE_COLOR = "35353a"
 
 Plots.DECK_Z = 4        -- blocks above ground that the city deck sits at
+
+-- One block below the deck, and it spans the WHOLE city footprint as a single
+-- welded slab.
+--
+-- REPORTED, three sessions running: "the plot is not attached to the rest of the
+-- build", "I dont think the concrete sticks to the borders still". Asked what it
+-- actually looked like, the answer was "flush, but a visible seam / separate
+-- body" -- no gap and no step, so the arithmetic was never wrong. The city just
+-- read as a hundred loose tiles laid next to each other, because that is exactly
+-- what it was: one creation per plot plus one for the streets.
+--
+-- They cannot be welded into one body. A plot slab has to stay its own creation
+-- because a player's build welds onto it, and sv_plotOfBody -- which is what
+-- makes per-plot snapshot and per-plot restore possible at all -- finds a build
+-- by asking which plot its BODY sits on. Weld the city together and every
+-- player's work joins one enormous body, /restore stops being per-plot, and the
+-- grief this project exists to undo becomes all-or-nothing again.
+--
+-- So the platform goes UNDER them instead. One continuous slab tying the whole
+-- footprint together, with the concrete plots and the metal streets inlaid flush
+-- in its top surface. The city becomes a raised platform two blocks thick with a
+-- proper edge all the way round, which is what "one platform" looks like --
+-- while every plot stays the separate creation the rest of the system needs.
+Plots.BASE_Z = Plots.DECK_Z - 1
 
 -- Every uuid the city is made of. sv_clearFloor clears by SHAPE against this
 -- set rather than by body position: a plot slab with a build welded onto it has
@@ -604,6 +631,14 @@ end
 -- to test whether a strip collides with the plaza, because nothing ever can.
 function Plots.sv_deckBlueprint( self )
 	local childs = {}
+	-- The base first, so it is the piece everything else sits on. It is one
+	-- child covering the whole bounding box; see BASE_Z for why the city needs a
+	-- floor under it rather than a weld between its tiles.
+	local g = self.layout
+	if g.width > 0 and g.height > 0 then
+		childs[#childs + 1] = child( Plots.METAL3, Plots.BASE_COLOR,
+			g.x0, g.y0, Plots.BASE_Z, g.width, g.height, 1 )
+	end
 	for _, p in ipairs( Layout.deckPieces( self.layout ) ) do
 		local m = DECK_MATERIAL[p.kind] or DECK_MATERIAL.filler
 		childs[#childs + 1] = child( m[1], m[2], p.x, p.y, Plots.DECK_Z, p.w, p.h, 1 )
@@ -622,9 +657,11 @@ function Plots.sv_pillarBlueprint( self )
 	local cx = p.x + math.floor( p.w / 2 )
 	local cy = p.y + math.floor( p.h / 2 )
 	local at = -math.floor( size / 2 )
+	-- Stops at BASE_Z, not at DECK_Z: the base slab occupies that block now, and
+	-- two shapes in the same block is how an import quietly loses one of them.
 	return blueprint{
 		child( Plots.METAL3, Plots.METAL3_COLOR,
-			cx + at, cy + at, 0, size, size, Plots.DECK_Z ),
+			cx + at, cy + at, 0, size, size, Plots.BASE_Z ),
 	}
 end
 

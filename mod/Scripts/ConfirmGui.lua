@@ -88,7 +88,7 @@ function ConfirmGui.Build( state )
 	kids[#kids + 1] = text( "Title",
 		last and "LAST CHANCE TO CANCEL" or ( state.title or "ARE YOU SURE?" ),
 		PAD, 18, ConfirmGui.W - PAD * 2, 32,
-		"SM_HeaderLarge_Medium", last and DANGER or LABEL, "Left" )
+		"SM_Header", last and DANGER or LABEL, "Left" )
 
 	local y = 90
 	if last then

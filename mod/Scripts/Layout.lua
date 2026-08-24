@@ -422,7 +422,11 @@ function Layout.summary( cfg )
 		acrossM = grid.width * Layout.BLOCK,
 		deepM = grid.height * Layout.BLOCK,
 		spawnM = grid.plaza and grid.plaza.w * Layout.BLOCK or 0,
-		shapes = plots + #pieces,
+		-- +1 for the base slab under the whole footprint. It is not a deck piece
+		-- -- it deliberately overlaps every one of them one block lower -- so it
+		-- is counted here rather than emitted by deckPieces, which has to stay a
+		-- partition for dev/test_layout.py to mean anything.
+		shapes = plots + #pieces + 1,
 		pieces = #pieces,
 	}
 end

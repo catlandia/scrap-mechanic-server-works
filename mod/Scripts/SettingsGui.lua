@@ -149,7 +149,7 @@ local function shown( row, value )
 end
 
 
-function SettingsGui.Build( values, group, page )
+function SettingsGui.Build( values, group, page, status )
 	group = group or "safety"
 	page = page or 1
 
@@ -166,9 +166,10 @@ function SettingsGui.Build( values, group, page )
 	kids[#kids + 1] = fill( "HeaderBand", 0, 0, SettingsGui.W, 68, PANEL, 0.05 )
 	kids[#kids + 1] = fill( "HeaderRule", 0, 68, SettingsGui.W, 2, ACCENT, 1 )
 	kids[#kids + 1] = text( "Title", "SERVER WORKS", 28, 18, 460, 34,
-		"SM_HeaderLarge_Medium", LABEL, "Left" )
-	kids[#kids + 1] = text( "Sub", "server settings  --  host only", 28, 46, 520, 20,
-		"SM_TextTiny", DIM, "Left" )
+		"SM_Header", LABEL, "Left" )
+	kids[#kids + 1] = text( "Sub",
+		status or "server settings  --  host only", 28, 46,
+		SettingsGui.W - 56, 20, "SM_TextTiny", status and ACCENT or DIM, "Left" )
 
 	-- left hand navigation
 	kids[#kids + 1] = fill( "NavBG", 0, 70, NAV_W, SettingsGui.H - 70, PANEL, 0.04 )
@@ -226,7 +227,7 @@ function SettingsGui.Build( values, group, page )
 		kids[#kids + 1] = fill( "RowBG" .. i, BODY_X, y, BODY_W, ROW_H - 6, PANEL,
 			( i % 2 == 0 ) and 0.035 or 0.015 )
 		kids[#kids + 1] = text( "Key" .. i, row.key, BODY_X + 16, y + 4, 240, 20,
-			"SM_Label", LABEL, "Left" )
+			"SM_Text", LABEL, "Left" )
 		kids[#kids + 1] = text( "Help" .. i, row.help or "", BODY_X + 16, y + 22, BODY_W - VALUE_W - 40, 18,
 			"SM_TextTiny", DIM, "Left" )
 		kids[#kids + 1] = button( "Val" .. i, shown( row, value ),
@@ -248,6 +249,8 @@ function SettingsGui.Build( values, group, page )
 	end
 	kids[#kids + 1] = text( "Hint", "click a value to change it  --  numbers cycle through presets, /set takes exact ones",
 		BODY_X, fy + 8, BODY_W - 180, 18, "SM_TextTiny", DIM, "Left" )
+	kids[#kids + 1] = button( "Back", "BACK", SettingsGui.W - 286, fy, 126, 32,
+		"SecondaryButton", { action = "back" } )
 	kids[#kids + 1] = button( "Close", "CLOSE", SettingsGui.W - 150, fy, 126, 32,
 		"StyledButtonLarge", { action = "close" } )
 

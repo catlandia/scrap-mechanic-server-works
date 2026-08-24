@@ -371,7 +371,16 @@ end
 
 function World.sv_e_swCommand( self, params )
 	local cmd, args, player = params.cmd, params.args, params.player
-	local function reply( text ) self:sv_reply( player, text ) end
+
+	-- When a PANEL sent the command the panel is still open and waiting to hear
+	-- what happened, so the replies are collected into a status line for it as
+	-- well as going to chat. Chat is behind the panel; a player who has just
+	-- pressed a button is looking at the button.
+	local collected = params.panel and {} or nil
+	local function reply( text )
+		if collected then collected[#collected + 1] = tostring( text ) end
+		self:sv_reply( player, text )
+	end
 
 	if cmd == "/lockdown" or cmd == "/unlock" then
 		local mode = "open"
@@ -637,11 +646,31 @@ function World.sv_e_swCommand( self, params )
 		self:sv_home( player, reply )
 
 	elseif cmd == "/myplot" then
-		self:sv_openMyPlot( player )
+		self:sv_openMyPlot( player, params.status )
+
+	elseif cmd == "/citycensus" then
+		-- MEASURED as a dead button: CLEAR CITY sent this and nothing in this
+		-- file answered it, so the panel shut and the world did nothing. That is
+		-- what "I press them and menu closes" was. dev/test_logic.py now walks
+		-- every sv_toWorld string in Game.lua against this dispatch.
+		self:sv_cityCensus( player )
 
 	elseif cmd == "/marker" then
 		-- Not a chat command; sent by Game when a player joins.
 		self:sv_refreshMarker( player, false )
+	end
+
+	-- Redraw whichever panel asked, with what just happened written on it. This
+	-- is what "make so that the menu doesnt close after every action" means in
+	-- practice: the action runs, the panel restates the world, nothing shuts.
+	if collected and cmd ~= "/myplot" and cmd ~= "/citycensus" then
+		local status = ( #collected > 0 ) and table.concat( collected, "   " ) or nil
+		if params.panel == "myplot" then
+			self:sv_openMyPlot( player, status )
+		elseif params.panel == "city" then
+			sm.event.sendToGame( "sv_e_swPanelRefresh",
+				{ player = player, panel = "city", status = status } )
+		end
 	end
 end
 
@@ -650,7 +679,7 @@ end
 -- Everything the panel shows, gathered in one place. Built on the server because
 -- only the world knows what square a player is standing on -- the Game script
 -- has no world and cannot ask.
-function World.sv_openMyPlot( self, player )
+function World.sv_openMyPlot( self, player, status )
 	local perma = Identity.Sv_PermaOf( player )
 	local mine = perma and g_swPlots:sv_plotOf( perma ) or nil
 
@@ -700,6 +729,11 @@ function World.sv_openMyPlot( self, player )
 
 	sm.event.sendToGame( "sv_e_swMyPlot", { player = player, state = {
 		plotsOn = g_swPlots.enabled == true,
+		-- What the last press actually did. The panel stays open now, so this
+		-- line is the only feedback a click gets -- without it, pressing CLAIM
+		-- on a plot somebody else owns looks exactly like pressing a dead
+		-- button, which is the complaint this whole version answers.
+		status = status,
 		mine = mine,
 		standing = standing,
 		team = team,
@@ -709,6 +743,53 @@ function World.sv_openMyPlot( self, player )
 			claimed = claimed, mine = mine, team = teamSet,
 		},
 	} } )
+end
+
+-- What is actually standing on the city, counted from the live world.
+--
+-- This is the first of the two doors in front of CLEAR CITY. "Are you sure?" is
+-- answered by reflex; "12,406 blocks built by 9 people" is answered by reading,
+-- and that difference is the entire reason the count is taken rather than the
+-- dialog just being worded more sternly.
+--
+-- City shapes and player shapes are told apart per SHAPE, not per body, because
+-- the moment somebody builds on a plot their build and our slab are one body.
+function World.sv_cityCensus( self, player )
+	local claimed, total = g_swPlots:sv_counts()
+	local cityShapes, buildShapes = 0, 0
+	local builders, people = {}, 0
+
+	for _, body in ipairs( sm.body.getAllBodies() ) do
+		if sm.exists( body ) and not isGhostBody( body ) then
+			local ours = 0
+			for _, shape in ipairs( body:getShapes() ) do
+				if sm.exists( shape ) and g_swPlots:sv_isCityShape( shape ) then
+					ours = ours + 1
+				end
+			end
+			cityShapes = cityShapes + ours
+			local theirs = body:getShapeCount() - ours
+			if theirs > 0 then
+				buildShapes = buildShapes + theirs
+				local z = g_swPlots:sv_locate( body.worldPosition )
+				local owner = ( z and z.kind == "plot" ) and g_swPlots.owners[z.index] or nil
+				if owner and not builders[owner] then
+					builders[owner] = true
+					people = people + 1
+				end
+			end
+		end
+	end
+
+	local lines = {
+		string.format( "%d plots, %d of them claimed", total, claimed ),
+		string.format( "%d blocks built on them, by %d %s",
+			buildShapes, people, ( people == 1 ) and "person" or "people" ),
+		string.format( "%d shapes of city -- platform, streets and plaza", cityShapes ),
+		"",
+		"This removes the ground and everything welded to it.",
+	}
+	sm.event.sendToGame( "sv_e_swCityCensus", { player = player, lines = lines } )
 end
 
 function World.sv_plotCommand( self, args, player, reply )

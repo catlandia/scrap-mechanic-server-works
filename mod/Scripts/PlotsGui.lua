@@ -164,9 +164,14 @@ function PlotsGui.Build( cfg )
 	kids[#kids + 1] = fill( "HeaderBand", 0, 0, PlotsGui.W, 68, PANEL, 0.05 )
 	kids[#kids + 1] = fill( "HeaderRule", 0, 68, PlotsGui.W, 2, ACCENT, 1 )
 	kids[#kids + 1] = text( "Title", "CITY LAYOUT", PAD, 18, 460, 34,
-		"SM_HeaderLarge_Medium", LABEL, "Left" )
-	kids[#kids + 1] = text( "Sub", "nothing is built until you press BUILD",
-		PAD, 46, 520, 20, "SM_TextTiny", DIM, "Left" )
+		"SM_Header", LABEL, "Left" )
+	-- The status line is where a press answers back. Every button on this panel
+	-- leaves the panel open now, so without this the only difference between
+	-- BUILD and a dead button is that one of them eventually changes the world.
+	kids[#kids + 1] = text( "Sub",
+		cfg.status or "nothing is built until you press BUILD",
+		PAD, 46, PlotsGui.W - PAD * 2 - 40, 20, "SM_TextTiny",
+		cfg.status and ACCENT or DIM, "Left" )
 
 	for i, f in ipairs( PlotsGui.FIELDS ) do
 		local y = ROW_TOP + ( i - 1 ) * ROW_H
@@ -174,7 +179,7 @@ function PlotsGui.Build( cfg )
 		kids[#kids + 1] = fill( "Row" .. i, PAD, y, rowW, ROW_H - 8,
 			PANEL, ( i % 2 == 0 ) and 0.015 or 0.035 )
 		kids[#kids + 1] = text( "L" .. i, f.label, PAD + 16, y + 5, 300, 20,
-			"SM_Label", LABEL, "Left" )
+			"SM_Text", LABEL, "Left" )
 		kids[#kids + 1] = text( "H" .. i, f.help, PAD + 16, y + 25, rowW - VALUE_W - 70, 18,
 			"SM_TextTiny", DIM, "Left" )
 		kids[#kids + 1] = button( "Dec" .. i, "<",
@@ -182,7 +187,7 @@ function PlotsGui.Build( cfg )
 			{ action = "step", key = f.key, dir = -1 } )
 		kids[#kids + 1] = text( "V" .. i, tostring( cfg[f.key] ),
 			PAD + rowW - VALUE_W - 12, y + 10, 72, 22,
-			"SM_NumberSmall", ACCENT, "Center" )
+			"SM_Text", ACCENT, "Center" )
 		kids[#kids + 1] = button( "Inc" .. i, ">",
 			PAD + rowW - 48, y + 8, 32, ROW_H - 24, "SecondaryButton",
 			{ action = "step", key = f.key, dir = 1 } )
@@ -197,7 +202,7 @@ function PlotsGui.Build( cfg )
 	kids[#kids + 1] = text( "Sum1", string.format(
 		"%d plots of %.1f m    city %.0f x %.0f m    plaza %.1f m",
 		s.plots, s.plotM, s.acrossM, s.deepM, s.spawnM ),
-		PAD, sy + 12, rowW, 22, "SM_Label", LABEL, "Left" )
+		PAD, sy + 12, rowW, 22, "SM_Text", LABEL, "Left" )
 	-- No plots are ever "given up to the plaza" any more: the plaza is the middle
 	-- of the axis and the plots are laid outwards from it, so every plot the
 	-- numbers promise is a plot that gets built.
@@ -206,11 +211,18 @@ function PlotsGui.Build( cfg )
 		s.shapes, s.pieces ),
 		PAD, sy + 34, rowW, 20, "SM_TextTiny", DIM, "Left" )
 
+	-- This panel had no way out of it except the escape key: no CLOSE, no BACK.
+	-- Both are here now, and every panel in the mod carries the same pair in the
+	-- same corner.
 	local fy = PlotsGui.H - 58
 	kids[#kids + 1] = button( "Clear", "CLEAR CITY", PAD, fy, 150, 34,
 		"SecondaryButton", { action = "clear" } )
 	kids[#kids + 1] = button( "Reset", "DEFAULTS", PAD + 162, fy, 130, 34,
 		"SecondaryButton", { action = "reset" } )
+	kids[#kids + 1] = button( "Back", "BACK", PAD + 304, fy, 110, 34,
+		"SecondaryButton", { action = "back" } )
+	kids[#kids + 1] = button( "Close", "CLOSE", PAD + 426, fy, 110, 34,
+		"SecondaryButton", { action = "close" } )
 	kids[#kids + 1] = button( "Build", "BUILD CITY", PlotsGui.W - PAD - 180, fy, 180, 34,
 		"StyledButtonLarge", { action = "build" } )
 

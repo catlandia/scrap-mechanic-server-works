@@ -82,7 +82,7 @@ function MyPlotGui.Build( state )
 	kids[#kids + 1] = fill( "HeaderBand", 0, 0, MyPlotGui.W, 68, PANEL, 0.05 )
 	kids[#kids + 1] = fill( "HeaderRule", 0, 68, MyPlotGui.W, 2, ACCENT, 1 )
 	kids[#kids + 1] = text( "Title", "MY PLOT", PAD, 18, 400, 34,
-		"SM_HeaderLarge_Medium", LABEL, "Left" )
+		"SM_Header", LABEL, "Left" )
 
 	local colW = MyPlotGui.W - PAD * 2 - MAP - 32
 	local y = 92
@@ -92,14 +92,18 @@ function MyPlotGui.Build( state )
 			PAD, 46, 520, 20, "SM_TextTiny", DIM, "Left" )
 		kids[#kids + 1] = text( "Off",
 			"Plots are off. Build anywhere the host allows.",
-			PAD, y, colW, 24, "SM_Label", LABEL, "Left" )
+			PAD, y, colW, 24, "SM_Text", LABEL, "Left" )
+		kids[#kids + 1] = button( "Back", "BACK", MyPlotGui.W - PAD - 288,
+			MyPlotGui.H - 56, 130, 34, "SecondaryButton", { action = "back" } )
 		kids[#kids + 1] = button( "Close", "CLOSE", MyPlotGui.W - PAD - 150,
 			MyPlotGui.H - 56, 150, 34, "StyledButtonLarge", { action = "close" } )
 		return root
 	end
 
-	kids[#kids + 1] = text( "Sub", "your ground, and what you may do with it",
-		PAD, 46, 520, 20, "SM_TextTiny", DIM, "Left" )
+	kids[#kids + 1] = text( "Sub",
+		state.status or "your ground, and what you may do with it",
+		PAD, 46, MyPlotGui.W - PAD * 2 - 40, 20, "SM_TextTiny",
+		state.status and ACCENT or DIM, "Left" )
 
 	--[[ what you own ]]
 	kids[#kids + 1] = text( "OwnHead", "YOU OWN", PAD, y, 200, 16,
@@ -108,10 +112,10 @@ function MyPlotGui.Build( state )
 	kids[#kids + 1] = fill( "OwnBox", PAD, y, colW, 54, PANEL, 0.035 )
 	if state.mine then
 		kids[#kids + 1] = text( "OwnVal", string.format( "PLOT %d", state.mine ),
-			PAD + 16, y + 14, colW - 32, 28, "SM_HeaderSmall_Medium", GREEN, "Left" )
+			PAD + 16, y + 14, colW - 32, 28, "SM_HeaderSmall", GREEN, "Left" )
 	else
 		kids[#kids + 1] = text( "OwnVal", "nothing yet",
-			PAD + 16, y + 16, colW - 32, 24, "SM_Label", DIM, "Left" )
+			PAD + 16, y + 16, colW - 32, 24, "SM_Text", DIM, "Left" )
 	end
 	y = y + 68
 
@@ -140,7 +144,7 @@ function MyPlotGui.Build( state )
 		end
 	end
 	kids[#kids + 1] = text( "HereVal", hereLine, PAD + 16, y + 16, colW - 32, 24,
-		"SM_Label", hereColour, "Left" )
+		"SM_Text", hereColour, "Left" )
 	y = y + 68
 
 	--[[ your team ]]
@@ -177,6 +181,8 @@ function MyPlotGui.Build( state )
 		"SecondaryButton", { action = "find" } )
 	kids[#kids + 1] = button( "Leave", "GIVE IT UP", PAD + 384, by, 150, 34,
 		"SecondaryButton", { action = "leave" } )
+	kids[#kids + 1] = button( "Back", "BACK", MyPlotGui.W - PAD - 268, by, 120, 34,
+		"SecondaryButton", { action = "back" } )
 	kids[#kids + 1] = button( "Close", "CLOSE", MyPlotGui.W - PAD - 130, by, 130, 34,
 		"SecondaryButton", { action = "close" } )
 

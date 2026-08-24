@@ -80,7 +80,7 @@ function MenuGui.Build( isHost )
 	kids[#kids + 1] = fill( "Band", 0, 0, MenuGui.W, 64, PANEL, 0.05 )
 	kids[#kids + 1] = fill( "Rule", 0, 64, MenuGui.W, 2, ACCENT, 1 )
 	kids[#kids + 1] = text( "Title", "SERVER WORKS", 24, 16, 320, 30,
-		"SM_HeaderLarge_Medium", LABEL, "Left" )
+		"SM_Header", LABEL, "Left" )
 	kids[#kids + 1] = text( "Sub", isHost and "host" or "player", 24, 42, 320, 18,
 		"SM_TextTiny", DIM, "Left" )
 

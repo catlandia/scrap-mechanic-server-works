@@ -178,7 +178,7 @@ function EventHud.Build( state, screenW, screenH )
 		clock = "TIME"
 	end
 	kids[#kids + 1] = text( "HudClock", clock, ox + 16, oy + 24, EventHud.W - 28, 34,
-		"SM_HeaderSmall_Medium", LABEL, "Left" )
+		"SM_HeaderSmall", LABEL, "Left" )
 
 	local hint = Event.HINTS[phase] or ""
 	if state.paused then hint = "PAUSED by the host" end
