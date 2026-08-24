@@ -428,7 +428,17 @@ function Protection.sv_onFixedUpdate( self )
 		-- Ghosts are skipped for the census too, not just the profile: a
 		-- blueprint preview appearing and vanishing would swing the whole-world
 		-- shape count by the size of the creation and set off the grief alarm.
-		if sm.exists( body ) and not isGhostBody( body ) then
+		if sm.exists( body ) and isGhostBody( body ) then
+			-- Said ONCE, ever. A ghost is a creation being placed by a lift, and
+			-- pinning convertibleToDynamic = false on one makes the placement
+			-- silently do nothing -- three versions were lost to that. If this
+			-- line never appears in a log where somebody used a lift, the guard
+			-- is not recognising ghosts and that is where to look next.
+			if not self.sawGhost then
+				self.sawGhost = true
+				sm.log.info( "[ServerWorks] ghost body seen and skipped -- the lift guard works" )
+			end
+		elseif sm.exists( body ) then
 			self.cycleShapes = self.cycleShapes + body:getShapeCount()
 			local p = profileFor( self, body )
 			if not matchesProfile( body, p ) then

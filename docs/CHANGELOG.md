@@ -10,6 +10,64 @@ was most of them.
 
 ---
 
+## V45 — the lift is not broken, the world is shut; and the text boxes touch nothing
+
+### The lift
+
+*"oh also the lift is still fuc-SAD"* — and the answer is in the top right corner
+of the screenshot that came with it. The event HUD reads **ENDED / builds are
+locked**.
+
+In that state protection is `locked`, every body is
+`convertibleToDynamic = false`, and **a creation that cannot convert to dynamic
+cannot be placed**. So the lift does nothing, says nothing, and looks broken.
+
+That is not a bug — a locked world *should* refuse new creations, that is what
+locked means. It is a thing to **say**. Picking up a lift while building is shut
+now prints, once:
+
+    The lift will not place anything: the event has ended, so builds are locked.
+      It works again the moment building opens -- /menu, EVENT CLOCK.
+
+The client had no way to know this. It could see the event phase but not
+`/lockdown` or a host toggle, so `sv_pushEvent` now carries `canBuild` and the
+protection mode with it.
+
+**And a check on the thing that has cost three versions**: the patrol logs, once
+per session, `ghost body seen and skipped -- the lift guard works`. A ghost is a
+creation being placed by a lift; pinning `convertibleToDynamic = false` on one
+makes the placement silently do nothing. If that line never appears in a log
+where somebody used a lift, the guard is not recognising ghosts, and that is
+where to look next instead of guessing again.
+
+(`isGhost`, `isOnLift` and `isOnVirtualLift` were all confirmed present in the
+`wrap_Body` binding list while checking this.)
+
+### The crash, again
+
+*"the game still crashes when I try to select build time"* — after V44 had already
+deferred the redraw by a tick.
+
+The screenshot shows PREP TIME focused with a cursor in it, so **one** box is
+fine. It is moving to the **second** one that kills it: a focus transfer between
+two EditBoxes in the same GUI. The base game has exactly one editable box in its
+one editable panel, so two in a single tree is territory the engine is never
+asked to handle by its own content.
+
+Deferring was the right instinct and it was not enough. So the typed-time handler
+now touches the GUI **not at all** — no render, no deferred render, no close. It
+takes the value, chat says what was accepted, and the panel shows the true
+numbers the next time anything else redraws it. Slightly worse to look at, and it
+cannot crash. A check fails if that handler ever gains a GUI call.
+
+**And typing is now optional.** The steppers reach much further — build time
+steps 1, 2, 3, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 360, 480 — so every
+sensible duration is one or two clicks away without touching a text box at all.
+`/event start <prep> <build> <buffer>` still takes any number from chat with no
+GUI involved.
+
+---
+
 ## V44 — the crash, and the canvas is half the screen
 
 *"game crashed when I tried to change the number of build time."*

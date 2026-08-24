@@ -338,7 +338,14 @@ The handler is `( self, widgetName, text )` — `DigitalSign.lua:157`. **A text
 event carries no `onClickData`**, so the widget *name* is the only thing that
 says which field was typed into; map it back yourself (`EventGui.FieldForBox`).
 
-Used by the event clock so any duration can be typed rather than stepped.
+Used by the event clock — **and it crashed the game twice.** One box is fine;
+moving focus to a SECOND EditBox in the same tree is what kills it. Deferring our
+redraw by a tick was not enough, so the handler now touches the GUI not at all:
+it takes the value and says so in chat, and the panel catches up whenever
+something else redraws it.
+
+If you add a typed field anywhere, assume **one per panel**, and assume its
+callback may not touch the GUI.
 
 ### GUI skins that draw no text
 

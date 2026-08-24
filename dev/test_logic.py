@@ -2120,6 +2120,19 @@ def any_number_can_be_typed_into_the_event_clock():
             f"{name} does not map back to a field, so a typed value has nowhere "
             "to go")
 
+    # NOTHING in the typed-time handler may touch the GUI -- not even a
+    # deferred render. Two crashes came out of trying: the second was AFTER the
+    # redraw was already deferred by a tick, which says the hazard is the focus
+    # transfer between two EditBoxes and not the timing of our redraw.
+    game = io.open(SCRIPTS / "Game.lua", encoding="utf-8").read()
+    handler = game[game.index("function Game.cl_onEventTimeTyped"):]
+    handler = handler[:handler.index(chr(10) + "end")]
+    for banned in ("cl_showPanel", "cl_renderLater", "cl_closeLater", ":render("):
+        assert banned not in handler, (
+            f"cl_onEventTimeTyped calls {banned} -- typing into one box while "
+            "another has focus crashed the game twice, and deferring was not "
+            "enough. It must touch nothing.")
+
     # and what it does with what you type.
     #
     # ParseTime returns ( minutes ) when the value is taken as typed, and

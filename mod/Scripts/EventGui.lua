@@ -83,13 +83,14 @@ end
 EventGui.FIELDS = {
 	{ key = "prep", label = "PREP TIME", box = "TypePrep",
 	  help = "claim a plot, no building yet. 0 to start building at once",
-	  steps = { 0, 2, 5, 10, 15, 20, 30, 45, 60 }, min = 0, max = 1440 },
+	  steps = { 0, 1, 2, 3, 5, 10, 15, 20, 30, 45, 60, 90, 120 }, min = 0, max = 1440 },
 	{ key = "build", label = "BUILD TIME", box = "TypeBuild",
 	  help = "the event itself",
-	  steps = { 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240 }, min = 1, max = 1440 },
+	  steps = { 1, 2, 3, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 360, 480 },
+	  min = 1, max = 1440 },
 	{ key = "buffer", label = "BUFFER", box = "TypeBuffer",
 	  help = "after building closes, before anything locks. 0 for none",
-	  steps = { 0, 1, 2, 5, 10, 15 }, min = 0, max = 1440 },
+	  steps = { 0, 1, 2, 3, 5, 10, 15, 20, 30, 45, 60 }, min = 0, max = 1440 },
 }
 
 -- Which field a typed box belongs to. A text event gives the widget NAME and the
@@ -208,7 +209,7 @@ function EventGui.Build( state )
 		"%d minutes end to end. The last 5 minutes of building get the warehouse alarm.",
 		total ), PAD, sy + 12, rowW, 20, "SM_Text", LABEL, "Left" )
 	kids[#kids + 1] = text( "Sum2",
-		"Click a number to type your own, then press Enter. Or use the arrows.",
+		"Arrows step. Click a number to type one, Enter to accept -- or /event start.",
 		PAD, sy + 34, rowW, 20, "SM_TextTiny", DIM, "Left" )
 
 	--[[ controls ]]

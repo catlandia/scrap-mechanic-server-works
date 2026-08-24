@@ -304,6 +304,13 @@ end
 function Game.sv_pushEvent( self, player )
 	if g_swEvent == nil then return end
 	local state = g_swEvent:sv_clientState()
+	-- Whether building is open AT ALL, and why not. The client has no way to
+	-- know: it can see the phase, but /lockdown and a host toggle are invisible
+	-- to it, and a lift that silently refuses to place anything is the single
+	-- most confusing thing this mod does.
+	state.mode = g_swProtection and g_swProtection:sv_getMode() or nil
+	state.canBuild = ( Settings.Get( "buildopen" ) ~= false )
+		and ( state.mode == "open" or state.mode == "open_destructible" )
 	if player then
 		self.network:sendToClient( player, "client_setEvent", state )
 	else
@@ -652,6 +659,8 @@ function Game.client_onFixedUpdate( self, dt )
 	end )
 	if not ok or uuid == nil then return end
 
+	self:cl_warnIfBuildingIsShut( uuid )
+
 	local name = blocked[tostring( uuid )]
 	if name == nil then
 		self.cl.lastBlockedWarn = nil
@@ -668,6 +677,41 @@ function Game.client_onFixedUpdate( self, dt )
 			and "The lift is host only on this server."
 			or string.format( "The %s is disabled on this server.", name ) )
 	end
+end
+
+-- THE LIFT IS NOT BROKEN, THE WORLD IS SHUT.
+--
+-- REPORTED over and over as "the lift is still fuc-SAD", and the screenshot that
+-- came with it has the answer in the top right corner of the frame: the event
+-- HUD reads ENDED / builds are locked. In that state protection is `locked`,
+-- every body is convertibleToDynamic = false, and a creation that cannot convert
+-- cannot be placed. The lift does nothing, says nothing, and looks broken.
+--
+-- It is not something to fix -- a locked world SHOULD refuse new creations, that
+-- is what locked means. It is something to SAY.
+local LIFT_UUIDS = {
+	["5cc12f03-275e-4c8e-b013-79fc0f913e1b"] = true,   -- the creative lift
+	["8f190ce2-3a59-423e-8483-a7aa67bd5bc0"] = true,   -- the survival one
+}
+
+function Game.cl_warnIfBuildingIsShut( self, uuid )
+	if not LIFT_UUIDS[tostring( uuid )] then
+		self.cl.liftWarned = nil
+		return
+	end
+	local e = self.cl.event
+	if e == nil or e.canBuild ~= false then return end
+	if self.cl.liftWarned then return end
+	self.cl.liftWarned = true
+
+	local why = ( e.phase == "ended" and "the event has ended" )
+		or ( e.phase == "prep" and "it is prep time" )
+		or ( e.phase == "buffer" and "it is buffer time" )
+		or "the host has closed building"
+	sm.gui.chatMessage( string.format(
+		"The lift will not place anything: %s, so builds are locked.", why ) )
+	sm.gui.chatMessage(
+		"  It works again the moment building opens -- /menu, EVENT CLOCK." )
 end
 
 function Game.client_dropTool( self, data )
@@ -1472,11 +1516,25 @@ end
 -- A typed duration. ( self, widgetName, text ) -- a text event carries no
 -- onClickData, so the widget NAME is the only thing saying which field it was;
 -- see EventGui.FieldForBox. Signature confirmed against DigitalSign.lua:157.
--- NOTHING in here may touch the GUI. The redraw is queued for the next tick;
--- see cl_renderLater for the crash that taught us.
+-- NOTHING in here touches the GUI. Not a render, not a deferred render, not a
+-- close. Nothing.
 --
--- The whole body is wrapped as well. A Lua error inside a text callback is not
--- something to find out about during an event, and this runs on a keypress.
+-- REPORTED twice: "game crashed when I tried to change the number of build
+-- time", and then again after V44 deferred the redraw by a tick. The screenshot
+-- shows PREP TIME focused with a cursor in it, so ONE box is fine -- it is
+-- moving to the SECOND one that kills it, which is a focus transfer between two
+-- EditBoxes in the same GUI. The base game has exactly one editable box in its
+-- one editable panel (DigitalSign.gui), so two of them in one tree is territory
+-- the engine is never asked to handle by its own content.
+--
+-- Deferring was the right instinct and it was not enough, so this goes further:
+-- the value is taken and NOTHING is drawn. The box keeps showing what was typed
+-- because the engine put it there; chat says what was actually accepted; and the
+-- panel shows the true numbers the next time anything else redraws it. Slightly
+-- worse to look at, and it cannot crash.
+--
+-- The steppers are unaffected, and /event start <prep> <build> <buffer> takes
+-- any number from chat with no GUI involved at all.
 function Game.cl_onEventTimeTyped( self, widgetName, text )
 	local ok, err = pcall( function()
 		if self.cl == nil or self.cl.eventCfg == nil then return end
@@ -1484,16 +1542,16 @@ function Game.cl_onEventTimeTyped( self, widgetName, text )
 		if field == nil then return end
 
 		local minutes, why = EventGui.ParseTime( widgetName, text )
-		if why then pcall( sm.gui.chatMessage, why ) end
-
-		if minutes ~= nil then
-			self.cl.eventCfg[field.key] = minutes
-			self.cl.eventCfg.status =
-				string.format( "%s set to %d min", field.label, minutes )
+		if minutes == nil then
+			pcall( sm.gui.chatMessage, why or "type a number of minutes" )
+			return
 		end
-		-- Redrawn either way: on a good value to show it accepted, and on a bad
-		-- one to put the real number back in the box instead of the rubbish.
-		self:cl_renderLater( "event", EventGui.Build( self.cl.eventCfg ) )
+
+		self.cl.eventCfg[field.key] = minutes
+		self.cl.eventCfg.status =
+			string.format( "%s set to %d min", field.label, minutes )
+		pcall( sm.gui.chatMessage, string.format( "%s: %d minutes.%s",
+			field.label, minutes, why and ( "  " .. why ) or "" ) )
 	end )
 	if not ok and not ( self.cl and self.cl.typedFaulted ) then
 		if self.cl then self.cl.typedFaulted = true end
@@ -1501,10 +1559,6 @@ function Game.cl_onEventTimeTyped( self, widgetName, text )
 	end
 end
 
--- Every keystroke. Deliberately does nothing: the value is only read on Enter.
--- It exists because the base game's one editable box declares both callbacks
--- (DigitalSign.gui) and this is not the place to find out whether one without
--- the other is a supported arrangement.
 function Game.cl_onEventTimeEdited( self, widgetName, text )
 end
 
