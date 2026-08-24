@@ -421,8 +421,41 @@ end
 -- protection resolver already reads, so it only has to be re-applied; the end of
 -- an event is the same lock-and-save that /buildtime used to do, kept because it
 -- is right.
+-- A snapshot at every phase boundary, named after what just happened.
+--
+-- Asked for as: "the save shall happen on those times: prep time start, build
+-- time start, build time end, buffer end. all those shall happen besides the
+-- auto saving."
+--
+-- Which is exactly right, and better than a timer alone: an autosave lands
+-- wherever the clock happens to be, but these land on the moments you would
+-- actually want to roll back TO -- the state before anyone built, the state the
+-- moment building closed, and the finished event.
+local PHASE_SNAPSHOT = {
+	prep = "prepstart",       -- before anybody has touched anything
+	build = "buildstart",     -- the starting line
+	buffer = "buildend",      -- the builds, exactly as the clock stopped them
+	ended = "eventend",       -- after the buffer, the final state
+}
+
 function World.sv_e_swEventPhase( self, params )
 	local phase = params.phase
+
+	-- Taken BEFORE the protection change, so a snapshot is of the world as it
+	-- was during the phase that just finished rather than after it has been
+	-- locked down.
+	local label = PHASE_SNAPSHOT[phase]
+	if label and not g_swSnapshots:sv_busy() then
+		local ok, detail = g_swSnapshots:sv_beginCapture(
+			Snapshots.Name( label ), self.world, self:sv_plotOfBody() )
+		if ok then
+			sm.log.info( string.format( "[ServerWorks] phase snapshot (%s): %s",
+				label, tostring( detail ) ) )
+		else
+			sm.log.warning( string.format(
+				"[ServerWorks] phase snapshot (%s) failed: %s", label, tostring( detail ) ) )
+		end
+	end
 
 	if phase == "ended" then
 		local locked, detail = g_swProtection:sv_setMode( "locked" )
@@ -430,7 +463,8 @@ function World.sv_e_swEventPhase( self, params )
 			Settings.Sv_SetQuiet( "protection", "locked" )
 			sm.log.info( "[ServerWorks] event ended, world locked -- " .. tostring( detail ) )
 		end
-		g_swSnapshots:sv_beginCapture( Snapshots.Name( "eventend" ), self.world, self:sv_plotOfBody() )
+		-- The eventend capture is the phase snapshot above; it has already been
+		-- started, so do not start a second one on top of it.
 		return
 	end
 

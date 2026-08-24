@@ -10,6 +10,60 @@ was most of them.
 
 ---
 
+## V50 -- the alarm stops locking, and a save on every phase boundary
+
+### The automatic lockdown is off by default
+
+*"by default the auto lockdown shall be off."*
+
+Right call, and worth the reasoning: a false alarm that shouts is a nuisance; a
+false alarm that **freezes twenty people mid-build in front of a stream** is
+worse than the griefing it was guarding against -- and the alarm cannot tell
+somebody clearing their own work from somebody wrecking yours.
+
+It still announces and still logs. `/set alarmlock on` arms it, and the
+`lockdown` preset still does. A migration turns it off for anyone who has already
+played, since a changed default reaches nobody.
+
+### "I cant build while standing on protected blocks which sucks"
+
+That was V42's doing. A claimed plot with nobody standing **in** it is locked --
+which is what stops somebody on the road reaching over your work -- but the only
+thing that reopened it was standing inside the plot or on one of its own seams.
+Step onto a **road**, or onto the plaza, and your own plot locked behind you
+while you were looking at it.
+
+It is a **distance** now, not a zone: `Plots.HOLD_RANGE`, twelve blocks. You are
+next to your own land or you are not, and a road being protected ground has
+nothing to do with whether the plot beside it is yours. Cheap by construction --
+it only ever looks at the plots on your own team, which is one for almost
+everybody, never at every plot in the city.
+
+The check covers all four cases: standing on it, standing just off the edge,
+standing out at the limit, and standing across the city -- plus a stranger
+standing on your plot, who holds nothing open.
+
+### A snapshot at every phase boundary
+
+*"the save shall happen on those times: prep time start, build time start, build
+time end, buffer end. all those shall happen besides the auto saving."*
+
+| when | named |
+|---|---|
+| prep begins | `prepstart` |
+| build begins | `buildstart` |
+| build ends | `buildend` |
+| the event ends | `eventend` |
+
+Better than a timer alone, and it is worth saying why: an autosave lands wherever
+the clock happens to be, but these land on the moments you would want to roll
+back **to**. Each is taken *before* the phase's protection change, so `buildend`
+records the builds as they stood when the clock stopped rather than the world
+after it was shut -- and a check asserts that ordering, because it is the kind of
+thing that would silently reverse.
+
+---
+
 ## V49 -- the Import Lift, and the reason the cleaner had no name
 
 *"make a new lift called import lift that is just regular lift just with the

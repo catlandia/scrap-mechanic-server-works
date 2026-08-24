@@ -1054,7 +1054,6 @@ def a_body_is_located_by_where_it_is_not_by_its_origin():
     P.sv_claim(plots, 34, "OWNER")
     plots["zoneOpen"] = lua.table_from({})
     plots["zoneHeld"] = lua.table_from({})
-    assert P.sv_bodyIsOpen(plots, body) is not "sweep", "still sweep"
     assert P.sv_bodyIsOpen(plots, body) is False, (
         "a claimed plot with nobody on it must be locked, not sweepable")
 
@@ -1063,6 +1062,69 @@ def a_body_is_located_by_where_it_is_not_by_its_origin():
         src = io.open(SCRIPTS / name, encoding="utf-8").read()
         assert "sv_locate( body.worldPosition )" not in src, (
             f"{name} locates a body by its origin again -- use sv_bodyZone")
+
+
+def standing_near_your_own_plot_keeps_it_open():
+    """You may stand off your plot and it stays yours to build on.
+
+    REPORTED: "I cant build while standing on protected blocks which sucks."
+
+    V42 locked a claimed plot with nobody standing IN it -- which is what stops
+    somebody on the road reaching over your work -- but the only thing that
+    reopened it was standing inside the plot or on one of its own seams. Step
+    onto a ROAD or onto the plaza and your own plot locked behind you while you
+    were looking at it.
+
+    It is a distance now, not a zone. A road being protected ground has nothing
+    to do with whether the plot next to it is yours.
+    """
+    lua, plots = plots_lua({"cols": 10, "rows": 10, "roadevery": 3, "roadwidth": 6})
+    P = lua.globals().Plots
+    L = lua.globals().Layout
+    B, RANGE = float(P.BLOCK), float(P.HOLD_RANGE)
+
+    MINE = 1
+    P.sv_claim(plots, MINE, "OWNER")
+    bx, by = L.plotCentre(plots["layout"], MINE)
+    r = L.plotRect(plots["layout"], 0, 0)
+    assert r is not None
+
+    def body_on_my_plot():
+        return lua.table_from({"worldPosition": lua.table_from(
+            {"x": float(bx) * B, "y": float(by) * B, "z": 1.5})})
+
+    def held_from(block_x, block_y):
+        plots["zoneOpen"] = lua.table_from({})
+        plots["zoneHeld"] = lua.table_from({})
+        P.sv_holdNearby(plots, "OWNER", lua.table_from(
+            {"x": block_x * B, "y": block_y * B, "z": 1.5}))
+        return P.sv_bodyIsOpen(plots, body_on_my_plot())
+
+    # standing on it
+    assert held_from(float(bx), float(by)) is True, "standing on your own plot locked it"
+
+    # standing just off the edge -- the road, the seam, wherever
+    edge = float(r["x"]) - 2
+    assert held_from(edge, float(by)) is True, (
+        "standing two blocks off the edge of your own plot locked it -- that is "
+        "the report, and a road being protected has nothing to do with it")
+
+    # still open right out to the limit
+    assert held_from(float(r["x"]) - RANGE, float(by)) is True, (
+        f"standing {RANGE} blocks away should still hold it")
+
+    # but not from the far side of the city
+    assert held_from(float(r["x"]) - RANGE - 20, float(by)) is False, (
+        "a claimed plot stayed open with its owner nowhere near it -- anybody "
+        "could reach over it")
+
+    # and somebody else standing next to it holds nothing
+    plots["zoneOpen"] = lua.table_from({})
+    plots["zoneHeld"] = lua.table_from({})
+    P.sv_holdNearby(plots, "SOMEBODY-ELSE", lua.table_from(
+        {"x": float(bx) * B, "y": float(by) * B, "z": 1.5}))
+    assert P.sv_bodyIsOpen(plots, body_on_my_plot()) is False, (
+        "a stranger standing on somebody's plot held it OPEN")
 
 
 def you_can_only_build_on_ground_that_is_yours():
@@ -1540,6 +1602,80 @@ def a_zero_minute_prep_starts_building_at_once():
     E.sv_start(ev, 0, 30, 5000)
     assert ev["phase"] == "build"
     assert E.sv_buildAllowed(ev) is True
+
+
+def the_alarm_shouts_but_does_not_lock_by_default():
+    """alarmlock is OFF by default, on the owner's call.
+
+    "by default the auto lockdown shall be off."
+
+    Right call. A false alarm that shouts is a nuisance; a false alarm that
+    freezes twenty people mid-build in front of a stream is worse than the
+    griefing it was guarding against -- and the alarm cannot tell somebody
+    clearing their own work from somebody wrecking yours.
+    """
+    lua = fresh("Settings.lua")
+    lua.globals().Settings.Sv_Load(False)
+    S = lua.globals().Settings
+
+    assert S.Get("alarmlock") is False, (
+        "the grief alarm still locks the world by itself")
+    assert S.Get("alarmdrop") is not None, "the alarm has no threshold at all"
+
+    # it must still ANNOUNCE -- turning off the lock is not turning off the alarm
+    world = io.open(SCRIPTS / "World.lua", encoding="utf-8").read()
+    fn = world[world.index("function World.sv_checkGriefAlarm"):]
+    fn = fn[:fn.index(chr(10) + "end" + chr(10))]
+    assert "sv_broadcast" in fn and "GRIEF ALARM" in fn, (
+        "the alarm no longer says anything, which is not what off-by-default means")
+    assert 'Settings.Get( "alarmlock" )' in fn, (
+        "the lock is not behind the setting")
+
+    # and a host who wants it can still have it -- at least one preset arms it.
+    # Searched over the whole file rather than a window after the word
+    # "lockdown", which matches the help text long before it matches the preset.
+    src = io.open(SCRIPTS / "Settings.lua", encoding="utf-8").read()
+    assert "alarmlock = true" in src, (
+        "no preset arms the automatic lock any more, so a host who wants an "
+        "unattended server has to set it by hand")
+
+
+def every_phase_boundary_takes_a_snapshot():
+    """prep start, build start, build end, buffer end -- each one saves.
+
+    "the save shall happen on those times: prep time start, build time start,
+    build time end, buffer end. all those shall happen besides the auto saving."
+
+    Better than a timer alone: an autosave lands wherever the clock happens to
+    be, but these land on the moments you would actually want to roll back TO --
+    before anyone built, the starting line, the builds exactly as the clock
+    stopped them, and the finished event.
+    """
+    import re
+    world = io.open(SCRIPTS / "World.lua", encoding="utf-8").read()
+    table = world[world.index("local PHASE_SNAPSHOT = {"):]
+    table = table[:table.index("}")]
+
+    for phase, label in [("prep", "prepstart"), ("build", "buildstart"),
+                         ("buffer", "buildend"), ("ended", "eventend")]:
+        assert re.search(phase + r'\s*=\s*"' + label + '"', table), (
+            f"the {phase} phase does not take a {label} snapshot")
+
+    # and it must fire before the protection change, or the buffer snapshot
+    # records a world that has already been shut rather than the builds as they
+    # stood when the clock stopped
+    fn = world[world.index("function World.sv_e_swEventPhase"):]
+    fn = fn[:fn.index(chr(10) + "end")]
+    take = fn.index("sv_beginCapture")
+    lock = fn.index("sv_setMode")
+    assert take < lock, (
+        "the phase snapshot is taken after the protection change -- it would "
+        "record the locked world, not the one that just finished")
+
+    # exactly one capture per phase change: the old hard-coded eventend one had
+    # to go or `ended` would start two on top of each other
+    assert fn.count("sv_beginCapture") == 1, (
+        f"{fn.count('sv_beginCapture')} captures in one phase change")
 
 
 def a_dead_event_does_not_resurrect_itself_on_every_load():
@@ -2465,6 +2601,8 @@ def main():
           buffer_time_lets_you_polish_but_not_place_or_break)
     check("plots: a body is located by where it is, not by its origin",
           a_body_is_located_by_where_it_is_not_by_its_origin)
+    check("plots: standing near your own plot keeps it open",
+          standing_near_your_own_plot_keeps_it_open)
     check("plots: you can only build on ground that is yours",
           you_can_only_build_on_ground_that_is_yours)
     check("plots: junk outside the city stays clearable", outside_the_city_is_sweepable)
@@ -2493,6 +2631,10 @@ def main():
     check("event: prep then build then ended", an_event_runs_prep_then_build_then_ends)
     check("event: zero prep starts building at once", a_zero_minute_prep_starts_building_at_once)
     check("event: the clock survives a restart", the_clock_survives_a_restart)
+    check("protection: the alarm shouts but does not lock by default",
+          the_alarm_shouts_but_does_not_lock_by_default)
+    check("event: every phase boundary takes a snapshot",
+          every_phase_boundary_takes_a_snapshot)
     check("event: a dead event does not resurrect itself on every load",
           a_dead_event_does_not_resurrect_itself_on_every_load)
     check("event: pausing stops the clock", pausing_stops_the_clock)

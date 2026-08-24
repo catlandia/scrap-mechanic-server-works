@@ -99,8 +99,15 @@ and not the previous sample). If the count has fallen by `alarmdrop`
 
 1. writes `GRIEF ALARM: N shapes lost` to the log,
 2. announces `*** N blocks just disappeared ***` to everyone,
-3. and if `alarmlock` is on (it is by default) **locks the whole world** and tells
-   the host how to roll back.
+3. and if `alarmlock` is on -- **off by default** -- locks the whole world and
+   tells the host how to roll back.
+
+**The automatic lock is off by default, deliberately.** A false alarm that shouts
+is a nuisance; a false alarm that freezes twenty people mid-build in front of a
+stream is worse than the griefing it was guarding against, and the alarm cannot
+tell somebody clearing their own work from somebody wrecking yours. It still
+announces, still logs, and `/set alarmlock on` arms it for an unattended
+server -- which is the case it was really written for.
 
 Ghosts are excluded from the count — a blueprint preview appearing and vanishing
 would otherwise swing the total by the size of a whole creation and trip it.
@@ -112,8 +119,23 @@ public stream event.** Nobody catches that by watching, because the person
 running the event is running the event. The alarm does not need anyone watching,
 and it stops the bleeding by itself.
 
-Recovery is the other half: `/autosave` rotates snapshots, ending an event takes
-one automatically, and `/restore` puts a world or a single plot back.
+Recovery is the other half, and it is the half that matters most now the lock is
+off by default. Snapshots are taken at **every phase boundary** as well as on the
+autosave timer:
+
+| when | named |
+|---|---|
+| prep begins | `prepstart` -- before anybody has touched anything |
+| build begins | `buildstart` -- the starting line |
+| build ends | `buildend` -- the builds exactly as the clock stopped them |
+| the event ends | `eventend` -- the final state, after the buffer |
+
+Those are the moments you would actually want to roll back *to*, which a timer
+alone cannot give you: an autosave lands wherever the clock happens to be. Each
+is taken **before** the phase's protection change, so `buildend` records the
+builds as they stood rather than the world after it was shut.
+
+`/restore <name>` puts a whole world or a single plot back.
 
 ---
 

@@ -253,12 +253,17 @@ function Plots.sv_updateOccupancy( self, identify, tick )
 	for _, player in ipairs( sm.player.getAllPlayers() ) do
 		local character = player:getCharacter()
 		if character and sm.exists( character ) then
-			local z = self:sv_locate( character.worldPosition )
+			local at = character.worldPosition
+			local z = self:sv_locate( at )
 			local zk = self:sv_zoneKey( z )
 			if zk then
 				occupied[zk] = occupied[zk] or { zone = z, players = {} }
 				table.insert( occupied[zk].players, player )
 			end
+			-- Standing NEAR your own land holds it open, wherever you happen to
+			-- be standing. See Plots.HOLD_RANGE: without this, stepping onto a
+			-- road locked your own plot behind you.
+			self:sv_holdNearby( identify( player ), at )
 		end
 	end
 
@@ -298,6 +303,44 @@ end
 -- Mark every zone of the team that owns `z` as held. Held means "an owner is
 -- present on their own land", which is what keeps a claimed plot open while its
 -- owner is working on it even if they are stood one block off the edge.
+-- How far from your own land you may stand and still have it open, in blocks.
+--
+-- REPORTED: "I cant build while standing on protected blocks which sucks." Fair,
+-- and it was V42's doing. A claimed plot with nobody standing IN it is locked --
+-- that is what stops somebody on the road reaching over your work -- and the
+-- only thing that reopened it was standing inside the plot or on one of its own
+-- seams. Step onto a ROAD, or onto the plaza, and your own plot locked behind
+-- you while you were looking at it.
+--
+-- Distance, not zone. You are next to your land or you are not, and a road being
+-- protected ground has nothing to do with it.
+Plots.HOLD_RANGE = 12      -- blocks, so three metres past the edge of your plot
+
+-- Everything this player is authorised for that they are standing near.
+--
+-- Cheap by construction: it only ever looks at the plots on THEIR OWN team,
+-- which is one for almost everybody, rather than at every plot in the city.
+function Plots.sv_holdNearby( self, perma, pos )
+	if perma == nil or pos == nil then return end
+	local mine = self:sv_plotOf( perma )
+	if mine == nil then return end
+
+	local bx, by = pos.x / Plots.BLOCK, pos.y / Plots.BLOCK
+	for index in pairs( self:sv_teamOf( mine ) ) do
+		local col, row = Layout.plotColRow( self.layout, index )
+		local r = col and Layout.plotRect( self.layout, col, row )
+		if r then
+			-- distance from the point to the rectangle, zero when inside it
+			local dx = math.max( r.x - bx, 0, bx - ( r.x + r.w ) )
+			local dy = math.max( r.y - by, 0, by - ( r.y + r.h ) )
+			if dx <= Plots.HOLD_RANGE and dy <= Plots.HOLD_RANGE then
+				self:sv_holdTeam( { kind = "plot", index = index } )
+				return
+			end
+		end
+	end
+end
+
 function Plots.sv_holdTeam( self, z )
 	local index = nil
 	if z.kind == "plot" then

@@ -249,8 +249,16 @@ Settings.SCHEMA = {
 	-- delete. 400 means one big sweep is quiet and two inside the window are not.
 	{ key = "alarmdrop", kind = "number", default = 400,
 	  help = "blocks that must vanish within 20s to trip the grief alarm" },
-	{ key = "alarmlock", kind = "bool", default = true,
-	  help = "grief alarm locks the world by itself" },
+	-- Default OFF, on the owner's call. The alarm still announces and still
+	-- logs; what it no longer does is lock the world without being asked.
+	--
+	-- It is the right default. A false alarm that shouts is a nuisance; a false
+	-- alarm that freezes twenty people mid-build in front of a stream is worse
+	-- than the griefing it was guarding against -- and the alarm cannot tell
+	-- somebody clearing their own work from somebody wrecking yours.
+	-- /set alarmlock on for an unattended server.
+	{ key = "alarmlock", kind = "bool", default = false,
+	  help = "grief alarm locks the world by itself (off: it only shouts)" },
 	{ key = "autosave", kind = "number", default = 10,
 	  help = "minutes between automatic snapshots, 0 for off" },
 }
@@ -293,6 +301,11 @@ Settings.MIGRATIONS = {
 	{ key = "alarmdrop_above_one_delete_v47", run = function( values )
 		local n = tonumber( values.alarmdrop )
 		if n == nil or n <= 256 then values.alarmdrop = 400 end
+	end },
+	-- The alarm shouts; it does not lock. A changed default reaches nobody who
+	-- has already played, so it needs a migration to land.
+	{ key = "alarm_does_not_lock_v50", run = function( values )
+		values.alarmlock = false
 	end },
 }
 
@@ -435,7 +448,7 @@ Settings.PRESETS = {
 			plasmadrills = false, radios = false, horns = false,
 			sledgehammer = true, spudguns = true, glowsticks = true,
 			painttool = true, connecttool = true, weldtool = true, lift = true,
-			alarmlock = true, alarmdrop = 400, autosave = 10, autoremove = true,
+			alarmlock = false, alarmdrop = 400, autosave = 10, autoremove = true,
 		},
 	},
 	show = {
@@ -443,7 +456,7 @@ Settings.PRESETS = {
 		values = {
 			buildopen = false, protection = "display",
 			plots = true, pushintruders = false,
-			alarmlock = true, alarmdrop = 300, autosave = 0,
+			alarmlock = false, alarmdrop = 300, autosave = 0,
 		},
 	},
 	lockdown = {
