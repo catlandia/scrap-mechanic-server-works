@@ -33,6 +33,36 @@ dofile( "$CONTENT_DATA/Scripts/PlotMarker.lua" )
 
 World = class( CreativeFlatWorld )
 
+-- WHAT MAY BE BUILT ON. Set explicitly, all four of them.
+--
+-- "fun fact. in survival lift is disabled by default. which means. just remove
+-- that thing that disables lifts."
+--
+-- NOT MEASURED. An earlier version of this comment claimed it was, and that
+-- was wrong, so the actual state of the evidence is worth writing down.
+--
+-- FOR: Survival/Scripts/game/worlds/DungeonWorld.lua sets three of these ON by
+-- hand, and its parent BaseWorld sets none of them, so it is writing against a
+-- default rather than overriding a parent. WarehouseWorld turns one OFF.
+--
+-- AGAINST, and it is the stronger half: NO CREATIVE WORLD SETS THEM EITHER --
+-- CreativeFlatWorld, CreativeTerrainWorld, CreativeCustomWorld, none of them --
+-- and lifts plainly work in vanilla creative. So the default cannot be false in
+-- creative content, and whether baseGameContent "Survival" changes it is exactly
+-- the thing nobody has established.
+--
+-- So these are set because an unknown default is worth removing and naming four
+-- flags costs nothing, NOT because they are known to be the lift bug. They
+-- probably are not.
+--
+-- These are class fields read by the engine when the world is created
+-- (LuaWorldScript.cpp's literal list), not settings, so they cannot be toggled
+-- later and there is no cost to naming all four.
+World.enableBuildOnLift = true      -- the lift can place a creation at all
+World.enableBuildOnBodies = true    -- blocks attach to the city floor and to builds
+World.enableBuildOnSurface = true   -- and to the ground itself
+World.enableBuildOnAssets = true
+
 -- Set from Settings; globals because a settings apply function cannot reach the
 -- world instance.
 g_swProtectTerrain = true
@@ -124,6 +154,12 @@ function World.server_onCreate( self )
 	local _, detail = g_swProtection:sv_setMode( g_swProtection:sv_getMode() )
 	sm.log.info( string.format( "[ServerWorks] world ready, protection %s (%s)",
 		g_swProtection:sv_getMode(), tostring( detail ) ) )
+	-- Say what the world actually allows. "Can the lift place anything at all"
+	-- was unanswerable for a dozen versions; now it is one line at load.
+	sm.log.info( string.format(
+		"[ServerWorks] build on: lift=%s bodies=%s surface=%s assets=%s",
+		tostring( World.enableBuildOnLift ), tostring( World.enableBuildOnBodies ),
+		tostring( World.enableBuildOnSurface ), tostring( World.enableBuildOnAssets ) ) )
 end
 
 function World.sv_applySettings( self )

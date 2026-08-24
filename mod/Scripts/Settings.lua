@@ -58,7 +58,7 @@ local HAZARD = {
 -- Tools only the host may hold, even when the tool itself is switched on. The
 -- lift is here because it spawns whole saved creations out of thin air: fine for
 -- whoever is running the event, not something a lobby of guests should each have.
-local HOST_ONLY = { lift = "hostlift", cleaner = "hostcleaner" }
+local HOST_ONLY = { cleaner = "hostcleaner" }
 
 local TOOLS = {
 	-- default OFF
@@ -100,15 +100,23 @@ local TOOLS = {
 	-- (SurvivalLift). baseGameContent "Survival" only ships the second, so our
 	-- toolset adds the first -- and a gate that named one of them would let the
 	-- other straight through.
-	-- THREE lifts now. 5cc12f03 is the creative one, 8f190ce2 the survival one,
-	-- and the third is ours -- the Import Lift, added under a uuid nothing else
-	-- declares so nothing can win the first-declaration race against it. A gate
-	-- that named only some of them would let the others straight through.
-	lift = {
-		sm.uuid.new( "5cc12f03-275e-4c8e-b013-79fc0f913e1b" ),
-		sm.uuid.new( "8f190ce2-3a59-423e-8483-a7aa67bd5bc0" ),
-		sm.uuid.new( "4c893da9-484d-495b-a013-87beed81c148" ),
-	},
+	-- THE LIFT IS NOT IN THIS TABLE, ON PURPOSE.
+	--
+	-- "just remove that thing that disables lifts."
+	--
+	-- Everything listed here can be pulled out of a player's hands by
+	-- sm.tool.forceTool( nil ) the moment its setting goes false. That is the only
+	-- mechanism in this mod that actively takes a tool away, and the lift has been
+	-- reported broken for a dozen versions running. Whether the guard was ever the
+	-- cause or not, it is the one suspect we own, and removing it settles the
+	-- question instead of arguing about it.
+	--
+	-- All three lifts are now ungated: the creative one, the survival one, and our
+	-- Import Lift. Nothing this mod does can take a lift out of anybody's hands.
+	--
+	-- What still applies to a lift, and should: a locked or display world refuses
+	-- new creations, because that is what locked means. Game.cl_warnIfBuildingIsShut
+	-- explains that when it happens rather than leaving it silent.
 	glowsticks = { sm.uuid.new( "9506abb9-e415-4229-a824-28a479cca788" ) },
 	-- Ours. See CleanerTool.lua: point at anything and it is deleted, including
 	-- the carryable props -- craftbots, gems, crates -- that the remove tool
@@ -167,21 +175,18 @@ Settings.SCHEMA = {
 	{ key = "painttool", kind = "bool", default = true, help = "allow the paint tool" },
 	{ key = "connecttool", kind = "bool", default = true, help = "allow the connect tool" },
 	{ key = "weldtool", kind = "bool", default = true, help = "allow the weld tool" },
-	{ key = "lift", kind = "bool", default = true, help = "allow the lift" },
-	-- Default OFF. "okay look. for this fix of the lift. allow everyone to use
-	-- the lift. dont lock it. because I still cant interact with it."
-	--
-	-- It defaulted ON, and the host bypass does not cover HOST_ONLY tools -- that
-	-- is the whole point of them -- so with the host restriction switched on as
-	-- well, the lift was being pulled out of everyone's hands including the
-	-- host's, every 2 ticks, by forceTool( nil ). The switch is still here for a
-	-- host who wants it later; it just is not the default any more.
+
+	-- The cleaner IS gated, unlike the lifts: it deletes whatever it is pointed
+	-- at and ignores every permission flag, which is precisely why it is host
+	-- only and why it must stay switchable.
 	{ key = "cleaner", kind = "bool", default = true,
 	  help = "allow the Server Works cleaner (deletes anything you point at)" },
 	{ key = "hostcleaner", kind = "bool", default = true,
 	  help = "only the host may use the cleaner -- leave this on" },
-	{ key = "hostlift", kind = "bool", default = false,
-	  help = "only the host may use the lift (it spawns whole creations)" },
+
+	-- There are no `lift` or `hostlift` settings any more. See TOOLS above: the
+	-- lifts left the tool gate entirely, so there is nothing left for a switch
+	-- to switch. A setting that no longer does anything is worse than no setting.
 
 	{ key = "plots", kind = "bool", default = false, help = "restrict building to owned plots" },
 	{ key = "pushintruders", kind = "bool", default = true,
@@ -447,7 +452,7 @@ Settings.PRESETS = {
 			cornades = false, beacons = false, fireworks = false,
 			plasmadrills = false, radios = false, horns = false,
 			sledgehammer = true, spudguns = true, glowsticks = true,
-			painttool = true, connecttool = true, weldtool = true, lift = true,
+			painttool = true, connecttool = true, weldtool = true,
 			alarmlock = false, alarmdrop = 400, autosave = 10, autoremove = true,
 		},
 	},
@@ -477,7 +482,7 @@ Settings.PRESETS = {
 			cornades = true, beacons = true, fireworks = true,
 			plasmadrills = true, radios = true, horns = true,
 			sledgehammer = true, spudguns = true, glowsticks = true,
-			painttool = true, connecttool = true, weldtool = true, lift = true,
+			painttool = true, connecttool = true, weldtool = true,
 			maxjoints = 0, maxbots = 0, maxlights = 0,
 			alarmlock = false, autoremove = false,
 		},

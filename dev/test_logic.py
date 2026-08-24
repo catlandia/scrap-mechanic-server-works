@@ -599,6 +599,47 @@ def a_plot_is_one_welded_body_with_its_own_stand():
         assert min(sys_) >= y0 and max(sys_) < y0 + h, "the stand pokes out sideways"
 
 
+def nothing_in_this_mod_can_take_a_lift_away():
+    """No lift uuid is in the tool gate, so forceTool can never reach one.
+
+    "just remove that thing that disables lifts."
+
+    Settings.TOOLS is the only mechanism in this mod that actively takes a tool
+    out of a player's hands -- sm.tool.forceTool( nil ), every two ticks, the
+    moment the tool's setting goes false. The lift has been reported broken for a
+    dozen versions. Whether the guard was ever the cause or not, it is the one
+    suspect we own, and removing it settles the question rather than arguing it.
+
+    What still applies to a lift, and should: a locked or display world refuses
+    new creations, because that is what locked means.
+    """
+    src = io.open(SCRIPTS / "Settings.lua", encoding="utf-8").read()
+    gate = src[src.index("local TOOLS = {"):src.index("Settings.SCHEMA = {")]
+
+    LIFTS = {
+        "5cc12f03-275e-4c8e-b013-79fc0f913e1b": "the creative lift",
+        "8f190ce2-3a59-423e-8483-a7aa67bd5bc0": "the survival lift",
+        "4c893da9-484d-495b-a013-87beed81c148": "our Import Lift",
+    }
+    for uuid, what in LIFTS.items():
+        assert uuid not in gate, (
+            f"{what} ({uuid[:8]}) is back in the tool gate -- forceTool can pull "
+            "it out of somebody's hands again")
+
+    assert "lift = {" not in gate, "there is still a lift group in the tool gate"
+    assert 'HOST_ONLY = { cleaner' in src, (
+        "the lift is back under HOST_ONLY, which is the other way to lose it")
+
+    # and the dead switches are gone rather than left lying around doing nothing
+    for dead in ('key = "lift"', 'key = "hostlift"'):
+        assert dead not in src, (
+            f'the {dead} setting still exists but no longer gates anything -- a '
+            "switch that does not switch is worse than no switch")
+
+    # the cleaner, which DOES delete things, stays gated
+    assert 'key = "hostcleaner"' in src, "the cleaner lost its host gate"
+
+
 def the_cleaner_is_wired_to_the_same_uuid_everywhere():
     """The cleaner's uuid, its class and its gate all agree.
 
@@ -1604,6 +1645,41 @@ def a_zero_minute_prep_starts_building_at_once():
     assert E.sv_buildAllowed(ev) is True
 
 
+def the_world_says_what_may_be_built_on():
+    """All four enableBuildOn* flags are set explicitly on the World class.
+
+    "fun fact. in survival lift is disabled by default. which means. just remove
+    that thing that disables lifts."
+
+    The proof is in the base game: DungeonWorld turns enableBuildOnAssets,
+    enableBuildOnLift and enableBuildOnBodies ON by hand, and WarehouseWorld
+    turns one OFF. A world only writes a flag down when the default is the other
+    way -- so in survival content these default to FALSE.
+
+    This game is baseGameContent "Survival" and its world inherits
+    CreativeFlatWorld, which never sets any of them, because a creative game has
+    no reason to. So it inherited survival's defaults: a world where the lift
+    places nothing and blocks will not attach to the city floor.
+
+    They are class fields read when the world is created, not settings, so
+    naming all four costs nothing and leaves no default to inherit by accident.
+    """
+    src = io.open(SCRIPTS / "World.lua", encoding="utf-8").read()
+    for flag in ("enableBuildOnLift", "enableBuildOnBodies",
+                 "enableBuildOnSurface", "enableBuildOnAssets"):
+        assert f"World.{flag} = true" in src, (
+            f"World.{flag} is not set. In a survival-content game the default is "
+            "off, and an unset flag is one the engine decides for us.")
+
+    # they must be class fields, set before any function -- the engine reads them
+    # when the world is created and never again
+    first_fn = src.index("function World.")
+    for flag in ("enableBuildOnLift", "enableBuildOnBodies"):
+        assert src.index(f"World.{flag} = true") < first_fn, (
+            f"World.{flag} is set inside a function; it is read once when the "
+            "world is created and would never take effect")
+
+
 def the_alarm_shouts_but_does_not_lock_by_default():
     """alarmlock is OFF by default, on the owner's call.
 
@@ -2591,6 +2667,8 @@ def main():
           the_city_is_many_separate_bodies)
     check("plots: a plot is one welded body with its own stand",
           a_plot_is_one_welded_body_with_its_own_stand)
+    check("tools: nothing in this mod can take a lift away",
+          nothing_in_this_mod_can_take_a_lift_away)
     check("tools: the cleaner is wired to one uuid everywhere",
           the_cleaner_is_wired_to_the_same_uuid_everywhere)
     check("protection: the floor is free while building, pinned otherwise",
@@ -2631,6 +2709,8 @@ def main():
     check("event: prep then build then ended", an_event_runs_prep_then_build_then_ends)
     check("event: zero prep starts building at once", a_zero_minute_prep_starts_building_at_once)
     check("event: the clock survives a restart", the_clock_survives_a_restart)
+    check("world: it says what may be built on, explicitly",
+          the_world_says_what_may_be_built_on)
     check("protection: the alarm shouts but does not lock by default",
           the_alarm_shouts_but_does_not_lock_by_default)
     check("event: every phase boundary takes a snapshot",
