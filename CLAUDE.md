@@ -271,6 +271,11 @@ put the event clock off the edge of the screen where it could not be seen at all
 | `sm.gui.getScreenSize()` | the **window**. Reported 3440x1440 on this owner's monitor |
 | `sm.jsonGui.getViewSize()` | the **canvas widget units are in**. What every coordinate here means |
 
+**MEASURED**, 2026-08-24 on a 3440x1440 monitor: `getScreenSize` said 3440x1440
+and **`getViewSize` said 1720x720** — exactly half. So a panel is measured in a
+space about half the window's width, and `SettingsGui` at 1120x690 is within 30
+units of the canvas height. Anything taller would be off screen.
+
 They are different numbers. The game ships GUI skins for exactly four reference
 resolutions — `1280x720`, `1920x1080`, `2560x1440`, `3840x2160`
 (`Data/Gui/Resolutions/`) — and picks one, so a 3440x1440 monitor is not a
@@ -576,7 +581,7 @@ the ones that opened a **second panel**; the ones that worked answered in
 **chat**. `/guitest` stays in the mod — five tests, client-only — as the fastest
 way to re-establish ground truth after a game update.
 
-### NEVER close a json GUI from inside its own callback
+### NEVER close OR REDRAW a json GUI from inside its own callback
 
 **This one bug accounted for every "the buttons dont work" report in the
 project**, across three versions, and it is a single line of ordering:
@@ -609,8 +614,26 @@ time. So closes are **queued and drained on the next tick** (`cl_closeLater` /
 destroyed while its own callback is running, because that callback has returned.
 A check asserts no `cl_on*` handler calls a closer directly.
 
+**A REDRAW is the same hazard, and it is worse.** Building a new tree destroys
+every widget the old one had, including the one whose callback is running. For a
+click that silently killed the handler. For an **EditBox** — which also holds the
+keyboard focus — it **crashed the game outright**: *"game crashed when I tried to
+change the number of build time"*, and the log ends mid-line with no Lua error
+and no shutdown sequence.
+
+Vanilla does render from inside a text callback (`DigitalSign.lua:149`) — but it
+re-renders the **same table**, mutated in place. Building a fresh tree is not the
+same thing, and the difference is a native crash.
+
+So redraws are queued too: `cl_renderLater` / `cl_drainRenders`, drained beside
+the closes at the top of `client_onFixedUpdate`. One tick of latency on a
+stepper press is imperceptible; the bug class is gone.
+
 Corollary: **an `onClose` handler must only drop the handle**, never call
 `close()` again — that is the same bug from the other direction.
+
+The check forbids any `cl_on*` handler from calling `cl_showPanel` or a closer
+directly.
 
 ### A panel that closes on every click cannot be told from a broken one
 

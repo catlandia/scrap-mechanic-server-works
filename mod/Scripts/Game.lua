@@ -634,6 +634,7 @@ function Game.client_onFixedUpdate( self, dt )
 	-- never closed from inside its own callback -- see cl_closeLater for the
 	-- three versions of "the buttons dont work" that came out of doing so.
 	self:cl_drainCloses()
+	self:cl_drainRenders()
 
 	if self.cl and self.cl.event then
 		self:cl_updateEventHud()
@@ -900,7 +901,7 @@ function Game.cl_onSettingsGuiClick( self, widgetName, data )
 		self.cl.settingsGroup = data.group
 		self.cl.settingsPage = 1
 		self.cl.settingsStatus = nil
-		self:cl_showPanel( "settings", SettingsGui.Build(
+		self:cl_renderLater( "settings", SettingsGui.Build(
 			self.cl.settingsValues, self.cl.settingsGroup, 1 ) )
 		return
 	end
@@ -911,7 +912,7 @@ function Game.cl_onSettingsGuiClick( self, widgetName, data )
 		if page < 1 then page = pages elseif page > pages then page = 1 end
 		self.cl.settingsPage = page
 		self.cl.settingsStatus = nil
-		self:cl_showPanel( "settings", SettingsGui.Build(
+		self:cl_renderLater( "settings", SettingsGui.Build(
 			self.cl.settingsValues, self.cl.settingsGroup, page ) )
 		return
 	end
@@ -1035,6 +1036,34 @@ function Game.cl_drainCloses( self )
 		local fn = CLOSERS[which]
 		if fn then self[fn]( self ) end
 	end
+end
+
+-- REDRAW ON THE NEXT TICK, not now.
+--
+-- Same rule as cl_closeLater and for the same reason, learned the harder way:
+-- REPORTED, "game crashed when I tried to change the number of build time", and
+-- the log ends mid-sentence with no error and no shutdown -- a hard crash, not a
+-- Lua fault.
+--
+-- Re-rendering builds a brand new widget tree, which destroys every widget the
+-- old one had. Doing that from inside a widget's OWN callback destroys the
+-- widget currently executing. For a click that silently killed the rest of the
+-- handler (V30). For an EDIT BOX, which also holds the keyboard focus, the
+-- engine is left holding a pointer to a widget that no longer exists.
+--
+-- Vanilla renders from inside its text callback (DigitalSign.lua:149) -- but it
+-- re-renders the SAME table, mutated in place. We build a fresh tree every time,
+-- which is not the same thing at all.
+function Game.cl_renderLater( self, name, tree )
+	if self.cl == nil then self.cl = {} end
+	self.cl.renderSoon = { name = name, tree = tree }
+end
+
+function Game.cl_drainRenders( self )
+	local queued = self.cl and self.cl.renderSoon
+	if queued == nil then return end
+	self.cl.renderSoon = nil
+	pcall( function() self:cl_showPanel( queued.name, queued.tree ) end )
 end
 
 -- The engine telling us a panel has gone -- escape, or our own close(). It must
@@ -1398,6 +1427,7 @@ function Game.sv_openEventGui( self, player, status )
 end
 
 function Game.client_openEventGui( self, state )
+	sm.log.info( "[ServerWorks] gui: rendering the event panel" )
 	if self.cl == nil then self.cl = {} end
 	self.cl.eventCfg = state
 	self:cl_showPanel( "event", EventGui.Build( state ) )
@@ -1417,7 +1447,7 @@ function Game.cl_onEventGuiClick( self, widgetName, data )
 	-- server yet, so there is nothing to round trip.
 	if data.action == "step" then
 		cfg[data.key] = EventGui.Step( data.key, cfg[data.key] or 0, data.dir )
-		self:cl_showPanel( "event", EventGui.Build( cfg ) )
+		self:cl_renderLater( "event", EventGui.Build( cfg ) )
 		return
 	end
 	if data.action == "close" then
@@ -1442,23 +1472,40 @@ end
 -- A typed duration. ( self, widgetName, text ) -- a text event carries no
 -- onClickData, so the widget NAME is the only thing saying which field it was;
 -- see EventGui.FieldForBox. Signature confirmed against DigitalSign.lua:157.
+-- NOTHING in here may touch the GUI. The redraw is queued for the next tick;
+-- see cl_renderLater for the crash that taught us.
+--
+-- The whole body is wrapped as well. A Lua error inside a text callback is not
+-- something to find out about during an event, and this runs on a keypress.
 function Game.cl_onEventTimeTyped( self, widgetName, text )
-	if self.cl == nil or self.cl.eventCfg == nil then return end
-	local field = EventGui.FieldForBox( widgetName )
-	if field == nil then return end
+	local ok, err = pcall( function()
+		if self.cl == nil or self.cl.eventCfg == nil then return end
+		local field = EventGui.FieldForBox( widgetName )
+		if field == nil then return end
 
-	local minutes, why = EventGui.ParseTime( widgetName, text )
-	if why then sm.gui.chatMessage( why ) end
-	if minutes == nil then
-		-- Nothing usable was typed. Re-render anyway so the box goes back to
-		-- showing the value that is actually set, rather than the rubbish.
-		self:cl_showPanel( "event", EventGui.Build( self.cl.eventCfg ) )
-		return
+		local minutes, why = EventGui.ParseTime( widgetName, text )
+		if why then pcall( sm.gui.chatMessage, why ) end
+
+		if minutes ~= nil then
+			self.cl.eventCfg[field.key] = minutes
+			self.cl.eventCfg.status =
+				string.format( "%s set to %d min", field.label, minutes )
+		end
+		-- Redrawn either way: on a good value to show it accepted, and on a bad
+		-- one to put the real number back in the box instead of the rubbish.
+		self:cl_renderLater( "event", EventGui.Build( self.cl.eventCfg ) )
+	end )
+	if not ok and not ( self.cl and self.cl.typedFaulted ) then
+		if self.cl then self.cl.typedFaulted = true end
+		sm.log.warning( "[ServerWorks] typed time failed: " .. tostring( err ) )
 	end
+end
 
-	self.cl.eventCfg[field.key] = minutes
-	self.cl.eventCfg.status = string.format( "%s set to %d min", field.label, minutes )
-	self:cl_showPanel( "event", EventGui.Build( self.cl.eventCfg ) )
+-- Every keystroke. Deliberately does nothing: the value is only read on Enter.
+-- It exists because the base game's one editable box declares both callbacks
+-- (DigitalSign.gui) and this is not the place to find out whether one without
+-- the other is a supported arrangement.
+function Game.cl_onEventTimeEdited( self, widgetName, text )
 end
 
 function Game.sv_n_eventGuiAction( self, data, player )
@@ -1535,7 +1582,7 @@ function Game.cl_onConfirmClick( self, widgetName, data )
 	if ( c.step or 1 ) < 2 then
 		-- The first yes does not count, which is the whole point.
 		c.step = 2
-		self:cl_showPanel( "confirm", ConfirmGui.Build( c ) )
+		self:cl_renderLater( "confirm", ConfirmGui.Build( c ) )
 		return
 	end
 	-- The server does the work and sends the panel back with the result written
@@ -1572,8 +1619,8 @@ function Game.cl_onPlotsGuiClick( self, widgetName, data )
 
 	if data.action == "step" then
 		cfg[data.key] = PlotsGui.Step( data.key, cfg[data.key], data.dir )
-		cfg.status = nil                                  -- stale the moment they edit
-		self:cl_showPanel( "city", PlotsGui.Build( cfg ) ) -- local, instant
+		cfg.status = nil                                    -- stale the moment they edit
+		self:cl_renderLater( "city", PlotsGui.Build( cfg ) ) -- next tick, never now
 		return
 	end
 	if data.action == "reset" then
@@ -1585,7 +1632,7 @@ function Game.cl_onPlotsGuiClick( self, widgetName, data )
 			roadevery = d.roadevery, roadwidth = d.roadwidth, plazacells = d.plazacells,
 			claimed = cfg.claimed or {}, mine = cfg.mine, team = cfg.team,
 			status = "reset to the defaults -- nothing is built until you press BUILD" }
-		self:cl_showPanel( "city", PlotsGui.Build( self.cl.plotCfg ) )
+		self:cl_renderLater( "city", PlotsGui.Build( self.cl.plotCfg ) )
 		return
 	end
 	if data.action == "close" then

@@ -65,6 +65,7 @@ local function numberBox( name, value, x, y, w, h )
 		HeightFromText = false, MaxTextLength = 4,
 		x = x, y = y, width = w, height = h }
 	b.onTextEnter = "cl_onEventTimeTyped"
+	b.onTextEdit = "cl_onEventTimeEdited"
 	return b
 end
 

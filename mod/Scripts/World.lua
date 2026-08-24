@@ -1052,6 +1052,13 @@ function World.sv_buildFloor( self, reply )
 		reply( string.format( "cleared %d old city shapes -- letting them settle", removed ) )
 	end
 
+	-- MEASURED: "GRIEF ALARM: 628 shapes lost" in the log, seconds after a
+	-- rebuild. Clearing the old city IS a mass deletion -- it is just ours. The
+	-- alarm exists to catch the other kind, and one that cries wolf every time
+	-- the host lays the city out is one nobody will believe at the moment it
+	-- matters.
+	self:sv_quietAlarm( 120 )
+
 	self.sw.cityJob = {
 		stage = "settle",
 		settleUntil = sm.game.getCurrentTick() + World.CITY_SETTLE_TICKS,

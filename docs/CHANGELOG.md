@@ -10,6 +10,52 @@ was most of them.
 
 ---
 
+## V44 — the crash, and the canvas is half the screen
+
+*"game crashed when I tried to change the number of build time."*
+
+The log ends mid-line: no Lua error, no shutdown sequence. A hard crash.
+
+**Redrawing a panel from inside a widget's own callback destroys the widget that
+is currently running.** V30 found that for `close()` and a click, where it
+silently killed the rest of the handler. An `EditBox` also holds the keyboard
+focus, so destroying one mid-callback leaves the engine holding a pointer to
+something that no longer exists — and that is not a Lua error, it is a crash.
+
+Vanilla *does* render from inside its text callback (`DigitalSign.lua:149`) — but
+it re-renders the **same table**, mutated in place. We build a fresh tree every
+time. Not the same thing, and the difference is the crash.
+
+So redraws are now queued exactly like closes: `cl_renderLater` /
+`cl_drainRenders`, drained beside them at the top of `client_onFixedUpdate`. **Not
+just the text box** — all six in-callback redraws, including the steppers, which
+had merely not crashed yet. One tick of latency on a button press is
+imperceptible; the whole class is gone. The check now fails on any `cl_on*`
+handler that calls `cl_showPanel` or a closer directly, and it was written by
+putting one back.
+
+The typed-time handler is also wrapped end to end and logs once. It runs on a
+keypress, and finding out about a Lua error there mid-event is not acceptable.
+
+### The canvas is HALF the screen
+
+Also from that log, and worth having: `gui canvas 1720x720` on a 3440x1440
+monitor. `getScreenSize` says 3440x1440; **`getViewSize` says 1720x720** — exactly
+half. So widget coordinates live in a space about half the window's width, which
+confirms V33's fix was measuring the right thing and gives the real number at
+last. Worth noting `SettingsGui` is 1120x690 in a 720-tall canvas: thirty units
+of headroom, and anything taller would be off screen.
+
+### Rebuilding the city is not griefing
+
+`GRIEF ALARM: 628 shapes lost`, seconds after a rebuild. Clearing the old city
+*is* a mass deletion — it is just ours. An alarm that cries wolf every time the
+host lays out the city is one nobody will believe at the moment it matters, so
+`sv_buildFloor` quiets it for two minutes the way `/purge` and `/restore` already
+do.
+
+---
+
 ## V43 — the floor is the builder's while the clock is running
 
 *"theoretical explanation its because its connected to the rest. so look. the

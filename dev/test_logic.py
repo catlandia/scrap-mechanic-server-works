@@ -1518,8 +1518,8 @@ def only_one_interactive_gui_exists():
         ". They share self.cl.panelGui -- see Game.cl_showPanel.")
 
 
-def no_gui_callback_closes_its_own_panel():
-    """A click handler must never call close() -- directly or via a helper.
+def no_gui_callback_touches_its_own_panel():
+    """A widget callback must never close OR redraw its own panel.
 
     THE bug behind three versions of "the buttons dont work", and it is one line
     of ordering:
@@ -1553,9 +1553,22 @@ def no_gui_callback_closes_its_own_panel():
         for call in re.findall(r"cl_close\w+", body):
             if call != "cl_closeLater":
                 offenders.append(f"{name} calls {call}")
+        # A REDRAW is the same hazard. Building a new tree destroys every widget
+        # the old one had, including the one whose callback is running. For a
+        # click that silently killed the handler; for an EditBox, which also
+        # holds the keyboard focus, it crashed the game outright --
+        # "game crashed when I tried to change the number of build time",
+        # and the log ends mid-line with no error and no shutdown.
+        if "cl_showPanel(" in body:
+            offenders.append(f"{name} renders directly -- use cl_renderLater")
     assert not offenders, (
-        "a GUI callback closes a panel directly; everything after the close is "
-        "dead code. Use cl_closeLater. " + "; ".join(offenders))
+        "a GUI callback touches its own panel; the widget running the callback "
+        "is destroyed underneath it. Use cl_closeLater / cl_renderLater. "
+        + "; ".join(offenders))
+
+    assert "self:cl_drainRenders()" in game, (
+        "nothing drains the deferred render queue, so a queued redraw would "
+        "never happen")
 
     assert "self:cl_drainCloses()" in game, (
         "nothing drains the deferred close queue, so panels queued for closing "
@@ -1563,6 +1576,8 @@ def no_gui_callback_closes_its_own_panel():
     tick = game[game.index("function Game.client_onFixedUpdate"):]
     assert "cl_drainCloses" in tick[:600], (
         "cl_drainCloses is not called early in client_onFixedUpdate")
+    assert "cl_drainRenders" in tick[:600], (
+        "cl_drainRenders is not called early in client_onFixedUpdate")
 
 
 def every_command_a_panel_sends_is_answered():
@@ -2265,8 +2280,8 @@ def main():
     check("plumbing: every command a panel sends is answered",
           every_command_a_panel_sends_is_answered)
     check("plumbing: every button reaches a branch", every_button_reaches_a_branch)
-    check("plumbing: no gui callback closes its own panel",
-          no_gui_callback_closes_its_own_panel)
+    check("plumbing: no gui callback closes or redraws its own panel",
+          no_gui_callback_touches_its_own_panel)
     check("plumbing: the panels share one interactive gui",
           only_one_interactive_gui_exists)
 
