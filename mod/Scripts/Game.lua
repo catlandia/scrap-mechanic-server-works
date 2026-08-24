@@ -13,6 +13,7 @@ dofile( "$CONTENT_DATA/Scripts/EventHud.lua" )
 dofile( "$CONTENT_DATA/Scripts/EventGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/ConfirmGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/MyPlotGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/GuiProbe.lua" )
 -- IndexWidgets and friends. BasePlayer pulls this in too, but relying on load
 -- order for a global is how you get a nil at the worst moment.
 dofile( "$SURVIVAL_DATA/Scripts/util.lua" )
@@ -739,6 +740,10 @@ function Game.client_onCreate( self )
 		"cl_onAdminCommand", "Host: shortcut for /set plots on|off" )
 	sm.game.bindChatCommand( "/menu", {}, "cl_onAdminCommand",
 		"Open the Server Works menu" )
+	-- Client only, no server hop. Four combinations of who owns the callback and
+	-- where the widget tree came from; see GuiProbe.lua.
+	sm.game.bindChatCommand( "/guitest", {}, "cl_onGuiTest",
+		"Diagnostic: does a GUI button work here? Run it four times." )
 	sm.game.bindChatCommand( "/plotmenu", {}, "cl_onAdminCommand",
 		"Host: lay out the city, see what the numbers mean, then build it" )
 	sm.game.bindChatCommand( "/why", {}, "cl_onAdminCommand",
@@ -979,7 +984,7 @@ function Game.cl_closeLater( self, which )
 end
 
 local CLOSERS = {
-	menu = "cl_closeMenu", plots = "cl_closePlotsGui",
+	menu = "cl_closeMenu", plots = "cl_closePlotsGui", probe = "cl_closeProbe",
 	settings = "cl_closeSettingsGui", event = "cl_closeEventGui",
 	myplot = "cl_closeMyPlotGui", confirm = "cl_closeConfirm",
 }
@@ -999,6 +1004,94 @@ end
 -- GUI from inside its own callback, which is the bug this section is about.
 function Game.cl_forgetGui( self, field )
 	if self.cl then self.cl[field] = nil end
+end
+
+
+--[[ the button probe ]]
+
+-- /guitest. See GuiProbe.lua for why this exists: three versions of "the
+-- buttons dont work", three real bugs found and fixed, and they still do not
+-- work. This stops reasoning about it and measures it, one press at a time.
+--
+-- Client only. It never touches the server, so nothing about kicks, hosts,
+-- settings or the world can be blamed for the result.
+function Game.cl_onGuiTest( self, params )
+	if self.cl == nil then self.cl = {} end
+	local mode = ( self.cl.probeMode or 0 ) + 1
+	if mode > #GuiProbe.MODES then mode = 1 end
+	self.cl.probeMode = mode
+	self.cl.probeHits = nil
+	self.cl.probeLast = nil
+
+	local m = GuiProbe.MODES[mode]
+	sm.gui.chatMessage( string.format( "guitest %d/%d: %s", mode, #GuiProbe.MODES, m.what ) )
+	sm.gui.chatMessage( "  " .. GuiProbe.CanvasLine() )
+	sm.log.info( string.format( "[ServerWorks] guitest %d: %s owner=%s tree=%s  %s",
+		mode, m.what, m.owner, m.tree, GuiProbe.CanvasLine() ) )
+
+	if m.owner == "player" then
+		-- Hand the whole test to the player script, which is where every vanilla
+		-- jsonGui callback lives. CreativeGame reaches CreativePlayer exactly this
+		-- way for the unstuck popup (Data/Scripts/game/CreativeGame.lua:244).
+		self:cl_closeLater( "probe" )
+		local ok, err = pcall( sm.event.sendToPlayer, sm.localPlayer.getPlayer(),
+			"cl_e_swGuiProbe", { mode = mode } )
+		if not ok then
+			sm.gui.chatMessage( "  could not reach the player script: " .. tostring( err ) )
+		end
+		return
+	end
+
+	-- Whichever half is not being tested puts its panel away.
+	pcall( sm.event.sendToPlayer, sm.localPlayer.getPlayer(), "cl_e_swGuiProbe", {} )
+	self:cl_renderProbe()
+end
+
+function Game.cl_renderProbe( self )
+	local mode = self.cl.probeMode or 1
+	local m = GuiProbe.MODES[mode]
+	local state = { mode = mode, hits = self.cl.probeHits, last = self.cl.probeLast,
+		canvas = GuiProbe.CanvasLine() }
+
+	local root, err
+	if m.tree == "file" then
+		root, err = GuiProbe.BuildFromFile( state, "cl_onProbeClick", "cl_onProbeClose" )
+	else
+		root = GuiProbe.BuildLua( state, "cl_onProbeClick", "cl_onProbeClose" )
+	end
+	if root == nil then
+		sm.gui.chatMessage( "  could not build the probe: " .. tostring( err ) )
+		return
+	end
+
+	if self.cl.probeGui == nil or not sm.exists( self.cl.probeGui ) then
+		self.cl.probeGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
+	end
+	self.cl.probeGui:render( root )
+end
+
+-- The whole point. If this never runs, a Game script does not receive jsonGui
+-- clicks, and every panel in the mod has to move to the player script.
+function Game.cl_onProbeClick( self, widgetName, data )
+	self.cl.probeHits = ( self.cl.probeHits or 0 ) + 1
+	self.cl.probeLast = tostring( widgetName )
+	local kind = ( type( data ) == "table" ) and "with data" or ( "no data (" .. type( data ) .. ")" )
+	sm.gui.chatMessage( string.format( "CLICK RECEIVED on the GAME script: %s, %s",
+		tostring( widgetName ), kind ) )
+	sm.log.info( string.format( "[ServerWorks] guitest: GAME script click %s %s",
+		tostring( widgetName ), kind ) )
+	self:cl_renderProbe()
+end
+
+function Game.cl_onProbeClose( self )
+	self:cl_forgetGui( "probeGui" )
+end
+
+function Game.cl_closeProbe( self )
+	if self.cl == nil then return end
+	local gui = self.cl.probeGui
+	self.cl.probeGui = nil
+	if gui and sm.exists( gui ) then pcall( function() gui:close() end ) end
 end
 
 
@@ -1024,6 +1117,11 @@ end
 -- would otherwise be drawn on top of it. Everything it opens carries a BACK
 -- button that comes straight back here.
 function Game.cl_onMenuClick( self, widgetName, data )
+	-- Traced end to end, because "it does nothing" has been the whole report
+	-- three times and there is no error in the log to read. Four lines, one per
+	-- hop; whichever is the last one printed is where it stops.
+	sm.log.info( string.format( "[ServerWorks] gui 1/4 menu click: widget=%s data=%s",
+		tostring( widgetName ), type( data ) ) )
 	if type( data ) ~= "table" then return end
 	if data.action ~= "close" then
 		self.network:sendToServer( "sv_n_menuOpen", { what = data.action } )
@@ -1050,6 +1148,8 @@ end
 function Game.sv_n_menuOpen( self, data, player )
 	local isHost = ( player == sm.player.getHostPlayer() )
 	local what = data.what
+	sm.log.info( string.format( "[ServerWorks] gui 2/4 server got menu open: what=%s host=%s",
+		tostring( what ), tostring( isHost ) ) )
 	if what == "settings" and isHost then
 		self:sv_openSettingsGui( player, "safety", 1 )
 	elseif what == "city" and isHost then
@@ -1106,10 +1206,12 @@ function Game.sv_openPlotsGui( self, player, status )
 		cfg.claimed = {}
 	end
 	cfg.status = status
+	sm.log.info( "[ServerWorks] gui 3/4 sending the city panel" )
 	self.network:sendToClient( player, "client_openPlotsGui", cfg )
 end
 
 function Game.client_openPlotsGui( self, cfg )
+	sm.log.info( "[ServerWorks] gui 4/4 client rendering the city panel" )
 	if self.cl == nil then self.cl = {} end
 	self.cl.plotCfg = cfg
 	if self.cl.plotsGui == nil or not sm.exists( self.cl.plotsGui ) then

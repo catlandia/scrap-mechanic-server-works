@@ -1,4 +1,5 @@
 dofile( "$GAME_DATA/Scripts/game/CreativePlayer.lua" )
+dofile( "$CONTENT_DATA/Scripts/GuiProbe.lua" )
 
 Player = class( CreativePlayer )
 
@@ -48,4 +49,63 @@ function Player.server_onCreate( self )
 			player.publicData.perks = {}
 		end
 	end
+end
+
+--[[ the button probe, player half ]]
+
+-- The other side of /guitest. Every jsonGui callback in the base game belongs to
+-- a script like this one -- a player, an interactable, a character -- and not
+-- one belongs to a Game script. If the buttons work here and not there, that is
+-- the answer, and every panel in the mod moves.
+function Player.cl_e_swGuiProbe( self, params )
+	self.cl = self.cl or {}
+	-- No mode means "put yours away, the game script is taking this one".
+	if type( params ) ~= "table" or params.mode == nil then
+		local gui = self.cl.probeGui
+		self.cl.probeGui = nil
+		if gui and sm.exists( gui ) then pcall( function() gui:close() end ) end
+		return
+	end
+	self.cl.probeMode = params.mode
+	self.cl.probeHits = nil
+	self.cl.probeLast = nil
+	self:cl_renderProbe()
+end
+
+function Player.cl_renderProbe( self )
+	local mode = self.cl.probeMode or 1
+	local m = GuiProbe.MODES[mode]
+	local state = { mode = mode, hits = self.cl.probeHits, last = self.cl.probeLast,
+		canvas = GuiProbe.CanvasLine() }
+
+	local root, err
+	if m.tree == "file" then
+		root, err = GuiProbe.BuildFromFile( state, "cl_onProbeClick", "cl_onProbeClose" )
+	else
+		root = GuiProbe.BuildLua( state, "cl_onProbeClick", "cl_onProbeClose" )
+	end
+	if root == nil then
+		sm.gui.chatMessage( "  could not build the probe: " .. tostring( err ) )
+		return
+	end
+
+	if self.cl.probeGui == nil or not sm.exists( self.cl.probeGui ) then
+		self.cl.probeGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
+	end
+	self.cl.probeGui:render( root )
+end
+
+function Player.cl_onProbeClick( self, widgetName, data )
+	self.cl.probeHits = ( self.cl.probeHits or 0 ) + 1
+	self.cl.probeLast = tostring( widgetName )
+	local kind = ( type( data ) == "table" ) and "with data" or ( "no data (" .. type( data ) .. ")" )
+	sm.gui.chatMessage( string.format( "CLICK RECEIVED on the PLAYER script: %s, %s",
+		tostring( widgetName ), kind ) )
+	sm.log.info( string.format( "[ServerWorks] guitest: PLAYER script click %s %s",
+		tostring( widgetName ), kind ) )
+	self:cl_renderProbe()
+end
+
+function Player.cl_onProbeClose( self )
+	if self.cl then self.cl.probeGui = nil end
 end

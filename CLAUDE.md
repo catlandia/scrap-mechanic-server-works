@@ -327,6 +327,28 @@ variants, with `sm.areaTrigger.filter.dynamicBody + staticBody`. Vanilla's Chall
 already ships an `obj_interactive_buildarea` part using exactly this
 (`BuilderWorld.server_onInteractableCreated`).
 
+### Everything a GUI button needs is in docs/BUTTONS.md
+
+Three versions have gone on "the buttons dont work" and each fix was a real bug
+that turned out not to be the whole story. `docs/BUTTONS.md` is the checklist,
+with the vanilla file and line behind every rule, and it separates what is
+**confirmed** from what is **not yet known**. Read it before touching a panel.
+
+Two things about our GUIs that **no vanilla GUI does**, and neither is settled:
+
+1. **Our callbacks live on the Game script.** Every `onClick` in the base game
+   belongs to a player script, an interactable or a character — never a Game
+   script. A Game script is already special (it has no world), so "it also does
+   not get GUI callbacks" is the kind of thing this engine does silently.
+2. **Our widget trees are built in Lua.** Every vanilla jsonGui is
+   `sm.json.open()`ed from a `.gui` file. Nothing in the base game hands
+   `render()` a table it built itself.
+
+`/guitest` settles both: four runs, four combinations of owner and tree, and the
+panel rewrites itself to say CLICK RECEIVED when a press lands. The real `/menu`
+path is traced as `gui 1/4` .. `gui 4/4`; the last line printed is where it
+stops.
+
 ### NEVER close a json GUI from inside its own callback
 
 **This one bug accounted for every "the buttons dont work" report in the
@@ -498,6 +520,8 @@ credit it with fixing the thing that actually degraded.
     mod/Scripts/PlotMarker.lua  "find my plot", on the game's own compass HUD
                                 driven from Player.lua -- compassSetIconWorldPosition
                                 is world-dependent and Game.lua has no world
+
+    mod/Scripts/GuiProbe.lua    /guitest -- the button experiment, client only
 
     dev/check_all.py            all four checks below; --sync installs afterwards
     dev/check_lua.py            compiles every mod script through a real Lua parser

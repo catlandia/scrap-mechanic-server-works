@@ -1,40 +1,62 @@
 # Next session
 
-V30 is installed. **Restart Scrap Mechanic** — a running game will not pick it up.
-Then, always:
+V31 is installed. **Restart Scrap Mechanic**, then do this first:
 
-    python dev/check_all.py --sync
+## Run /guitest four times. It takes a minute and it ends the guessing.
 
-## What was actually wrong with the buttons
+Three versions have gone on "the buttons dont work". Each fix was a real bug and
+none of them was the whole story, so this stops reasoning about it and measures
+it.
 
-Closing a json GUI from inside its own click callback **kills the rest of the
-callback**. The hub menu did
+Type `/guitest`. A small panel appears. **Press both buttons on it.** If the
+panel rewrites itself to say **CLICK RECEIVED**, that arrangement works. Then
+type `/guitest` again for the next test. Four tests:
 
-    self:cl_closeMenu()                                 -- destroys the widget
-    self.network:sendToServer( "sv_n_menuOpen", ... )   -- never runs
+| test | what it is |
+|---|---|
+| 1 | Game script, tree built in Lua — exactly what the mod ships today |
+| 2 | Game script, tree loaded from vanilla's own `.gui` file |
+| 3 | Player script, tree built in Lua |
+| 4 | Player script, tree loaded from vanilla's own `.gui` file |
 
-so the menu closed and the request was never sent. Every host feature is reached
-through the hub, which is why *nothing* on it ever opened — CITY LAYOUT, SERVER
-SETTINGS, EVENT CLOCK, all of them. It is also, eight versions later, the same
-bug as "I am the host why cant I access features".
+Tell me which ones said CLICK RECEIVED. That single answer decides the fix:
 
-There is no Lua error for it. The only sign was an engine assert sitting in the
-logs for weeks: `ASSERT: 'itrStackWalk != ...' : LuaVM.cpp:716`.
+- **1 works** → buttons are fine and the problem is downstream (the trace below
+  will say where).
+- **1 fails, 3 works** → a Game script does not receive GUI clicks, and every
+  panel moves to the player script.
+- **1 fails, 2 works** → a hand-built widget tree is the problem and the panels
+  become `.gui` files.
+- **nothing works** → it is environmental, and the canvas line the probe prints
+  is the next clue.
 
-Closes are now queued and happen on the next tick, so a widget can never be
-destroyed while its own callback is running. A check fails if any handler closes
-directly.
+Test 1 has two buttons on purpose: one carries a data table, one does not. If
+only the second works, the data table is what breaks it.
 
-**Try:** `/menu` → CITY LAYOUT. Then SERVER SETTINGS. Then EVENT CLOCK. All three
-should open. Everything V29 built — the status lines, BACK, the two-step delete —
-has never actually been seen, because the panels were not opening.
+## And the real menu is traced now
 
-## Also fixed
+Clicking anything on `/menu` writes four lines to `Logs/game-*.log`. The last one
+printed is where it stops:
 
-- **The compass marker**, third attempt. It was in the Game script (no world),
-  then the player script (no world either — the same warning came back word for
-  word). It is in `World.lua` now, sent to one client the way vanilla sends a
-  beacon. Claim a plot, walk off, press **FIND MY PLOT**.
+    [ServerWorks] gui 1/4 menu click: widget=B6 data=table
+    [ServerWorks] gui 2/4 server got menu open: what=city host=true
+    [ServerWorks] gui 3/4 sending the city panel
+    [ServerWorks] gui 4/4 client rendering the city panel
+
+If all four print, the panel is being built and rendered and the problem is that
+you cannot see it — wrong coordinates, wrong layer, or drawn behind something.
+
+## Everything known about buttons is written down
+
+`docs/BUTTONS.md` — the tree, the callback signatures, the lifecycle, the
+coordinate space, and the close rule, each with the vanilla file and line it came
+from. It marks what is confirmed and what `/guitest` is there to settle.
+
+## What V30 fixed, which you have not been able to see yet
+
+Closing a json GUI from inside its own click callback kills the rest of the
+callback, so the hub menu closed and never sent the request. That was real and it
+is fixed. Whether it was the last thing in the way is what `/guitest` answers.
 
 ## Still to verify from V29 — none of it has been seen yet
 
