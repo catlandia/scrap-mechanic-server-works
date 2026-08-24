@@ -315,14 +315,19 @@ Event.LABELS = {
 --   prep    display: buildable false, but usable TRUE. "the prep time just
 --           doesnt allow you to build. it maintains other rules."
 --   build   open, and buildopen true
---   buffer  display again: building has closed, nothing is frozen yet
+--   buffer  polish: paint, rewire and drive what you built, but no placing
+--           and no breaking
 --   ended   locked, and snapshotted
 --   off     open, and the host has the controls back
 Event.PROTECTION = {
 	off = "open",
 	prep = "display",
 	build = "open",
-	buffer = "display",
+	-- Not "display". REPORTED as an idea and it is a good one: "in bufer time you
+	-- can paint. edit settings. use controllers. and other stuff like that. but
+	-- not place or brake blocks. so you can polish some mechanic stuff if you
+	-- messed it up a bit." That is Protection's `polish` profile.
+	buffer = "polish",
 	ended = "locked",
 }
 

@@ -304,6 +304,24 @@ table:
 `enableCreations = false` on every vanilla creative world — so it does not mean
 player blueprints.
 
+### One body's `childs` array IS the weld group
+
+**MEASURED**, from a reference creation the owner built in game and saved so the
+structure could be read directly — *"concrete panel with metal all around it"*,
+`Blueprints/038852d7`. Nine children, **one body**, concrete (`a6c6ce30`) and
+metal 2 (`1016cafc`) side by side in the same array:
+
+    bodies[0].childs = [ {metal2 21x1}, {metal2 1x22}, {metal2 1x21},
+                         {concrete 16x12}, {metal2 20x1}, {concrete 8x8}, ... ]
+
+That is the whole answer to "how are blocks connected in Scrap Mechanic".
+**Same `childs` array = welded. Separate blueprints = separate bodies that merely
+touch**, however perfectly they line up. Materials are irrelevant to it.
+
+So each plot is now one body: a concrete pad with a metal ring welded round it,
+which is exactly the reference creation. `Plots.BORDER` is the ring width; it
+costs the outer ring of buildable area, so a 20-block plot gives an 18-block pad.
+
 ### The city is one platform, and it cannot be one body
 
 REPORTED three sessions running: *"the plot is not attached to the rest of the
@@ -314,7 +332,10 @@ the geometry is a gapless partition over 13 configurations and it always was.
 The city just *read* as a hundred loose tiles, because that is what it was: one
 creation per plot, plus one for the streets.
 
-**They cannot be welded into one body.** A plot slab has to stay its own creation
+**The plots cannot be welded into the deck**, and this is forced rather than
+chosen: body permission flags are per-BODY, so **one plot per body is the only
+reason plot ownership can exist at all.** Weld the city together and it becomes
+buildable by everyone or by nobody. A plot slab also has to stay its own creation
 because a player's build welds onto it, and `World.sv_plotOfBody` — which is what
 makes per-plot snapshot and per-plot restore possible at all — finds a build by
 asking which plot its *body* sits on. Weld the city together and every player's

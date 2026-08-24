@@ -10,6 +10,86 @@ was most of them.
 
 ---
 
+## V34 — buffer time polishes, the lift is everyone's, and a plot is one welded body
+
+### Buffer time is for polishing, not waiting
+
+Asked for as: *"in bufer time you can paint. edit settings. use controllers. and
+other stuff like that. but not place or brake blocks. so you can polish some
+mechanic stuff if you messed it up a bit."*
+
+That is a new protection profile, `polish` — the open profile with the two
+destructive verbs removed:
+
+| | build | erase | paint | connect | use | drive |
+|---|---|---|---|---|---|---|
+| `open` (build time) | yes | yes | yes | yes | yes | yes |
+| **`polish` (buffer)** | **no** | **no** | yes | yes | yes | yes |
+| `display` (prep) | no | no | no | no | yes | no |
+| `locked` (ended) | no | no | no | no | no | no |
+
+Plot rules still apply during it: somebody else's occupied plot is still locked
+to you. Only what *being allowed* lets you do changes.
+
+**And the check caught a real bug on the way in.** `matchesProfile` — the cheap
+sentinel that lets the patrol skip bodies already in the right state — compared
+only buildable, destructable, usable and erasable. `polish` and `display` agree
+on all four, so prep → buffer would have found every body "already correct" and
+applied nothing: buffer time would have looked identical to prep. That is the
+V15 bug exactly, in a new profile. The sentinel now also reads paintable and
+connectable, and the test reads the field list *out of `matchesProfile` itself*
+so the two can never drift again.
+
+### The lift belongs to everyone
+
+*"okay look. for this fix of the lift. allow everyone to use the lift. dont lock
+it. because I still cant interact with it."*
+
+`hostlift` defaulted **on**, and the host bypass deliberately does not cover
+host-only tools — so with the host restriction switched on as well, the lift was
+being pulled out of everyone's hands, the host's included, every 2 ticks by
+`forceTool( nil )`. Default is off now.
+
+A default alone would not have reached anyone who has already run the server,
+because their value is written down. So settings gained **migrations**: one-time
+changes that apply to a settings file that already exists, recorded in the same
+file so they run once.
+
+### A plot is one welded body of concrete and metal
+
+**MEASURED**, and this is the useful part. The owner built a reference creation
+in game and saved it so its structure could be read directly — *"concrete panel
+with metal all around it"*, `Blueprints/038852d7`. One body, nine children,
+concrete and metal 2 side by side in the same `childs` array.
+
+That is the answer to "how are blocks connected in Scrap Mechanic": **one body's
+`childs` array IS the weld group.** Two separate blueprints are two separate
+bodies that merely touch, however perfectly they line up. Material has nothing to
+do with it.
+
+So the border moved *inside* the plot. Each plot is now a single welded body — a
+concrete pad with a metal ring all the way round it, exactly the reference
+creation. It costs the outer ring of buildable area: a 20-block plot gives an
+18-block pad.
+
+**The plot still cannot be welded to the deck, and that is forced rather than
+chosen.** Body permission flags are per-BODY — there is no
+`setBuildableBy( player )` — so one plot per body is the only reason plot
+ownership can exist at all. Weld the city into one body and it is buildable by
+everyone or by nobody.
+
+### The sweep now says what it decided
+
+`"99 bodies, 99 changed"` never answered the question that matters. It now reads
+
+    event build -> protection open (99 bodies, 99 changed) [locked 2, open 96, sweep 1]
+
+so a plot slab that comes out `locked` when it should be `open` says so in the
+log — which is exactly the open report, *"I cant build on my plot even when the
+time has started"*.
+
+---
+
 ## V32 — one GUI, not six
 
 **REPORTED**, with a screenshot of the host section of the menu: *"these buttons

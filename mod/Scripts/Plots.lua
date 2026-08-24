@@ -582,6 +582,32 @@ Plots.DECK_Z = 4        -- blocks above ground that the city deck sits at
 -- while every plot stays the separate creation the rest of the system needs.
 Plots.BASE_Z = Plots.DECK_Z - 1
 
+-- How wide a plot's own metal border is, in blocks.
+--
+-- MEASURED, from a reference creation the owner built and saved in game so the
+-- structure could be read directly -- "concrete panel with metal all around it",
+-- Blueprints/038852d7. It came back as ONE body with nine children, concrete
+-- (a6c6ce30) and metal 2 (1016cafc) side by side in the same `childs` array:
+--
+--   bodies[0].childs = [ {metal2 21x1}, {metal2 1x22}, {metal2 1x21},
+--                        {concrete 16x12}, {metal2 20x1}, {concrete 8x8}, ... ]
+--
+-- That is the whole answer to "how are blocks connected in Scrap Mechanic":
+-- **one body's childs array IS the weld group.** Two materials in the same array
+-- are one welded piece; two separate blueprints are two separate bodies that
+-- merely touch, however perfectly they line up.
+--
+-- So the border moved INSIDE the plot. Each plot is now a single body -- a
+-- concrete panel with a metal ring welded all the way round it, which is exactly
+-- the reference creation. It costs the outer ring of buildable area: a 20-block
+-- plot gives an 18-block concrete pad.
+--
+-- The plot cannot be welded to the DECK as well, and that is not a choice. Body
+-- permission flags are per-BODY -- there is no setBuildableBy( player ) -- so
+-- one plot per body is the only reason plot ownership can exist at all. Weld the
+-- city into one body and it becomes buildable by everyone or by nobody.
+Plots.BORDER = 1
+
 -- Every uuid the city is made of. sv_clearFloor clears by SHAPE against this
 -- set rather than by body position: a plot slab with a build welded onto it has
 -- its body position dragged up above any height test, so the old test missed it
@@ -619,9 +645,29 @@ local DECK_MATERIAL = {
 function Plots.sv_plotBlueprint( self, col, row )
 	local r = Layout.plotRect( self.layout, col, row )
 	if r == nil then return nil end
+
+	local b = Plots.BORDER
+	-- A plot too small to carry a ring is left as a plain slab rather than
+	-- turned into a block of solid metal.
+	if b <= 0 or r.w <= b * 2 or r.h <= b * 2 then
+		return blueprint{
+			child( Plots.CONCRETE, Plots.CONCRETE_COLOR,
+				r.x, r.y, Plots.DECK_Z, r.w, r.h, 1 ),
+		}
+	end
+
+	-- Four metal strips and one concrete pad, all in ONE body's childs array,
+	-- which is what welds them. The strips are cut so no two overlap: top and
+	-- bottom run the full width, left and right fill only what is between them.
+	local z = Plots.DECK_Z
+	local M, MC = Plots.METAL2, Plots.METAL2_COLOR
 	return blueprint{
+		child( M, MC, r.x, r.y, z, r.w, b, 1 ),                      -- bottom
+		child( M, MC, r.x, r.y + r.h - b, z, r.w, b, 1 ),            -- top
+		child( M, MC, r.x, r.y + b, z, b, r.h - b * 2, 1 ),          -- left
+		child( M, MC, r.x + r.w - b, r.y + b, z, b, r.h - b * 2, 1 ),-- right
 		child( Plots.CONCRETE, Plots.CONCRETE_COLOR,
-			r.x, r.y, Plots.DECK_Z, r.w, r.h, 1 ),
+			r.x + b, r.y + b, z, r.w - b * 2, r.h - b * 2, 1 ),      -- the pad
 	}
 end
 

@@ -158,7 +158,15 @@ Settings.SCHEMA = {
 	{ key = "connecttool", kind = "bool", default = true, help = "allow the connect tool" },
 	{ key = "weldtool", kind = "bool", default = true, help = "allow the weld tool" },
 	{ key = "lift", kind = "bool", default = true, help = "allow the lift" },
-	{ key = "hostlift", kind = "bool", default = true,
+	-- Default OFF. "okay look. for this fix of the lift. allow everyone to use
+	-- the lift. dont lock it. because I still cant interact with it."
+	--
+	-- It defaulted ON, and the host bypass does not cover HOST_ONLY tools -- that
+	-- is the whole point of them -- so with the host restriction switched on as
+	-- well, the lift was being pulled out of everyone's hands including the
+	-- host's, every 2 ticks, by forceTool( nil ). The switch is still here for a
+	-- host who wants it later; it just is not the default any more.
+	{ key = "hostlift", kind = "bool", default = false,
 	  help = "only the host may use the lift (it spawns whole creations)" },
 
 	{ key = "plots", kind = "bool", default = false, help = "restrict building to owned plots" },
@@ -250,6 +258,37 @@ end
 -- the apply hooks (sm.fire.setFireLimit, for one) are world-dependent and a Game
 -- script has no world -- calling them there throws. The World calls
 -- Settings.Sv_ApplyAll() once it exists.
+-- One-time changes to settings that are ALREADY WRITTEN DOWN.
+--
+-- A default only ever applies to a settings file that does not have the key yet.
+-- Anybody who has run the server once has the old value saved, so changing a
+-- default reaches new hosts and nobody else. A migration is how a decision like
+-- "the lift is not host-only any more" actually lands.
+--
+-- Each runs once, and the fact that it ran is recorded in the same file.
+Settings.MIGRATIONS = {
+	{ key = "lift_free_v34", run = function( values )
+		values.hostlift = false
+	end },
+}
+
+function Settings.Sv_Migrate()
+	local values = Settings.values
+	values.migrations = ( type( values.migrations ) == "table" ) and values.migrations or {}
+	local ran = {}
+	for _, m in ipairs( Settings.MIGRATIONS ) do
+		if not values.migrations[m.key] then
+			local ok, err = pcall( m.run, values )
+			values.migrations[m.key] = true
+			ran[#ran + 1] = m.key .. ( ok and "" or ( " FAILED: " .. tostring( err ) ) )
+		end
+	end
+	if #ran > 0 then
+		Settings.Sv_Save()
+		sm.log.info( "[ServerWorks] settings migrated: " .. table.concat( ran, ", " ) )
+	end
+end
+
 function Settings.Sv_Load( applyNow )
 	Settings.values = {}
 	local ok, exists = pcall( sm.json.fileExists, Settings.PATH )
@@ -264,6 +303,7 @@ function Settings.Sv_Load( applyNow )
 			Settings.values[row.key] = row.default
 		end
 	end
+	Settings.Sv_Migrate()
 	if applyNow ~= false then
 		Settings.Sv_ApplyAll()
 	end

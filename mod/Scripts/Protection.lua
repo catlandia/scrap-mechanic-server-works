@@ -8,7 +8,8 @@
 --
 -- So: one full sweep the instant the mode changes -- which is what makes
 -- /lockdown a real panic button -- and then a slow patrol whose only job is to
--- catch bodies created since. The patrol reads two cheap getters as a sentinel
+-- catch bodies created since. The patrol reads a handful of cheap getters as a
+-- sentinel
 -- and skips all eight setters when a body already matches, so in steady state a
 -- body costs two Lua calls per pass and nothing else.
 
@@ -127,6 +128,29 @@ local PROFILES = {
 	},
 }
 
+-- BUFFER TIME. Asked for as: "in bufer time you can paint. edit settings. use
+-- controllers. and other stuff like that. but not place or brake blocks. so you
+-- can polish some mechanic stuff if you messed it up a bit."
+--
+-- So it is the open profile with the two destructive verbs taken out. Everything
+-- that adjusts a build you have already made stays: repaint it, rewire a
+-- controller, sit in the seat and drive it, press the buttons. What you cannot
+-- do is add a block or take one away, which is what makes the buffer a judging
+-- window rather than extra build time.
+--
+-- convertibleToDynamic stays TRUE on purpose -- "use controllers" means the
+-- thing has to be able to move.
+PROFILES.polish = {
+	buildable = false,
+	erasable = false,
+	connectable = true,
+	paintable = true,
+	liftable = false,
+	usable = true,
+	destructable = false,
+	convertibleToDynamic = true,
+}
+
 -- open, but explosives and the sledgehammer can actually break things.
 PROFILES.open_destructible = {
 	buildable = true,
@@ -139,7 +163,7 @@ PROFILES.open_destructible = {
 	convertibleToDynamic = true,
 }
 
-Protection.MODES = { "open", "locked", "display", "sweep" }
+Protection.MODES = { "open", "locked", "display", "sweep", "polish" }
 
 local function isLockedMode( mode )
 	return mode == "locked" or mode == "display"
@@ -179,30 +203,51 @@ local function matchesProfile( body, p )
 		and body:isDestructable() == p.destructable
 		and body:isUsable() == p.usable
 		and body:isErasable() == p.erasable
+		-- paintable and connectable are here for `polish`, which agrees with
+		-- `display` on all four flags above. Without them, prep -> buffer found
+		-- every body already correct and applied nothing, so buffer time never
+		-- actually became paintable. Exactly the V15 bug in a new profile, and
+		-- dev/test_logic.py caught it before the game did -- it reads the field
+		-- list straight out of this function, so the two cannot drift.
+		and body:isPaintable() == p.paintable
+		and body:isConnectable() == p.connectable
 end
 
 -- Which profile a given body should be under. /lockdown deliberately outranks
 -- everything: when the host or the grief alarm seals the world, a plot owner
 -- standing on their own plot must not punch a hole in it.
+-- Returns the profile AND its name, so a sweep can say what it decided rather
+-- than only how many bodies it touched. "99 bodies, 99 changed" does not tell
+-- you whether the plots came out buildable; "open 96, locked 2, sweep 1" does.
 local function profileFor( self, body )
 	if isLockedMode( self.mode ) then
-		return PROFILES[self.mode]
+		return PROFILES[self.mode], self.mode
 	end
-	local openProfile = ( Settings.Get( "destructible" ) == true )
-		and PROFILES.open_destructible or PROFILES.open
+	-- What "you may build here" resolves to depends on the MODE, not just on the
+	-- settings. In polish mode a plot you are allowed to touch gets the polish
+	-- profile rather than the open one -- so buffer time keeps every plot rule
+	-- intact (somebody else's occupied plot is still locked to you) and only
+	-- changes what being allowed lets you DO.
+	local openProfile, openName = PROFILES.open, "open"
+	if Settings.Get( "destructible" ) == true then
+		openProfile, openName = PROFILES.open_destructible, "open_destructible"
+	end
+	if self.mode == "polish" then
+		openProfile, openName = PROFILES.polish, "polish"
+	end
 	if self.resolver then
 		local verdict = self.resolver( body )
 		-- true/false for the common two, or a profile name for anything else.
-		if verdict == true then return openProfile end
-		if verdict == false then return PROFILES.locked end
+		if verdict == true then return openProfile, openName end
+		if verdict == false then return PROFILES.locked, "locked" end
 		if type( verdict ) == "string" and PROFILES[verdict] then
-			return PROFILES[verdict]
+			return PROFILES[verdict], verdict
 		end
 	end
 	if self.mode == "open" then
-		return openProfile
+		return openProfile, openName
 	end
-	return PROFILES[self.mode]
+	return PROFILES[self.mode], self.mode
 end
 
 function Protection.sv_onCreate( self, storedMode )
@@ -243,10 +288,12 @@ function Protection.sv_setMode( self, mode )
 	self.mode = mode
 	local bodies = sm.body.getAllBodies()
 	local changed = 0
+	local tally = {}
 
 	for _, body in ipairs( bodies ) do
 		if sm.exists( body ) and not isGhostBody( body ) then
-			local p = profileFor( self, body )
+			local p, name = profileFor( self, body )
+			tally[name] = ( tally[name] or 0 ) + 1
 			if not matchesProfile( body, p ) then
 				applyProfile( body, p )
 				changed = changed + 1
@@ -256,7 +303,18 @@ function Protection.sv_setMode( self, mode )
 
 	self.cursor = 1
 	self.lastSweep = { bodies = #bodies, changed = changed }
-	return true, string.format( "%d bodies, %d changed", #bodies, changed )
+
+	-- What the sweep actually decided, per profile. This is the line that says
+	-- whether a plot slab came out buildable, which "N bodies, N changed" never
+	-- did -- and "I cant build on my plot even when the time has started" is
+	-- exactly the question it answers.
+	local parts = {}
+	for name, n in pairs( tally ) do
+		parts[#parts + 1] = string.format( "%s %d", name, n )
+	end
+	table.sort( parts )
+	return true, string.format( "%d bodies, %d changed [%s]",
+		#bodies, changed, table.concat( parts, ", " ) )
 end
 
 -- The patrol. Only ever touches bodies that do not already match, which after

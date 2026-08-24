@@ -334,15 +334,122 @@ def the_sentinel_tells_every_profile_apart():
     body = src[src.index("local PROFILES = {"):src.index("Protection.MODES")]
     lua.execute(body.replace("local PROFILES", "PROFILES", 1))
     profiles = lua.globals().PROFILES
+
+    # Read the sentinel's OWN field list out of matchesProfile rather than
+    # restating it here. A test that keeps its own copy of the list is a test
+    # that stops matching the code -- which is how the polish profile came
+    # within one commit of being silently inert.
+    import re
+    fn = src[src.index("local function matchesProfile"):]
+    fn = fn[:fn.index("\nend")]
+    fields = re.findall(r"== p\.(\w+)", fn)
+    assert len(fields) >= 4, f"could not read the sentinel's fields: {fields}"
+
     seen = {}
     for name in profiles:
         p = profiles[name]
-        key = (p["buildable"], p["destructable"], p["usable"], p["erasable"])
+        key = tuple(p[f] for f in fields)
         assert key not in seen, (
             f"profiles {seen[key]!r} and {name!r} are indistinguishable to the "
-            f"sentinel {key} -- switching between them would silently do nothing")
+            f"sentinel {dict(zip(fields, key))} -- switching between them would "
+            "silently do nothing, because matchesProfile would find every body "
+            "already correct")
         seen[key] = name
-    assert len(seen) >= 5, f"expected five profiles, found {len(seen)}"
+    assert len(seen) >= 6, f"expected six profiles, found {len(seen)}"
+
+
+def a_plot_is_one_welded_body_of_concrete_and_metal():
+    """The plot blueprint is concrete with a metal ring, in ONE childs array.
+
+    MEASURED from a reference creation the owner built and saved in game --
+    "concrete panel with metal all around it", Blueprints/038852d7. It came back
+    as one body whose childs array holds concrete (a6c6ce30) and metal 2
+    (1016cafc) side by side. That is how Scrap Mechanic represents a weld: one
+    body's childs array IS the weld group. Two separate blueprints are two
+    separate bodies that merely touch, however well they line up.
+
+    The plot cannot also be welded to the deck, and that is not a preference:
+    body permission flags are per-BODY, so one plot per body is the only reason
+    plot ownership can exist at all.
+    """
+    lua, plots = plots_lua()
+    P = lua.globals().Plots
+    CONCRETE, METAL2 = str(P.CONCRETE), str(P.METAL2)
+    L = lua.globals().Layout
+
+    for col, row in [(0, 0), (3, 7), (9, 9), (2, 4)]:
+        r = L.plotRect(plots["layout"], col, row)
+        if r is None:
+            continue
+        bp = P.sv_plotBlueprint(plots, col, row)
+        assert bp is not None, f"plot {col},{row} produced no blueprint"
+
+        bodies = list(bp["bodies"].values())
+        assert len(bodies) == 1, (
+            f"plot {col},{row} is {len(bodies)} bodies. Separate bodies do not "
+            "weld, however perfectly they line up")
+        childs = list(bodies[0]["childs"].values())
+
+        mats = {str(c["shapeId"]) for c in childs}
+        assert CONCRETE in mats and METAL2 in mats, (
+            f"plot {col},{row} is only {mats} -- the point is concrete welded to "
+            "metal in the same childs array")
+
+        # the five pieces must tile the plot rect exactly: no overlap, no hole
+        x0, y0 = int(r["x"]), int(r["y"])
+        w, h = int(r["w"]), int(r["h"])
+        claimed = {}
+        for c in childs:
+            b, pos = c["bounds"], c["pos"]
+            for dx in range(int(b["x"])):
+                for dy in range(int(b["y"])):
+                    cell = (int(pos["x"]) + dx, int(pos["y"]) + dy)
+                    assert cell not in claimed, (
+                        f"plot {col},{row}: block {cell} is claimed twice -- two "
+                        "shapes in one block is how an import loses one of them")
+                    claimed[cell] = str(c["shapeId"])
+        assert len(claimed) == w * h, (
+            f"plot {col},{row}: covered {len(claimed)} blocks of {w * h}")
+
+        # the ring really is a ring: every edge block metal, every inner concrete
+        border = int(P.BORDER)
+        for (bx, by), mat in claimed.items():
+            edge = (bx < x0 + border or bx >= x0 + w - border
+                    or by < y0 + border or by >= y0 + h - border)
+            want = METAL2 if edge else CONCRETE
+            assert mat == want, (
+                f"plot {col},{row}: block ({bx},{by}) is "
+                f"{'metal' if mat == METAL2 else 'concrete'} and should not be")
+
+
+def buffer_time_lets_you_polish_but_not_place_or_break():
+    """The buffer phase resolves to a profile that adjusts, never builds.
+
+    Asked for as: "in bufer time you can paint. edit settings. use controllers.
+    and other stuff like that. but not place or brake blocks. so you can polish
+    some mechanic stuff if you messed it up a bit."
+    """
+    lua = fresh("Settings.lua", "Protection.lua", "Layout.lua", "Event.lua")
+    src = io.open(SCRIPTS / "Protection.lua", encoding="utf-8").read()
+    body = src[src.index("local PROFILES = {"):src.index("Protection.MODES")]
+    lua.execute(body.replace("local PROFILES", "PROFILES", 1))
+
+    mode = lua.globals().Event.PROTECTION["buffer"]
+    assert mode == "polish", (
+        f"buffer resolves to {mode!r}; it must be a profile that allows "
+        "adjusting a build without placing or breaking blocks")
+
+    p = lua.globals().PROFILES[mode]
+    for flag, want, why in [
+        ("buildable", False, "buffer time is not extra build time"),
+        ("erasable", False, "no breaking blocks once the clock has run out"),
+        ("destructable", False, "nor with a sledgehammer or an explosive"),
+        ("paintable", True, "repainting is the point of a polish window"),
+        ("connectable", True, "so a controller can be rewired"),
+        ("usable", True, "seats, buttons and switches so you can test it"),
+        ("convertibleToDynamic", True, "'use controllers' means it has to move"),
+    ]:
+        assert p[flag] is want, f"buffer: {flag} should be {want} -- {why}"
 
 
 def nothing_is_destructible_while_locked():
@@ -1463,6 +1570,10 @@ def main():
     check("plots: an empty unclaimed plot stays open", an_unclaimed_empty_plot_stays_open)
     check("plots: the plaza can never be swept away",
           shared_ground_never_becomes_erasable_scenery)
+    check("plots: a plot is one welded body of concrete and metal",
+          a_plot_is_one_welded_body_of_concrete_and_metal)
+    check("protection: buffer time polishes but never places or breaks",
+          buffer_time_lets_you_polish_but_not_place_or_break)
     check("plots: junk outside the city stays clearable", outside_the_city_is_sweepable)
     check("plots: the grid and its claims survive a restart", grid_survives_a_save_and_load)
 
