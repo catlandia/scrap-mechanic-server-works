@@ -159,8 +159,17 @@ local function isCity( shape )
 	-- It used to be 1.35, which swallowed the whole first layer of everybody's
 	-- build: "whatever the block is metal 2 or concrete it counts as part of the
 	-- city whatever of it actualy being so."
+	-- A NARROW BAND, not "anything low". Without g_swPlots this cannot know the
+	-- city's footprint, so it refuses only what is at exactly our deck layer --
+	-- world z 1.00 up to 1.1875 -- and nothing else. A metal 2 block on the
+	-- terrain outside the city is far below that and is yours to delete:
+	-- "I still cant remove metal 2 via the tool. even if its not on the
+	-- platform."
+	--
+	-- Nothing of a player's can be in that band anyway, because our slab already
+	-- occupies it.
 	local ok, pos = pcall( function() return shape.worldPosition end )
-	return ok and pos ~= nil and pos.z < 1.1875
+	return ok and pos ~= nil and pos.z >= 1.0 and pos.z < 1.1875
 end
 
 function CleanerTool.sv_n_swDelete( self, params, player )

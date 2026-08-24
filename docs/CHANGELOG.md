@@ -10,6 +10,53 @@ was most of them.
 
 ---
 
+## V42 — "only build on your own tiles" had a hole, and metal 2 off the platform was undeletable
+
+### The plot rule
+
+*"the function that only build on your tiles. and only when time started."*
+
+Body permission flags are **global**. If a plot is buildable it is buildable by
+everybody, from anywhere within reach — and the old rule said an *unoccupied*
+zone stays open. So a claimed plot with nobody standing on it was open to
+anyone: stand on the road beside somebody's work and reach over it, with the
+owner not even online.
+
+Now:
+
+| | |
+|---|---|
+| occupied | open only if every player standing there is authorised |
+| **empty and claimed** | **locked** |
+| empty and unclaimed | open — nothing to protect, and the host needs it |
+
+`zoneHeld` keeps that from locking an owner out of their own plot: an authorised
+player standing anywhere on their team's land holds the whole team's ground open,
+so stepping onto the one-block seam at the edge while building does not lock the
+plot behind you.
+
+### Metal 2 off the platform
+
+*"I still cant remove metal 2 via the tool. even if its not on the platform."*
+
+The city-shape test was uuid plus height, and a block dropped on the terrain
+outside the city is **lower** than our deck — so it passed the height test and
+the cleaner refused to delete it.
+
+`sv_isCityShape` now also requires the shape to be inside the city's footprint,
+and below the deck it must be inside an actual **stand** — so somebody building
+underneath the platform still owns what they built. It is deliberately not on the
+patrol path (it runs on a cleaner click, a `/purge`, a census and a rebuild),
+which is what lets it afford a `Layout.locate`.
+
+`CleanerTool` keeps a cruder copy for when it cannot see `g_swPlots`, and that
+copy got the same fix: a narrow band at exactly our deck layer rather than
+"anything low", since nothing of a player's can be in that band anyway.
+
+Both checks were written by putting each bug back and watching them fail.
+
+---
+
 ## V41 — buffer time never actually ran, and your blocks were mistaken for the city
 
 ### "whatever the block is metal 2 or concrete it counts as part of the city"

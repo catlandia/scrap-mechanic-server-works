@@ -65,6 +65,7 @@ function Plots.sv_onCreate( self, saved )
 	self.teams = ( saved and saved.teams ) or {}       -- plotIndex -> { otherIndex = true }
 	self.requests = {}                                  -- fromIndex -> { toIndex = true }
 	self.zoneOpen = {}
+	self.zoneHeld = {}
 	self.overBudget = {}      -- plotIndex -> true, set by the rules audit
 	self.lastPush = {}
 	self.enabled = ( saved and saved.enabled ) or false
@@ -239,6 +240,11 @@ end
 -- this is cheap enough to run every tick.
 function Plots.sv_updateOccupancy( self, identify, tick )
 	self.zoneOpen = {}
+	-- Zones whose owner (or a teammate) is standing on the team's land right now.
+	-- See the end of sv_bodyIsOpen: an empty claimed plot is locked, and this is
+	-- what stops that locking somebody out of their own plot the moment they step
+	-- onto the seam at its edge.
+	self.zoneHeld = {}
 	if not self.enabled then
 		return
 	end
@@ -274,6 +280,43 @@ function Plots.sv_updateOccupancy( self, identify, tick )
 			end
 		end
 		self.zoneOpen[zk] = clean
+
+		-- Somebody standing on land they are authorised for holds that whole
+		-- team's ground open, so stepping onto the seam at the edge of your own
+		-- plot does not lock the plot behind you. The host holds everything,
+		-- because the host is authorised everywhere.
+		for _, player in ipairs( entry.players ) do
+			local perma = identify( player )
+			if player == host or ( perma and allowed[perma] ) then
+				self:sv_holdTeam( entry.zone )
+				break
+			end
+		end
+	end
+end
+
+-- Mark every zone of the team that owns `z` as held. Held means "an owner is
+-- present on their own land", which is what keeps a claimed plot open while its
+-- owner is working on it even if they are stood one block off the edge.
+function Plots.sv_holdTeam( self, z )
+	local index = nil
+	if z.kind == "plot" then
+		index = z.index
+	elseif z.col ~= nil and z.row ~= nil then
+		index = self:sv_indexAt( z.col, z.row )
+	end
+	if index == nil then return end
+
+	for other in pairs( self:sv_teamOf( index ) ) do
+		self.zoneHeld[key_plot( other )] = true
+		local col, row = Layout.plotColRow( self.layout, other )
+		if col then
+			-- and the seams around it, which are the team's ground too
+			self.zoneHeld[key_fillerX( col, row )] = true
+			self.zoneHeld[key_fillerY( col, row )] = true
+			if col > 0 then self.zoneHeld[key_fillerX( col - 1, row )] = true end
+			if row > 0 then self.zoneHeld[key_fillerY( col, row - 1 )] = true end
+		end
 	end
 end
 
@@ -360,14 +403,36 @@ function Plots.sv_bodyIsOpen( self, body )
 	end
 
 	local zk = self:sv_zoneKey( z )
-	-- Unoccupied zones stay open so owners are not locked out of empty plots;
-	-- an unclaimed plot with nobody in it is harmless.
-	if self.zoneOpen[zk] == nil then
+
+	-- SOMEBODY IS STANDING HERE. Open only if everyone standing here belongs.
+	-- An occupied-but-locked plot stays fully locked and never sweepable: the
+	-- whole point is that the intruder standing on it cannot erase anything.
+	if self.zoneOpen[zk] ~= nil then
+		return self.zoneOpen[zk]
+	end
+
+	-- NOBODY IS STANDING HERE.
+	--
+	-- This used to return true -- "unoccupied zones stay open so owners are not
+	-- locked out of empty plots" -- and that was a hole straight through "only
+	-- build on your own tiles".
+	--
+	-- Body permission flags are GLOBAL. If a plot is buildable it is buildable by
+	-- everybody, from anywhere within reach. So an empty claimed plot being open
+	-- meant standing on the road beside somebody's work and reaching over it, and
+	-- the owner did not even have to be online.
+	--
+	-- Claimed and empty is locked. Unclaimed and empty stays open: there is
+	-- nothing there to protect and the host needs to be able to place things.
+	local allowed = self:sv_authorised( z )
+	if next( allowed ) == nil then
 		return true
 	end
-	-- An occupied-but-locked plot stays fully locked, never sweepable: the whole
-	-- point is that the intruder standing on it must not be able to erase.
-	return self.zoneOpen[zk]
+
+	-- ...unless somebody it belongs to is standing on their own land nearby. An
+	-- owner working at the edge of their plot steps onto the one-block seam all
+	-- the time, and locking their plot the moment they do would be unusable.
+	return self.zoneHeld[zk] == true
 end
 
 
@@ -848,5 +913,47 @@ function Plots.sv_isCityShape( self, shape )
 	if not ok or not Plots.CITY_UUIDS[u] then return false end
 	local got, pos = pcall( function() return shape.worldPosition end )
 	if not got or pos == nil then return false end
-	return pos.z < Plots.CITY_CEILING
+
+	-- HEIGHT ALONE IS NOT ENOUGH, and this was the second half of the same
+	-- report: "I still cant remove metal 2 via the tool. even if its not on the
+	-- platform." A metal 2 block dropped on the terrain outside the city is
+	-- LOWER than our deck, so a pure height test called it city floor and the
+	-- cleaner refused to delete it.
+	--
+	-- It has to be inside the city's footprint as well.
+	local bx, by = pos.x / Plots.BLOCK, pos.y / Plots.BLOCK
+	local zone = Layout.locate( self.layout, bx, by )
+	if zone == nil then
+		return false                       -- not over the city at all
+	end
+	if pos.z >= Plots.CITY_CEILING then
+		return false                       -- above our layer: somebody's build
+	end
+	if pos.z >= Plots.DECK_Z * Plots.BLOCK then
+		return true                        -- our own deck layer
+	end
+	-- Below the deck the only thing of ours is a STAND, so anything else down
+	-- there -- somebody building underneath the platform -- is theirs to delete.
+	return self:sv_isStandBlock( bx, by, zone )
+end
+
+-- The column under a plot or under the plaza, in blocks. Mirrors what
+-- sv_standChild actually builds; if one changes the other has to.
+function Plots.sv_isStandBlock( self, bx, by, zone )
+	local r, size
+	if zone.kind == "plot" then
+		r = Layout.plotRect( self.layout, zone.col, zone.row )
+		if r == nil then return false end
+		size = math.max( 2, math.min( Plots.STAND, math.min( r.w, r.h ) ) )
+	elseif zone.kind == "plaza" then
+		r = self.layout.plaza
+		if r == nil then return false end
+		size = math.max( 4, math.floor( math.min( r.w, r.h ) / 4 ) * 2 )
+	else
+		return false                       -- streets have no stand
+	end
+
+	local x = r.x + math.floor( ( r.w - size ) / 2 )
+	local y = r.y + math.floor( ( r.h - size ) / 2 )
+	return bx >= x and bx < x + size and by >= y and by < y + size
 end

@@ -410,7 +410,25 @@ with it, which is correct: it is part of the ground now.
 
 A check asserts every return path in `profileFor` goes through the pin.
 
-### Our own materials are ordinary blocks — only HEIGHT tells them apart
+### Body flags are global, so "only build on your own tile" needs presence AND absence
+
+If a plot body is buildable, it is buildable **by everybody, from anywhere within
+reach**. There is no per-player flag. Presence enforcement was only half of what
+that requires:
+
+- **occupied** → open only if every player standing there is authorised
+  (unauthorised ones are pushed out)
+- **empty and claimed** → **LOCKED.** It used to stay open — "so owners are not
+  locked out of empty plots" — which meant standing on the road beside somebody
+  else's work and reaching over it, with the owner not even online.
+- **empty and unclaimed** → open. Nothing to protect, and the host needs it.
+
+`zoneHeld` stops the new rule locking somebody out of their own plot: an
+authorised player standing anywhere on their team's land holds that whole team's
+ground open, so stepping onto the one-block seam at the edge of your plot while
+building does not lock the plot behind you.
+
+### Our own materials are ordinary blocks — only HEIGHT AND PLACE tell them apart
 
 Metal 2, metal 3 and concrete are what the city is made of *and* what people
 build with. The only thing separating them is where they sit.
@@ -429,8 +447,19 @@ actualy being so."*
 of the way up our own layer, which gives the same answer under both readings with
 room on either side. The check tests both.
 
-`CleanerTool` restates the number because a tool script may not share the
-Game/World environment, and a check asserts the two never drift apart.
+**And height alone is not enough either.** A metal 2 block dropped on the terrain
+*outside* the city is LOWER than our deck, so a pure height test called it city
+floor and the cleaner refused to delete it — reported as *"I still cant remove
+metal 2 via the tool. even if its not on the platform."* `sv_isCityShape` now
+requires the shape to be inside the city footprint (`Layout.locate`), and below
+the deck it must be inside an actual **stand** — so somebody building underneath
+the platform still owns what they built.
+
+`sv_isCityShape` is deliberately **not** on the patrol path; it runs on a
+cleaner click, a `/purge`, a census and a rebuild, which is why it can afford a
+`Layout.locate`. `CleanerTool` keeps a cruder copy for when it cannot see
+`g_swPlots`: a narrow band at exactly our deck layer, since nothing of a
+player's can be in it anyway.
 
 ### One body's `childs` array IS the weld group
 

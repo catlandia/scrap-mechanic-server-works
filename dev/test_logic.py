@@ -839,6 +839,55 @@ def spawn_is_the_middle_of_the_map():
         f"the world origin is {z['kind'] if z else 'off the map'}, not the plaza")
 
 
+def you_can_only_build_on_ground_that_is_yours():
+    """A claimed plot with nobody on it is LOCKED, not open.
+
+    "the function that only build on your tiles. and only when time started."
+
+    Body permission flags are GLOBAL -- if a plot is buildable it is buildable by
+    everybody, from anywhere within reach. So the old rule, "an unoccupied zone
+    stays open", meant standing on the road beside somebody's work and reaching
+    over it, and the owner did not even have to be online.
+
+    Claimed and empty is locked now. Unclaimed and empty stays open: nothing
+    there to protect, and the host needs to be able to place things.
+    """
+    lua, plots = plots_lua()
+    P = lua.globals().Plots
+    L = lua.globals().Layout
+    B = float(P.BLOCK)
+
+    def body_on(index):
+        bx, by = L.plotCentre(plots["layout"], index)
+        return lua.table_from({"worldPosition": lua.table_from(
+            {"x": float(bx) * B, "y": float(by) * B, "z": 1.5})})
+
+    MINE, YOURS = 1, 2
+
+    # nobody has claimed anything: an empty plot is open
+    assert P.sv_bodyIsOpen(plots, body_on(MINE)) is True, (
+        "an unclaimed empty plot should stay open")
+
+    # now somebody owns it and is not standing on it
+    P.sv_claim(plots, MINE, "OWNER")
+    plots["zoneOpen"] = lua.table_from({})
+    plots["zoneHeld"] = lua.table_from({})
+    assert P.sv_bodyIsOpen(plots, body_on(MINE)) is False, (
+        "a CLAIMED plot with nobody on it was open -- anyone could stand on the "
+        "road and build over somebody else's work")
+    assert P.sv_bodyIsOpen(plots, body_on(YOURS)) is True, (
+        "an unclaimed plot next door should be unaffected")
+
+    # the owner standing on their own land holds it open
+    P.sv_holdTeam(plots, lua.table_from({"kind": "plot", "index": MINE}))
+    assert P.sv_bodyIsOpen(plots, body_on(MINE)) is True, (
+        "the owner is standing on their own plot and it is still locked")
+
+    # and holding your plot must not hold anybody else's
+    assert plots["zoneHeld"][f"p{YOURS}"] is None, (
+        "standing on your own plot held somebody else's open too")
+
+
 def an_unclaimed_empty_plot_stays_open():
     lua, plots = plots_lua({"cols": 10, "rows": 10, "plazacells": 2})
     P = lua.globals().Plots
@@ -893,6 +942,27 @@ def a_players_block_of_our_materials_is_not_the_city():
     other = "b63c6440-dfc2-4da7-acdb-3c385080b2e4"
     for z in list(deck_readings.values()) + list(build_readings.values()):
         assert P.sv_isCityShape(plots, shape_at(other, z)) is False
+
+    # OFF THE PLATFORM ENTIRELY. "I still cant remove metal 2 via the tool. even
+    # if its not on the platform" -- a block dropped on the terrain outside the
+    # city is LOWER than our deck, so a pure height test called it city floor.
+    def shape_out_there(uuid, z):
+        return lua.table_from({"shapeUuid": uuid,
+                               "worldPosition": lua.table_from(
+                                   {"x": 500.0, "y": 500.0, "z": z})})
+
+    for uuid in ours:
+        for z in (0.125, 0.5, 1.0, 1.125, 5.0):
+            assert P.sv_isCityShape(plots, shape_out_there(uuid, z)) is False, (
+                f"a {uuid[:8]} block at z={z}, five hundred metres from the city, "
+                "was called city floor")
+
+    # and under the platform, away from a stand, is somebody else's business
+    bx, by = lua.globals().Layout.plotCentre(plots["layout"], 1)
+    edge = lua.table_from({"shapeUuid": ours[1], "worldPosition": lua.table_from(
+        {"x": (float(bx) + 8) * B, "y": (float(by) + 8) * B, "z": 0.25})})
+    assert P.sv_isCityShape(plots, edge) is False, (
+        "a block under the platform but nowhere near a stand was called ours")
 
     # the cleaner restates the threshold because a tool script may not share the
     # Game/World environment -- the two numbers must not drift apart
@@ -2084,6 +2154,8 @@ def main():
           buffer_time_actually_reaches_the_polish_profile)
     check("protection: buffer time polishes but never places or breaks",
           buffer_time_lets_you_polish_but_not_place_or_break)
+    check("plots: you can only build on ground that is yours",
+          you_can_only_build_on_ground_that_is_yours)
     check("plots: junk outside the city stays clearable", outside_the_city_is_sweepable)
     check("plots: a bulk purge never touches the city",
           a_bulk_purge_never_touches_the_city)
