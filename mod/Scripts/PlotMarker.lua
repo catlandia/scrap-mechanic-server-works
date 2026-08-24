@@ -63,7 +63,19 @@ function PlotMarker.Cl_Show( position )
 	if position == nil then return end
 	guard( function()
 		if not added then
-			g_compassHud:compassAddIcon( PlotMarker.NAME, PlotMarker.ICON, true, 32 )
+			-- NO width or height. Pass one and the icon is stretched to it.
+			--
+			-- The single vanilla call that passes a width -- RaidManager.lua:1174,
+			-- ( name, icon, true, 32 ) -- is for icon_compass_dropcargo.png, which
+			-- is 48x30. Ours is icon_compass_main_quest.png, which is 33x33, and
+			-- forcing 32 wide on a square icon is what squashed it. The precedent
+			-- for a square icon is LostItems.lua:91:
+			--
+			--     g_compassHud:compassAddIcon( name, "icon_compass_lostitem.png" )
+			--
+			-- -- name and file, nothing else, and the engine draws it at its own
+			-- size. icon_compass_lostitem.png is 33x33, the same as ours.
+			g_compassHud:compassAddIcon( PlotMarker.NAME, PlotMarker.ICON )
 			-- Stacking off: this is the only marker we ever add, and stacking is
 			-- for collapsing a crowd of them into one.
 			g_compassHud:compassSetIconStacking( PlotMarker.NAME, false )

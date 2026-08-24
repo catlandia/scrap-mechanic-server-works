@@ -1312,54 +1312,76 @@ def the_my_plot_panel_fits_in_every_state():
 
 
 def the_event_hud_sits_in_the_top_right_at_any_resolution():
-    # MEASURED failure: with Anchor = "TopRight" the clock landed in the middle
-    # left of a 2560x1080 screen. "TopRight" is in the executable's string table
-    # but is not a value this anchor accepts, and the widget was centred instead.
-    #
-    # So the root is the whole display and the content sits at its top right
-    # corner, which needs no anchor beyond "Center" -- the one that works.
+    """The clock is fully on screen, in the top right, at every canvas size.
+
+    Asked for exactly: "take the screen resolution of the game. take the top
+    right corner. take the pixels of the timer UI. make so that it is fully on
+    screen. and add couple of bufer pixels."
+
+    Two measured facts drive the arithmetic and both are easy to get wrong:
+
+      * Anchor = "TopRight" is not a value this accepts. It is in the exe's
+        string table but the widget is simply centred instead.
+      * A ROOT widget's x,y is its CENTRE, from the centre of the canvas, +y
+        down. Derived from SurvivalPlayer.lua:424.
+
+    And the reason "I dont see timer": the previous version made the root the
+    size of the SCREEN (sm.gui.getScreenSize) when widget units are in the
+    CANVAS (sm.jsonGui.getViewSize), which is one of four fixed reference
+    resolutions. On a 3440x1440 monitor the root hung far off the right of a
+    narrower canvas and everything in its corner was off screen.
+    """
     lua = gui_lua()
     G = lua.globals().EventHud
-    RESOLUTIONS = [
+    W, H, margin = int(G.W), int(G.H), int(G.MARGIN)
+
+    CANVASES = [
+        (1280, 720,  "the smallest skin set the game ships"),
         (1920, 1080, "16:9"),
-        (2560, 1080, "ultrawide -- the owner's monitor"),
+        (2560, 1440, "the likely canvas on the owner's 3440x1440"),
         (3840, 2160, "4K"),
-        (1280, 720,  "720p"),
-        (1024, 768,  "4:3"),
-        (1693, 693,  "the canvas size implied by the screenshot"),
+        (2560, 1080, "ultrawide"),
+        (1693, 693,  "the canvas implied by an old screenshot"),
     ]
-    for w, h, label in RESOLUTIONS:
-        root = G.Build(lua.table_from({"phase": "build", "remaining": 754.0}), w, h)
+    for cw, ch, label in CANVASES:
+        root = G.Build(lua.table_from({"phase": "build", "remaining": 754.0}), cw, ch)
 
-        assert int(root["width"]) == w and int(root["height"]) == h, (
-            f"{label}: the root is {int(root['width'])}x{int(root['height'])}, "
-            f"not the {w}x{h} screen -- it must cover the display exactly")
         assert root["Anchor"] == "Center", (
-            f"{label}: root anchored {root['Anchor']!r}; only Center is known to work")
+            f"{label}: anchored {root['Anchor']!r}; only Center is known to work")
+        assert int(root["width"]) == W and int(root["height"]) == H, (
+            f"{label}: the root is {int(root['width'])}x{int(root['height'])}, not "
+            f"the panel's own {W}x{H}. A root sized to the screen is the bug that "
+            "put the clock off the edge of the canvas.")
 
-        items = walk(root, [])[1:]
-        assert items, f"{label}: the HUD drew nothing"
+        # x,y is the CENTRE from the centre of the canvas, +y down. Turn that
+        # back into an on-screen rectangle and check it lands where it should.
+        cx, cy = float(root["x"]), float(root["y"])
+        left = cw / 2 + cx - W / 2
+        top = ch / 2 + cy - H / 2
+        right, bottom = left + W, top + H
 
-        # every piece inside the panel, and the panel in the top-right corner
-        right = max(i["x"] + i["w"] for i in items)
-        top = min(i["y"] for i in items)
-        left = min(i["x"] for i in items)
-        bottom = max(i["y"] + i["h"] for i in items)
+        assert left >= 0 and top >= 0, (
+            f"{label}: the clock starts off screen at ({left:.0f},{top:.0f})")
+        assert right <= cw and bottom <= ch, (
+            f"{label}: the clock runs {max(right - cw, bottom - ch):.0f}px past "
+            "the edge -- it would not be visible")
 
-        assert right <= w, f"{label}: content runs {right - w} past the right edge"
-        assert left >= 0 and top >= 0, f"{label}: content starts off screen at ({left},{top})"
-        assert bottom <= h, f"{label}: content runs {bottom - h} past the bottom"
+        # the buffer pixels, when the canvas is big enough to honour them
+        if cw >= W + margin * 2 and ch >= H + margin * 2:
+            assert abs((cw - right) - margin) <= 1, (
+                f"{label}: {cw - right:.0f}px from the right edge, expected {margin}")
+            assert abs(top - margin) <= 1, (
+                f"{label}: {top:.0f}px from the top, expected {margin}")
 
-        margin = int(G.MARGIN)
-        assert abs((w - right) - margin) <= 1, (
-            f"{label}: {w - right}px from the right edge, expected {margin} -- "
-            f"not in the corner")
-        assert abs(top - margin) <= 1, (
-            f"{label}: {top}px from the top, expected {margin}")
-        # and it must be in the RIGHT half, which is the whole point
-        assert left > w / 2, (
-            f"{label}: the clock starts at x={left} on a {w}-wide screen -- "
-            f"that is the left half")
+    # And the clamp: a canvas smaller than the panel must still keep it on screen
+    # rather than letting it hang off an edge.
+    for cw, ch in [(W - 40, H - 10), (100, 60)]:
+        x, y = G.TopRight(cw, ch)
+        left = cw / 2 + float(x) - W / 2
+        top = ch / 2 + float(y) - H / 2
+        assert abs(left) <= 1 and abs(top) <= 1, (
+            f"canvas {cw}x{ch} is smaller than the {W}x{H} panel and it was not "
+            f"pinned to the corner: landed at ({left:.0f},{top:.0f})")
 
 
 def the_event_hud_reads_correctly_in_every_phase():

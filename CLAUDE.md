@@ -200,15 +200,27 @@ The mod now uses seven fonts and every one is tier 1. `dev/test_logic.py`
 enforces both rules — existence first, then glyphs — over every caption of every
 panel in every state.
 
-### The GUI canvas is the real screen, and a panel is positioned from its CENTRE
+### The canvas is NOT the window, and a panel is positioned from its CENTRE
 
-**MEASURED**, 2026-08-24: `[ServerWorks] gui canvas 3440x1440` on a 3440x1440
-monitor. Widget units are screen pixels here, one to one, so a 760-wide panel is
-760 pixels — not scaled, as an earlier guess in this file had it.
+Two different questions with two different answers, and confusing them is what
+put the event clock off the edge of the screen where it could not be seen at all.
 
-`sm.jsonGui.getViewSize()` is the binding vanilla itself uses for this
-(`Survival/Scripts/game/SurvivalPlayer.lua:424`,
-`ChallengeData/Scripts/game/ChallengePlayer.lua:180`).
+| | what it is |
+|---|---|
+| `sm.gui.getScreenSize()` | the **window**. Reported 3440x1440 on this owner's monitor |
+| `sm.jsonGui.getViewSize()` | the **canvas widget units are in**. What every coordinate here means |
+
+They are different numbers. The game ships GUI skins for exactly four reference
+resolutions — `1280x720`, `1920x1080`, `2560x1440`, `3840x2160`
+(`Data/Gui/Resolutions/`) — and picks one, so a 3440x1440 monitor is not a
+3440x1440 canvas. **A root declared 3440 wide in a narrower canvas hangs off the
+edge and everything in its top-right corner is off screen.** That was V29-V32's
+event clock: correct arithmetic, wrong units.
+
+`sm.jsonGui.getViewSize()` is the binding vanilla uses in all three places it
+positions a HUD (`SurvivalPlayer.lua:424`, `ChallengePlayer.lua:180`,
+`MechanicCharacter.lua:194`). Use it, and keep a root the size of the *panel*,
+not the size of the screen.
 
 And the arithmetic next to it says what a root widget's `x`/`y` mean, which is
 not obvious and is not documented anywhere:
@@ -240,6 +252,7 @@ Custom Game that calls its parent inherits a working compass. Vanilla's own call
 give the shapes:
 
     g_compassHud:compassAddIcon( name, icon, stacking, w, h )   RaidManager.lua:1174
+    g_compassHud:compassAddIcon( name, icon )                   LostItems.lua:91
     g_compassHud:compassSetIconWorldPosition( name, position )  RaidManager.lua:1175
     g_compassHud:compassSetIconStacking( name, false )          RaidManager.lua:1176
     g_compassHud:compassPingMarker( name, effect )              RaidManager.lua:1228
@@ -249,6 +262,13 @@ give the shapes:
 Icons live in `Data/Gui/Resolutions/*/Compass/`. It is that client's own HUD, so
 a marker is private to one player with no work — which is the property a
 per-player plot marker needs.
+
+**Pass no width or height for a square icon.** Almost every compass icon the game
+ships is 33x33; the one vanilla call that passes a width — `RaidManager.lua:1174`,
+`( name, icon, true, 32 )` — is for `icon_compass_dropcargo.png`, which is 48x30.
+Copying that call for a square icon stretches it. `LostItems.lua:91` is the
+precedent to follow: `compassAddIcon( name, icon )`, name and file and nothing
+else, and the engine draws it at its own size.
 
 ### A body on the lift is REAL, and it is flagged as a ghost
 

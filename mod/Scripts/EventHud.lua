@@ -19,31 +19,52 @@
 -- so those four flags are copied rather than guessed.
 --
 --
--- WHY THE ROOT IS THE WHOLE SCREEN
+-- WHERE THE PANEL GOES, AND WHY IT TOOK THREE TRIES
 --
--- The first attempt anchored the panel with Anchor = "TopRight", on the grounds
--- that "TopRight" sits in the executable's string table right next to "Center",
--- which our other panels anchor by. It is NOT a valid value here. MEASURED, from
--- a screenshot: the panel landed in the middle-left of the screen, and working
--- backwards from where it landed says the anchor was ignored and the widget was
--- centred instead --
+-- Asked for, in the end, as precisely the right instruction: "take the screen
+-- resolution of the game. take the top right corner. take the pixels of the
+-- timer UI. make so that it is fully on screen. and add couple of bufer pixels."
+-- That is what the code below does. Getting there needed two facts that are not
+-- written down anywhere.
 --
---   screen 2560x1080, panel declared 210x78, drawn 317x122 at (768, 503)
---   centre (1280, 540) + our offset (-228, 18) x 1.51  =  (938, 567)
---   the panel's actual centre was                          (927, 564)
+-- 1. Anchor = "TopRight" IS NOT A VALUE THIS ACCEPTS. It is in the executable's
+--    string table, which is what made it look plausible, and the widget is just
+--    centred instead. MEASURED from a screenshot: on 2560x1080 the panel landed
+--    middle-left, and working back from where it landed said it had been
+--    centred and then offset by our own numbers.
 --
--- -- which also says the GUI canvas is scaled about 1.5x away from the units we
--- declare widgets in, and that scale depends on the player's resolution.
+-- 2. A ROOT WIDGET'S x,y IS ITS CENTRE, MEASURED FROM THE CENTRE OF THE CANVAS,
+--    with +y downwards. Not a top-left offset. Derived from vanilla's own status
+--    panel (Survival/Scripts/game/SurvivalPlayer.lua:424), which puts itself
+--    bottom-left with
 --
--- So do not fight it. Make the ROOT the size of the screen and anchor that to
--- the centre, which is the one anchor known to work. The root then covers the
--- display exactly, and a child placed at (screenW - margin - width, margin)
--- lands in the true top right on any monitor -- 16:9, ultrawide, anything.
+--        root.x = math.floor( -screenWidth  / 2 + root.width  * 0.5 )
+--        root.y = math.floor(  screenHeight / 2 - root.height * 0.5 )
 --
--- The scale factor never has to be known, only the canvas size, which is exactly
--- what sm.gui.getScreenSize is for.
+--    Solve those and the meaning falls out: left edge at -W/2, bottom edge at
+--    +H/2. So x,y is the centre.
 --
+-- The version before this one made the ROOT the size of the whole screen and put
+-- the content in its corner. That is sound arithmetic and it still did not draw,
+-- because of the third fact:
 --
+-- 3. sm.gui.getScreenSize IS THE WINDOW. sm.jsonGui.getViewSize IS THE CANVAS
+--    WIDGET UNITS ARE IN. They are different numbers -- the game ships GUI skins
+--    for 1280x720, 1920x1080, 2560x1440 and 3840x2160 and picks one, so a
+--    3440x1440 monitor is not a 3440x1440 canvas. A root declared 3440 wide in a
+--    canvas narrower than that hangs off the edge, and everything in its top
+--    right corner is off screen entirely. Which is exactly what "I dont see
+--    timer" was.
+--
+--    sm.jsonGui.getViewSize is the function vanilla uses for this, in all three
+--    places it positions a HUD: SurvivalPlayer.lua:424,
+--    ChallengePlayer.lua:180, MechanicCharacter.lua:194.
+--
+-- So: the root is the size of the PANEL, and it is placed by its centre, at the
+-- top right of the canvas, inset by MARGIN. Then it is clamped, so that even if
+-- getViewSize ever returns something smaller than the panel the panel stays on
+-- screen rather than disappearing off it.
+
 -- THE WAREHOUSE TIMER
 --
 -- This is the real find. Vanilla's warehouse self destruct is:
@@ -75,6 +96,10 @@ EventHud = {}
 
 EventHud.W = 210
 EventHud.H = 78
+-- The buffer pixels. 18 canvas units clears the compass and the corner of the
+-- screen on every reference resolution the game ships, and EventHud.TopRight
+-- clamps rather than honours it if a canvas is ever too small to fit both the
+-- panel and the margin.
 EventHud.MARGIN = 18
 
 local BG = "0.055 0.062 0.078 1"
@@ -103,8 +128,14 @@ EventHud.COLOURS = {
 EventHud.FALLBACK_W = 1920
 EventHud.FALLBACK_H = 1080
 
+-- The CANVAS, not the window. sm.jsonGui.getViewSize is what vanilla positions
+-- its own HUDs against; sm.gui.getScreenSize is the second choice and only
+-- because a HUD in slightly the wrong place beats no HUD at all.
 function EventHud.ScreenSize()
-	local ok, a, b = pcall( sm.gui.getScreenSize )
+	local ok, a, b = pcall( sm.jsonGui.getViewSize )
+	if not ok or type( a ) ~= "number" then
+		ok, a, b = pcall( sm.gui.getScreenSize )
+	end
 	if ok and type( a ) == "number" and type( b ) == "number" and a > 0 and b > 0 then
 		return a, b
 	end
@@ -118,6 +149,28 @@ function EventHud.ScreenSize()
 		end
 	end
 	return EventHud.FALLBACK_W, EventHud.FALLBACK_H
+end
+
+-- The centre of the panel, measured from the centre of the canvas, so that the
+-- panel sits in the top right corner with MARGIN of clear space around it.
+--
+-- Clamped, which is the "make so that it is fully on screen" half: if the canvas
+-- ever comes back smaller than the panel, the panel is pinned inside it rather
+-- than allowed to hang off an edge where it cannot be seen.
+function EventHud.TopRight( canvasW, canvasH )
+	local m = EventHud.MARGIN
+	local x = canvasW * 0.5 - EventHud.W * 0.5 - m
+	local y = -canvasH * 0.5 + EventHud.H * 0.5 + m
+
+	-- Never further right than the right edge, never left of the left edge.
+	local maxX = canvasW * 0.5 - EventHud.W * 0.5
+	local maxY = canvasH * 0.5 - EventHud.H * 0.5
+	if x > maxX then x = maxX end
+	if x < -maxX then x = -maxX end
+	if y > maxY then y = maxY end
+	if y < -maxY then y = -maxY end
+
+	return math.floor( x ), math.floor( y )
 end
 
 local function widget( t )
@@ -150,16 +203,17 @@ function EventHud.Build( state, screenW, screenH )
 	local colour = state.panic and EventHud.COLOURS.panic
 		or ( EventHud.COLOURS[phase] or EventHud.COLOURS.off )
 
-	-- The root is the whole display. Centre is the anchor that is known to work,
-	-- and a screen-sized widget centred on the screen covers it exactly.
+	-- The root is the PANEL, placed by its centre at the top right of the canvas.
+	-- See the note at the top of this file for why it is not the whole screen and
+	-- why x,y is a centre rather than a corner.
+	local x, y = EventHud.TopRight( screenW, screenH )
 	local root = widget{ Name = "EventHud", Type = "Widget", Skin = "PanelEmpty",
 		Anchor = "Center", InheritsPick = false,
-		x = 0, y = 0, width = screenW, height = screenH }
+		x = x, y = y, width = EventHud.W, height = EventHud.H }
 	local kids = root.Childs
 
-	-- Top right of the root, which is now top right of the screen.
-	local ox = screenW - EventHud.MARGIN - EventHud.W
-	local oy = EventHud.MARGIN
+	-- Children are ordinary top-left offsets inside the root.
+	local ox, oy = 0, 0
 
 	kids[#kids + 1] = fill( "HudBG", ox, oy, EventHud.W, EventHud.H, BG, 0.78 )
 	-- A bar down the left edge in the phase colour. Cheaper to read at a glance
