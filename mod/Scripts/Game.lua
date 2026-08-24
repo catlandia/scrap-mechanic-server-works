@@ -52,12 +52,14 @@ local WORLD_COMMANDS = {
 	["/restore"] = true, ["/purge"] = true, ["/plot"] = true,
 	["/plots"] = true, ["/plotgrid"] = true, ["/home"] = true,
 	["/plotbuild"] = true, ["/plotclear"] = true, ["/why"] = true,
+	["/budget"] = true,
 	["/plotapply"] = true,
 }
 
 -- Commands a guest may use. Everything else is host-only.
 local PLAYER_COMMANDS = {
 	["/sw"] = true, ["/swhelp"] = true, ["/plot"] = true, ["/players"] = true,
+	["/budget"] = true,
 	["/rules"] = true, ["/home"] = true, ["/menu"] = true, ["/myplot"] = true,
 	["/tool"] = true,
 }
@@ -842,6 +844,11 @@ function Game.client_onCreate( self )
 		"Diagnostic: does a GUI button work here? Run it four times." )
 	sm.game.bindChatCommand( "/plotmenu", {}, "cl_onAdminCommand",
 		"Host: lay out the city, see what the numbers mean, then build it" )
+	-- Not host-gated: a builder needs to see their own budget more than the host
+	-- does, and it reads numbers rather than changing anything.
+	sm.game.bindChatCommand( "/budget", { { "number", "plot", true } },
+		"cl_onAdminCommand",
+		"What this plot is using against the server limits" )
 	sm.game.bindChatCommand( "/why", {}, "cl_onAdminCommand",
 		"Host: point at a build and ask why it is locked" )
 	sm.game.bindChatCommand( "/plotbuild", {}, "cl_onAdminCommand",

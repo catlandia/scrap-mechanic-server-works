@@ -820,6 +820,26 @@ function World.sv_e_swCommand( self, params )
 	elseif cmd == "/myplot" then
 		self:sv_openMyPlot( player, params.status )
 
+	elseif cmd == "/budget" then
+		-- The plot you are standing on, or one named outright.
+		local index = tonumber( args[2] )
+		if index == nil then
+			local character = player:getCharacter()
+			local z = character and sm.exists( character )
+				and g_swPlots:sv_locate( character.worldPosition ) or nil
+			index = ( z and z.kind == "plot" ) and z.index or nil
+		end
+		if index == nil then
+			reply( "stand on a plot, or /budget <number>" )
+		else
+			for _, line in ipairs( g_swRules:sv_budgetLines( index, Settings.Get ) ) do
+				reply( line )
+			end
+			if not g_swPlots.enabled then
+				reply( "   NOTE: plots are OFF, so nothing is locked. /set plots on" )
+			end
+		end
+
 	elseif cmd == "/citycensus" then
 		-- MEASURED as a dead button: CLEAR CITY sent this and nothing in this
 		-- file answered it, so the panel shut and the world did nothing. That is

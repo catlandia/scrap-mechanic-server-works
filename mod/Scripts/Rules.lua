@@ -191,7 +191,43 @@ function Rules.sv_audit( self, tick, plots, getSetting )
 		end
 	end
 
+	-- Kept so /budget can SHOW the numbers rather than leaving somebody to infer
+	-- them from whether their plot locked. "I am a bit sceptical of that if it
+	-- works" is a fair thing to be, and a readout answers it in one command.
+	self.lastPerPlot = perPlot
 	return { perPlot = perPlot, contraband = contraband }
+end
+
+-- What a plot is using, against what it is allowed. nil until the first audit,
+-- which is at most Rules.AUDIT_SECONDS old.
+function Rules.sv_budgetLines( self, index, getSetting )
+	local out = {}
+	local counts = self.lastPerPlot and self.lastPerPlot[index]
+	if counts == nil then
+		out[#out + 1] = string.format( "plot %d: nothing counted yet", index )
+		return out
+	end
+
+	local rows = {
+		{ "bearings/pistons/suspensions", counts.joints, "maxjoints" },
+		{ "craft/cook/dress bots", counts.bots, "maxbots" },
+		{ "lights", counts.lights, "maxlights" },
+	}
+	out[#out + 1] = string.format( "plot %d, as of the last audit:", index )
+	for _, row in ipairs( rows ) do
+		local limit = tonumber( getSetting( row[3] ) ) or 0
+		out[#out + 1] = string.format( "   %-30s %d / %s%s", row[1], row[2],
+			limit > 0 and tostring( limit ) or "unlimited",
+			( limit > 0 and row[2] > limit ) and "   OVER" or "" )
+	end
+	if counts.deep > 0 then
+		out[#out + 1] = string.format( "   %-30s %d   OVER", "blocks below ground", counts.deep )
+	end
+
+	local why = self.violations and self.violations[index]
+	out[#out + 1] = why and "   -> this plot is LOCKED until it is trimmed"
+		or "   -> within the limits"
+	return out
 end
 
 function Rules.sv_overBudget( self, index )

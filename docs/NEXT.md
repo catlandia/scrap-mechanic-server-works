@@ -11,7 +11,7 @@ Companions:
 [`CHANGELOG.md`](CHANGELOG.md) what every version fixed ·
 [`PLAN.md`](PLAN.md) the original plan of record
 
-Current version: **V51**. All 76 checks pass. `python dev/check_all.py --sync`
+Current version: **V52**. All 76 checks pass. `python dev/check_all.py --sync`
 before playing, and **restart Scrap Mechanic** — scripts are read at world load.
 
 ---
@@ -50,6 +50,26 @@ a 500-block static sculpture is nearly free, twenty bearings are not.
   announcing that a live cornade exists and leaving it there helps nobody.
 - The owner is told what to trim, and told again on a cooldown, not every pass.
 
+### Two things before you test it
+
+**1. `plots` defaults to OFF.** With plots off, `sv_bodyIsOpen` returns nil
+immediately and the `overBudget` check is never reached — so the audit still
+counts, still warns the owner, and **locks nothing**. That alone would make the
+whole feature look broken.
+
+    /set plots on
+
+**2. `/budget` shows the numbers.** Stand on a plot, or `/budget 23`:
+
+    plot 23, as of the last audit:
+       bearings/pistons/suspensions   14 / 10   OVER
+       craft/cook/dress bots           0 / 1
+       lights                          3 / 25
+       -> this plot is LOCKED until it is trimmed
+
+Not host-gated — a builder needs it more than the host does. At most five
+seconds stale, because that is the audit interval.
+
 ### What to check, in order
 
 1. **Does the count land on the right tile?** Build something with 12 bearings on
@@ -72,9 +92,9 @@ a 500-block static sculpture is nearly free, twenty bearings are not.
 
 ### Likely work once it is tested
 
-- **A live budget readout.** The owner asked for this originally — "a live HUD so
-  builders self-regulate". Right now you find out by being locked. `MY PLOT`
-  should show `bearings 7/10 · bots 0/1 · lights 3/25`.
+- **The readout on the panel, not just in chat.** `/budget` exists now; the
+  original ask was "a live HUD so builders self-regulate", which means `MY PLOT`
+  showing `bearings 7/10 · bots 0/1 · lights 3/25` without anybody typing.
 - **A team budget.** If four people team up, is the limit per plot or per team?
   Per plot is what happens today.
 
