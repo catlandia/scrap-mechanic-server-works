@@ -10,6 +10,46 @@ was most of them.
 
 ---
 
+## V43 — the floor is the builder's while the clock is running
+
+*"theoretical explanation its because its connected to the rest. so look. the
+stand the plot is on. and the plot it self shall be destructuble and placable.
+aka not protected when build time."*
+
+V38 pinned the city floor — never liftable, never convertible to dynamic — because
+`open` left every plot in the city liftable during an event and anyone could
+carry one off. That was real. But it applied in **every** mode, including the one
+where the ground is supposed to be the builder's to change.
+
+The pin is about **when**, not about what:
+
+| mode | the ground is |
+|---|---|
+| **build** (`open`) | **free** — placeable, removable, liftable, convertible |
+| buffer (`polish`) | pinned |
+| prep (`display`) | pinned |
+| ended / lockdown | pinned |
+
+Presence enforcement is what keeps a builder to their own plot; a flag on the
+body was never able to do that anyway, because body flags are global.
+
+Worth writing down: `locked` and `display` are already `liftable = false` in
+their own right, so the pin only *changes* anything for `polish` and `open`. The
+check tests `polish` for that reason — a check written against `locked` would
+have passed no matter what the code did, and I confirmed that by trying it.
+
+The check also runs the **real resolver** now instead of reading the PROFILES
+table, which is the lesson from V41: a profile that exists is not a profile any
+body receives.
+
+**Whether this is the cause of "I cant build on my plot" is still unknown.**
+Every path traced says a plot should be buildable during build time, and the
+report predates V38's pinning entirely — so this is the requested change, made
+because it was asked for and is defensible on its own, not because it is a
+diagnosis.
+
+---
+
 ## V42 — "only build on your own tiles" had a hole, and metal 2 off the platform was undeletable
 
 ### The plot rule

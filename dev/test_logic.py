@@ -538,51 +538,110 @@ def the_cleaner_is_wired_to_the_same_uuid_everywhere():
         "third argument of client_onEquippedUpdate is the only place Lua sees it")
 
 
-def the_city_floor_is_never_liftable_or_dynamic():
-    """No profile may leave the ground liftable or convertible to dynamic.
+def the_city_floor_is_pinned_except_while_people_are_building():
+    """The ground is free during BUILD, and pinned in every other mode.
 
-    REPORTED, repeatedly, as "the concrete is not attached" -- and this is the
-    most literal sense in which it was not: `open`, the profile the whole city
-    runs under during BUILD TIME, sets liftable = true and
-    convertibleToDynamic = true, and a plot slab is not scenery (sv_isScenery
-    needs every shape to be metal; a plot has concrete in it). So during an event
-    anyone with a lift could pick up somebody's plot floor, and the slab could
-    convert to dynamic with nothing holding it up.
+    Two requirements that pull against each other, and both are real.
 
-    World.sv_pinCity does pin both at import -- and the patrol reapplies the full
-    profile over the top of it seconds later. The pin has to be in the profile.
+    V38: `open` sets liftable and convertibleToDynamic true, and a plot slab is
+    not scenery -- so anyone with a lift could carry off somebody's plot, and a
+    slab that goes dynamic is a floating object with nothing holding it.
+
+    And then: "the stand the plot is on. and the plot it self shall be
+    destructuble and placable. aka not protected when build time."
+
+    Both hold if the pin is about WHEN. While the clock is running the ground
+    belongs to whoever is building on it, and presence enforcement is what keeps
+    that to their own plot. Every other mode pins it -- prep, the buffer, after
+    the event ends, under a lockdown -- which is when it earns its keep.
+
+    This runs the real resolver rather than reading the table, because a profile
+    that exists is not a profile any body receives. See
+    buffer_time_actually_reaches_the_polish_profile for what that cost last time.
     """
-    lua = fresh("Settings.lua", "Protection.lua")
-    src = io.open(SCRIPTS / "Protection.lua", encoding="utf-8").read()
+    lua = fresh("Layout.lua", "Settings.lua", "Protection.lua", "Plots.lua", "Event.lua")
+    lua.globals().Settings.Sv_Load(False)
+    P, Prot = lua.globals().Plots, lua.globals().Protection
 
-    # PROFILES and PINNED are both locals; re-declare the block that builds them.
+    plots = lua.eval("Plots()")
+    P.sv_onCreate(plots, lua.table_from({"grid": lua.table_from({}), "enabled": True}))
+    plots["enabled"] = True
+    lua.globals().g_swPlots = plots
+    prot = lua.eval("Protection()")
+    Prot.sv_onCreate(prot, "open")
+    lua.globals().g_swProtection = prot
+    Prot.sv_setGroundTest(prot, lua.eval("function( b ) return g_swPlots:sv_isGround( b ) end"))
+    Prot.sv_setResolver(prot, lua.execute("""
+        return function( body )
+            if g_swPlots:sv_isScenery( body ) then return "locked" end
+            local zone = g_swPlots:sv_bodyIsOpen( body )
+            if zone == "sweep" then return "sweep" end
+            if Settings.Get( "buildopen" ) == false
+                and not g_swProtection:sv_modeClosesBuilding() then
+                return false
+            end
+            return zone
+        end
+    """))
+
+    B = float(P.BLOCK)
+    bx, by = lua.globals().Layout.plotCentre(plots["layout"], 1)
+    # a plot body: its stand reaches the ground, which is what makes it ground
+    ground = lua.execute("""
+        return function( x, y )
+            local b = { worldPosition = { x = x, y = y, z = 1.1 } }
+            function b:getShapes() return { { shapeUuid = "concrete-ish" } } end
+            function b:getWorldAabb()
+                return { x = x, y = y, z = 0.0 }, { x = x, y = y, z = 1.25 }
+            end
+            return b
+        end
+    """)(float(bx) * B, float(by) * B)
+    assert P.sv_isGround(plots, ground) is True, "the fixture is not ground"
+    # hold the plot open so the resolver says buildable
+    P.sv_holdTeam(plots, lua.table_from({"kind": "plot", "index": 1}))
+
+    def flags(mode, buildopen):
+        Prot.sv_setMode(prot, mode)
+        lua.globals().Settings.Sv_SetQuiet("buildopen", buildopen)
+        got = Prot.sv_profileForTest(prot, ground)
+        return got[0] if isinstance(got, tuple) else got
+
+    build = flags("open", True)
+    assert build["buildable"] is True, "you cannot build on your own plot in BUILD"
+    assert build["erasable"] is True, "you cannot remove a block you placed"
+    assert build["liftable"] is True, (
+        "the plot is pinned during build time -- 'not protected when build time'")
+    assert build["convertibleToDynamic"] is True, (
+        "the plot cannot convert during build time")
+
+    for mode, why in [("polish", "the buffer"), ("display", "prep"),
+                      ("locked", "after the event has ended")]:
+        p = flags(mode, False)
+        assert p["liftable"] is False, (
+            f"during {why} somebody could lift a whole plot away")
+        assert p["convertibleToDynamic"] is False, (
+            f"during {why} a plot floor could come loose")
+
+    # and the pinned twins really are the profile in every other respect
+    src = io.open(SCRIPTS / "Protection.lua", encoding="utf-8").read()
     body = src[src.index("local PROFILES = {"):src.index("Protection.MODES")]
     lua.execute(body.replace("local PROFILES", "PROFILES", 1)
                     .replace("local PINNED", "PINNED", 1))
     PROFILES, PINNED = lua.globals().PROFILES, lua.globals().PINNED
-
-    assert PINNED is not None, "there is no PINNED table -- the ground is not pinned"
     for name in PROFILES:
-        assert PINNED[name] is not None, f"no pinned twin for the {name!r} profile"
-        assert PINNED[name]["liftable"] is False, (
-            f"pinned {name!r} is liftable -- a plot floor could be carried off")
-        assert PINNED[name]["convertibleToDynamic"] is False, (
-            f"pinned {name!r} converts to dynamic -- the floor could come loose")
-        # and the twin must be the profile in every OTHER respect
-        for flag in ("buildable", "erasable", "paintable", "connectable", "usable",
-                     "destructable"):
+        assert PINNED[name] is not None, f"no pinned twin for {name!r}"
+        for flag in ("buildable", "erasable", "paintable", "connectable",
+                     "usable", "destructable"):
             assert PINNED[name][flag] == PROFILES[name][flag], (
                 f"pinned {name!r} changed {flag}; it may only pin the two")
 
-    # every path out of profileFor has to go through the pin
     fn = src[src.index("local function profileFor"):]
     fn = fn[:fn.index(chr(10) + "end")]
     returns = [ln.strip() for ln in fn.splitlines()
                if ln.strip().startswith("return") or "then return" in ln]
     for line in returns:
-        assert "forBody(" in line, (
-            f"profileFor returns without the ground pin: {line!r}")
-    assert len(returns) >= 5, f"only found {len(returns)} return paths -- parse is wrong"
+        assert "forBody(" in line, f"profileFor returns without the pin: {line!r}"
 
 
 def buffer_time_actually_reaches_the_polish_profile():
@@ -2148,8 +2207,8 @@ def main():
           a_plot_is_one_welded_body_with_its_own_stand)
     check("tools: the cleaner is wired to one uuid everywhere",
           the_cleaner_is_wired_to_the_same_uuid_everywhere)
-    check("protection: the city floor is never liftable or dynamic",
-          the_city_floor_is_never_liftable_or_dynamic)
+    check("protection: the floor is free while building, pinned otherwise",
+          the_city_floor_is_pinned_except_while_people_are_building)
     check("protection: buffer time actually reaches the polish profile",
           buffer_time_actually_reaches_the_polish_profile)
     check("protection: buffer time polishes but never places or breaks",

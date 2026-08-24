@@ -388,7 +388,7 @@ table:
 `enableCreations = false` on every vanilla creative world — so it does not mean
 player blueprints.
 
-### The city floor must be PINNED in every profile
+### The city floor is pinned in every profile EXCEPT while people are building
 
 `PROFILES.open` — the profile the whole city runs under during **build time** —
 sets `liftable = true` and `convertibleToDynamic = true`. A plot slab is not
@@ -408,7 +408,24 @@ is at z 0.75, a plot slab at 1.00, and anything merely *standing* on the floor
 starts at 1.25. A build welded to a slab shares the slab's body and is pinned
 with it, which is correct: it is part of the ground now.
 
-A check asserts every return path in `profileFor` goes through the pin.
+**But NOT during build time.** *"the stand the plot is on. and the plot it self
+shall be destructuble and placable. aka not protected when build time."* While
+the clock is running, a plot and the stand under it belong to whoever is
+building on them; presence enforcement is what keeps that to their own plot, not
+a flag on the body. `GROUND_FREE` names the modes that skip the pin, and it is
+`open` and `open_destructible` only.
+
+Every other mode still pins, which is when pinning earns its keep — nobody should
+be able to lift a plot away during prep, during the buffer, after the event has
+ended, or under a `/lockdown`.
+
+Note that `locked` and `display` are already `liftable = false` in their own
+right, so the pin only *changes* anything for `polish` and `open`. The check
+tests `polish` for exactly that reason; testing `locked` would pass whatever the
+code did.
+
+A check asserts every return path in `profileFor` goes through the pin, and it
+runs the real resolver rather than reading the table.
 
 ### Body flags are global, so "only build on your own tile" needs presence AND absence
 

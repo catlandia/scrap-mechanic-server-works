@@ -249,10 +249,24 @@ end
 -- you whether the plots came out buildable; "open 96, locked 2, sweep 1" does.
 -- The ground's twin, if this body is the ground. One place, so every return path
 -- below goes through it and none can forget.
+-- Modes in which the ground is NOT pinned: build time, and build time only.
+--
+-- "the stand the plot is on. and the plot it self shall be destructuble and
+-- placable. aka not protected when build time."
+--
+-- While the clock is running, a plot and the stand under it belong to whoever
+-- is building on them, to change however they like -- and presence enforcement
+-- is what keeps that to their own plot, not a flag on the body.
+--
+-- Every other mode still pins. That is when pinning actually earns its keep:
+-- nobody should be able to lift somebody's plot away during prep, during the
+-- buffer, after the event has ended, or under a /lockdown.
+local GROUND_FREE = { open = true, open_destructible = true }
+
 local function forBody( self, profile, name, body )
-	if self.groundTest then
+	if self.groundTest and PINNED[name] and not GROUND_FREE[name] then
 		local ok, ground = pcall( self.groundTest, body )
-		if ok and ground and PINNED[name] then
+		if ok and ground then
 			return PINNED[name], name
 		end
 	end
