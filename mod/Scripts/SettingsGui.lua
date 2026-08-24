@@ -59,13 +59,19 @@ SettingsGui.GROUPS = {
 		"cleanupdebris", "autoremove" } },
 	{ key = "tools", title = "TOOLS", keys = {
 		"claygun", "firelauncher", "extinguisher", "sledgehammer", "spudguns",
-		"glowsticks", "painttool", "connecttool", "weldtool", "lift", "hostlift" } },
+		"glowsticks", "painttool", "connecttool", "weldtool" } },
 	{ key = "plots", title = "PLOTS", keys = {
 		"plots", "pushintruders", "buildopen", "minbuildheight" } },
 	{ key = "limits", title = "LIMITS", keys = {
 		"maxjoints", "maxbots", "maxlights" } },
 	{ key = "event", title = "EVENT", keys = {
 		"allowlist", "alarmlock", "alarmdrop", "autosave" } },
+	-- Ten rows exactly, which is one page: five pieces of the city, each a
+	-- block and a colour, block first so a row and its colour sit together.
+	{ key = "style", title = "CITY STYLE", keys = {
+		"padblock", "padcolour", "borderblock", "bordercolour",
+		"roadblock", "roadcolour", "plazablock", "plazacolour",
+		"standblock", "standcolour" } },
 }
 
 local HIDDEN = { protection = true }
@@ -270,6 +276,15 @@ SettingsGui.STEPS = {
 
 function SettingsGui.NextValue( row, current )
 	if row.kind == "bool" then return not current end
+	-- A choice list cycles the same way the number steps do, so the city style
+	-- is clickable rather than something only /set can reach.
+	local choices = row.choices and row.choices()
+	if choices then
+		for i, v in ipairs( choices ) do
+			if v == current then return choices[( i % #choices ) + 1] end
+		end
+		return choices[1]
+	end
 	local steps = SettingsGui.STEPS[row.key]
 	if steps == nil then return current end
 	for i, v in ipairs( steps ) do

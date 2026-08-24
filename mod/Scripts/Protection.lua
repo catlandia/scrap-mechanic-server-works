@@ -163,6 +163,45 @@ PROFILES.open_destructible = {
 	convertibleToDynamic = true,
 }
 
+-- OVER BUDGET: the open profile with PLACING taken out, and nothing else.
+--
+-- REPORTED: "I cant break the block if I hit the limit. so like I am stuck in a
+-- loop I cant remove the bearing that prevents from building."
+--
+-- Going over the per-plot part limit used to hand the plot the LOCKED profile,
+-- and locked is erasable = false. So the limit forbade the one action that could
+-- satisfy it. The owner could not trim, could not undo, could not do anything
+-- except find the host -- which is the worst possible failure mode for a rule
+-- whose whole purpose is to be a brake rather than a punishment.
+--
+-- Trim keeps everything else: erase, repaint, rewire, sit in it and drive it.
+-- Add a part and nothing happens. Five seconds after the offending bearing comes
+-- off, the audit reopens the plot.
+--
+-- Two profiles, because the open profile it is derived from depends on the
+-- `destructible` setting. See TRIM_OF below.
+PROFILES.trim = {
+	buildable = false,
+	erasable = true,
+	connectable = true,
+	paintable = true,
+	liftable = true,
+	usable = true,
+	destructable = false,
+	convertibleToDynamic = true,
+}
+
+PROFILES.trim_destructible = {
+	buildable = false,
+	erasable = true,
+	connectable = true,
+	paintable = true,
+	liftable = true,
+	usable = true,
+	destructable = true,
+	convertibleToDynamic = true,
+}
+
 -- THE GROUND IS PINNED, WHATEVER ELSE ITS PROFILE ALLOWS.
 --
 -- Every profile above gets a twin with liftable and convertibleToDynamic forced
@@ -261,7 +300,25 @@ end
 -- Every other mode still pins. That is when pinning actually earns its keep:
 -- nobody should be able to lift somebody's plot away during prep, during the
 -- buffer, after the event has ended, or under a /lockdown.
-local GROUND_FREE = { open = true, open_destructible = true }
+-- trim is build time too -- a plot over its budget is still a plot somebody is
+-- building on, and pinning the ground under it would stop them lifting their own
+-- slab for no reason connected to the part limit.
+local GROUND_FREE = {
+	open = true, open_destructible = true,
+	trim = true, trim_destructible = true,
+}
+
+-- Which trim profile goes with which open profile.
+--
+-- polish maps to ITSELF on purpose. During buffer time nobody may place OR erase
+-- anything, so being over budget blocks nothing that was not already blocked,
+-- and handing out the trim profile there would quietly reintroduce erasing into
+-- the one window that exists to have neither.
+local TRIM_OF = {
+	open = "trim",
+	open_destructible = "trim_destructible",
+	polish = "polish",
+}
 
 local function forBody( self, profile, name, body )
 	if self.groundTest and PINNED[name] and not GROUND_FREE[name] then
@@ -309,6 +366,12 @@ local function profileFor( self, body )
 		-- true/false for the common two, or a profile name for anything else.
 		if verdict == true then return forBody( self, openProfile, openName, body ) end
 		if verdict == false then return forBody( self, PROFILES.locked, "locked", body ) end
+		-- Named rather than left to the generic string branch below, because
+		-- which trim profile is right depends on the mode: see TRIM_OF.
+		if verdict == "trim" then
+			local name = TRIM_OF[openName] or "trim"
+			return forBody( self, PROFILES[name], name, body )
+		end
 		if type( verdict ) == "string" and PROFILES[verdict] then
 			return forBody( self, PROFILES[verdict], verdict, body )
 		end

@@ -2,6 +2,7 @@ dofile( "$GAME_DATA/Scripts/game/CreativeGame.lua" )
 -- Layout first: it is pure geometry with no dependencies, and both PlotsGui
 -- (client) and Plots (server) read it at load time.
 dofile( "$CONTENT_DATA/Scripts/Layout.lua" )
+dofile( "$CONTENT_DATA/Scripts/Palette.lua" )
 dofile( "$CONTENT_DATA/Scripts/Settings.lua" )
 dofile( "$CONTENT_DATA/Scripts/Identity.lua" )
 dofile( "$CONTENT_DATA/Scripts/SettingsGui.lua" )
@@ -10,6 +11,7 @@ dofile( "$CONTENT_DATA/Scripts/GuardedTools.lua" )
 dofile( "$CONTENT_DATA/Scripts/MenuGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/Event.lua" )
 dofile( "$CONTENT_DATA/Scripts/EventHud.lua" )
+dofile( "$CONTENT_DATA/Scripts/RosterHud.lua" )
 dofile( "$CONTENT_DATA/Scripts/EventGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/ConfirmGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/MyPlotGui.lua" )
@@ -240,6 +242,12 @@ function Game.server_onFixedUpdate( self, dt )
 	self:sv_flushKicks()
 	self:sv_tickEvent( tick )
 
+	-- Once a second, and it only sends when a number actually moved.
+	if tick >= ( self.sv.nextRoster or 0 ) then
+		self.sv.nextRoster = tick + TICKS_PER_SECOND
+		pcall( function() self:sv_pushRoster() end )
+	end
+
 	-- Re-read the ban file so a tool outside the game can push a ban mid-event.
 	if tick >= self.sv.nextBanReload then
 		self.sv.nextBanReload = tick + Identity.RELOAD_SECONDS * TICKS_PER_SECOND
@@ -315,6 +323,52 @@ function Game.sv_tickEvent( self, tick )
 		self.sv.nextEventPush = tick + TICKS_PER_SECOND
 		self:sv_pushEvent()
 	end
+end
+
+-- WHO IS HERE, AND WHO HAS EVER BEEN HERE.
+--
+-- "a counter of amount of players curently. and amount of residents. resident
+-- list is list of players that were here - the banned ones."
+--
+-- Residents is deliberately the number of RECORDS minus the number of banned
+-- records, not "records with a lastSeen". A record is created the first time
+-- somebody joins under a name, so the count is exactly "people who have been
+-- here", and taking the bans off it makes it "people who have been here and are
+-- still welcome" -- which is the number worth putting on screen.
+--
+-- Cheap: two array lengths and one loop over the ban list, once a second, and
+-- only sent when it changes.
+function Game.sv_rosterCounts( self )
+	local online = #sm.player.getAllPlayers()
+	local records = Identity.players and Identity.players.records or {}
+	local banned = 0
+	for _, entry in ipairs( Identity.bans and Identity.bans.bans or {} ) do
+		if Identity.Sv_FindByPerma( entry.perma ) then
+			-- Only bans that match somebody we have a record for. A ban pushed
+			-- by dev/resolve_ids.py for a name nobody has ever used here is not
+			-- a resident we lost.
+			banned = banned + 1
+		end
+	end
+	return online, math.max( 0, #records - banned )
+end
+
+function Game.sv_pushRoster( self, player )
+	local online, residents = self:sv_rosterCounts()
+	local state = { online = online, residents = residents }
+	if player then
+		self.network:sendToClient( player, "client_setRoster", state )
+		return
+	end
+	-- Only when it changes. This is a HUD that redraws on receipt, and sending
+	-- an identical payload once a second would be a redraw once a second for
+	-- every client, forever, for a number that changes a handful of times a day.
+	if self.sv.roster and self.sv.roster.online == online
+		and self.sv.roster.residents == residents then
+		return
+	end
+	self.sv.roster = state
+	self.network:sendToClients( "client_setRoster", state )
 end
 
 function Game.sv_pushEvent( self, player )
@@ -505,6 +559,9 @@ function Game.server_onPlayerJoined( self, player, newPlayer )
 		event = g_swEvent and g_swEvent.phase or "off",
 	} )
 	self:sv_pushEvent( player )
+	self:sv_pushRoster( player )
+	-- ...and everybody else, because the online count just went up.
+	self:sv_pushRoster()
 
 	-- The single most confusing state this mod can be in: a clock nobody knew
 	-- was running has shut building, so the remove tool draws no red preview and
@@ -614,6 +671,39 @@ function Game.cl_eventRemaining( self )
 	return math.max( 0, e.remaining - elapsed )
 end
 
+function Game.client_setRoster( self, state )
+	if self.cl == nil then self.cl = {} end
+	self.cl.roster = state
+	self.cl.rosterDirty = true
+end
+
+-- Rendered only when the numbers change or the panel does not exist yet. There
+-- is no clock in it, so there is nothing to redraw on a timer.
+function Game.cl_updateRosterHud( self )
+	local r = self.cl.roster
+	if r == nil or not self.cl.rosterDirty then return end
+	self.cl.rosterDirty = false
+
+	if self.cl.rosterHud == nil or not sm.exists( self.cl.rosterHud ) then
+		-- The same four flags NotificationManager uses for its own timer, and
+		-- the same ones the event clock uses. isHud draws over the game and
+		-- isInteractive = false means it can never eat a click.
+		local ok, gui = pcall( sm.jsonGui.createGui, { layer = "Wallpaper",
+			isInteractive = false, needsCursor = false, isHud = true } )
+		if not ok then
+			if not self.cl.rosterHudFaulted then
+				self.cl.rosterHudFaulted = true
+				sm.log.warning( "[ServerWorks] roster HUD unavailable: " .. tostring( gui ) )
+			end
+			return
+		end
+		self.cl.rosterHud = gui
+	end
+
+	local sw, sh = EventHud.ScreenSize()
+	pcall( function() self.cl.rosterHud:render( RosterHud.Build( r, sw, sh ) ) end )
+end
+
 function Game.cl_updateEventHud( self )
 	local e = self.cl.event
 	if e == nil then return end
@@ -697,6 +787,11 @@ function Game.client_onFixedUpdate( self, dt )
 
 	if self.cl and self.cl.event then
 		self:cl_updateEventHud()
+	end
+	-- Unconditional, unlike the clock: the roster is there whether or not an
+	-- event has ever been started, which is most of the time this server is up.
+	if self.cl then
+		self:cl_updateRosterHud()
 	end
 
 	-- The host still gets every BUILD tool, but not the hazards. The bypass was
@@ -827,6 +922,9 @@ function Game.client_onCreate( self )
 	sm.game.bindChatCommand( "/preset",
 		{ { "string", "name", true, { "build", "show", "lockdown", "sandbox" } } },
 		"cl_onAdminCommand", "Host: apply a whole set of settings at once" )
+	sm.game.bindChatCommand( "/citystyle", { { "string", "name", true } },
+		"cl_onAdminCommand",
+		"style the city -- /citystyle for the list. Rebuild the city to apply it." )
 	sm.game.bindChatCommand( "/settings", {}, "cl_onAdminCommand",
 		"Host: open the settings panel" )
 	sm.game.bindChatCommand( "/settingslist", {}, "cl_onAdminCommand",
@@ -1831,12 +1929,14 @@ function Game.sv_n_adminCommand( self, params, player )
 		reply( "  /plot leave         give up your plot" )
 		reply( "  /home               teleport back to your own plot" )
 		reply( "  /players            who is here     /rules  the server rules" )
+		reply( "  /budget             what your plot is using, against what it is allowed" )
 		if isHost then
 			reply( "HOST" )
 			reply( "  /preset build|show|lockdown|sandbox" )
 			reply( "  /settings           open the settings panel" )
 			reply( "  /settingslist  /set <name> <value>" )
 			reply( "  /plotmenu           lay the city out, then build it" )
+			reply( "  /citystyle          which blocks and colours the city is made of" )
 			reply( "  /plots on|off  /plotbuild  /plotclear" )
 			reply( "  /plotgrid <plot> <gap> <cols> <rows>" )
 			reply( "  /event start <prep> <build>   minutes. Prep = claim only, no building" )
@@ -1890,6 +1990,46 @@ function Game.sv_n_adminCommand( self, params, player )
 			self:sv_toWorld( "/settingschanged", params, player )
 			self:sv_broadcast( "Server preset: " .. detail )
 		end
+
+	elseif cmd == "/citystyle" then
+		local name = params[2]
+		if name == nil or name == "" then
+			reply( "city style -- /citystyle <name>, or /set <key> <value>" )
+			for _, line in ipairs( ( Plots and Plots.StyleLines ) and Plots.StyleLines() or {} ) do
+				reply( line )
+			end
+			reply( "  styles: " .. table.concat( Palette.STYLE_ORDER, "  " ) )
+			reply( "  /citystyle blocks   /citystyle colours   for the full lists" )
+			reply( "  Nothing changes until you BUILD CITY again -- the city is blueprints." )
+			return
+		end
+		name = string.lower( name )
+		if name == "blocks" then
+			reply( "blocks: " .. table.concat( Palette.MATERIAL_ORDER, "  " ) )
+			return
+		end
+		if name == "colours" or name == "colors" then
+			-- Four rows of ten, the way the paint tool draws them, so a name can
+			-- be found by looking at the swatch rather than by reading a list.
+			for r = 1, #Palette.ROWS do
+				local names = {}
+				for c = 1, #Palette.ROWS[r] do
+					names[#names + 1] = Palette.NameOfHex( Palette.ROWS[r][c] )
+				end
+				reply( "  " .. table.concat( names, " " ) )
+			end
+			return
+		end
+		local style = Palette.STYLES[name]
+		if style == nil then
+			reply( "no style called '" .. name .. "' -- " .. table.concat( Palette.STYLE_ORDER, ", " ) )
+			return
+		end
+		for key, value in pairs( style ) do
+			Settings.Sv_Set( key, value )
+		end
+		self:sv_toWorld( "/settingschanged", params, player )
+		self:sv_broadcast( "City style: " .. name .. " -- BUILD CITY to apply it." )
 
 	elseif cmd == "/menu" then
 		self:sv_openMenu( player )

@@ -29,7 +29,27 @@
 
 Rules = class( nil )
 
-Rules.AUDIT_SECONDS = 5      -- one full pass every 5 s; cheap enough at event scale
+-- TWO CADENCES, NOT ONE.
+--
+-- REPORTED: "item detection is a bit too slow. you can run it faster if you only
+-- check ocupied places with players curently on the server ocupied."
+--
+-- Which is the right optimisation and worth spelling out. A plot can only go
+-- over its budget if somebody is BUILDING on it, and somebody building on it is
+-- standing on it. Every other plot in the city is a plot whose contents cannot
+-- have changed since the last pass, and walking it is pure cost.
+--
+-- So the fast pass runs five times as often over the handful of plots that have
+-- people on them, and the full pass keeps its old five seconds and still covers
+-- everything -- contraband dropped on a road, a plot whose owner logged off
+-- mid-build, a body that drifted somewhere nobody is standing. Nothing is lost;
+-- the common case just answers five times sooner.
+--
+-- Plots.sv_updateOccupancy already knows who is standing where -- it runs every
+-- tick and is the only thing in the mod that looks -- so the scope costs nothing
+-- to compute.
+Rules.AUDIT_SECONDS = 5      -- the FULL pass: every body, every plot, contraband
+Rules.FAST_SECONDS = 1       -- the SCOPED pass: only plots somebody is on
 
 local function set( list )
 	local out = {}
@@ -101,19 +121,34 @@ local CONTRABAND = {
 }
 
 function Rules.sv_onCreate( self )
-	self.nextAudit = 0
+	self.nextFull = 0
+	self.nextFast = 0
 	self.violations = {}      -- plotIndex -> { reason strings }
+	self.lastPerPlot = {}     -- plotIndex -> counts, what /budget prints
 	self.lastReported = {}
 end
 
--- One pass over every body, bucketed by plot. Runs on a timer rather than every
--- tick: budgets are a slow-moving property and a 5 second lag on noticing beats
--- paying for the scan 40 times a second.
+-- One pass over the bodies, bucketed by plot. Runs on a timer rather than every
+-- tick: budgets are a slow-moving property and paying for the scan 40 times a
+-- second buys nothing. See Rules.FAST_SECONDS for the two cadences.
 function Rules.sv_audit( self, tick, plots, getSetting )
-	if tick < self.nextAudit then
+	local full = tick >= ( self.nextFull or 0 )
+	if not full and tick < ( self.nextFast or 0 ) then
 		return nil
 	end
-	self.nextAudit = tick + Rules.AUDIT_SECONDS * 40
+	self.nextFast = tick + Rules.FAST_SECONDS * 40
+
+	-- nil scope means "everything". A scoped pass looks only at the plots
+	-- somebody is standing on or beside; see the note by Rules.FAST_SECONDS.
+	local scope = nil
+	if full then
+		self.nextFull = tick + Rules.AUDIT_SECONDS * 40
+	else
+		scope = plots:sv_activePlots()
+		if next( scope ) == nil then
+			return nil            -- nobody near a plot: nothing can have changed
+		end
+	end
 
 	local maxJoints = tonumber( getSetting( "maxjoints" ) ) or 0
 	local maxBots = tonumber( getSetting( "maxbots" ) ) or 0
@@ -133,6 +168,14 @@ function Rules.sv_audit( self, tick, plots, getSetting )
 		return perPlot[i]
 	end
 
+	-- A scoped plot has to be recomputed even when it turns out to hold nothing
+	-- at all, or a plot whose last offending part was just deleted would keep
+	-- its stale violation until the next full pass. Seeding an empty bucket is
+	-- what makes "trim it and it reopens" take one second rather than five.
+	if scope then
+		for index in pairs( scope ) do bucket( index ) end
+	end
+
 	-- Ghosts excluded: a creation held on the lift is not built yet, and counting
 	-- it would put a plot over budget -- and therefore lock it -- for as long as
 	-- somebody stood there holding a blueprint.
@@ -141,10 +184,20 @@ function Rules.sv_audit( self, tick, plots, getSetting )
 			local z = plots:sv_bodyZone( body )
 			local index = ( z and z.kind == "plot" ) and z.index or nil
 
+			-- The whole saving. Everything below this line is per-SHAPE work,
+			-- and on a scoped pass a body that is not on a plot somebody is
+			-- standing on never reaches any of it.
+			if scope == nil or ( index ~= nil and scope[index] ) then
+
 			local shapes = body:getShapes()
 			for _, shape in ipairs( shapes ) do
 				local uuid = tostring( shape.shapeUuid )
-				local banned = CONTRABAND[uuid]
+				-- Only on a full pass. A scoped pass never looks at a road or
+				-- the plaza, which is where dropped contraband actually
+				-- lands, so collecting it there would report a shrinking
+				-- subset once a second and make it look like things were
+				-- vanishing on their own.
+				local banned = full and CONTRABAND[uuid]
 				if banned and getSetting( banned.setting ) == false then
 					contraband[#contraband + 1] = { shape = shape, label = banned.label, plot = index }
 				end
@@ -167,10 +220,19 @@ function Rules.sv_audit( self, tick, plots, getSetting )
 					end
 				end
 			end
+
+			end
 		end
 	end
 
-	self.violations = {}
+	-- A full pass replaces the verdict outright. A scoped pass edits it, so a
+	-- plot nobody is standing on keeps whatever the last full pass said about it
+	-- rather than silently becoming compliant because it was not looked at.
+	if full then
+		self.violations = {}
+		self.lastPerPlot = {}
+	end
+
 	for index, b in pairs( perPlot ) do
 		local reasons = {}
 		if maxJoints > 0 and b.joints > maxJoints then
@@ -186,16 +248,16 @@ function Rules.sv_audit( self, tick, plots, getSetting )
 		if b.deep > 0 then
 			reasons[#reasons + 1] = string.format( "%d blocks below ground (no basements)", b.deep )
 		end
-		if #reasons > 0 then
-			self.violations[index] = reasons
-		end
+		-- nil, not "leave it alone": clearing a violation is exactly what a
+		-- scoped pass exists to do quickly.
+		self.violations[index] = ( #reasons > 0 ) and reasons or nil
+		-- Kept so /budget can SHOW the numbers rather than leaving somebody to
+		-- infer them from whether their plot locked. "I am a bit sceptical of
+		-- that if it works" is a fair thing to be, and a readout answers it.
+		self.lastPerPlot[index] = b
 	end
 
-	-- Kept so /budget can SHOW the numbers rather than leaving somebody to infer
-	-- them from whether their plot locked. "I am a bit sceptical of that if it
-	-- works" is a fair thing to be, and a readout answers it in one command.
-	self.lastPerPlot = perPlot
-	return { perPlot = perPlot, contraband = contraband }
+	return { perPlot = perPlot, contraband = contraband, full = full, scope = scope }
 end
 
 -- What a plot is using, against what it is allowed. nil until the first audit,
@@ -225,7 +287,8 @@ function Rules.sv_budgetLines( self, index, getSetting )
 	end
 
 	local why = self.violations and self.violations[index]
-	out[#out + 1] = why and "   -> this plot is LOCKED until it is trimmed"
+	out[#out + 1] = why
+		and "   -> no NEW parts until you trim it -- removing still works"
 		or "   -> within the limits"
 	return out
 end

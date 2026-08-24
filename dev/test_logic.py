@@ -2169,6 +2169,13 @@ def every_caption_can_be_drawn():
             lua.table_from({"phase": phase, "remaining": 754.0, "panic": phase == "build"}),
             1920, 1080))
 
+    # The top-left roster. Two states, because a four digit resident count is
+    # a different string from a one digit one and a glyph-limited font can
+    # fail on one and not the other.
+    for state in ({"online": 0, "residents": 0}, {"online": 12, "residents": 3407}):
+        collect("rosterhud", lua.globals().RosterHud.Build(
+            lua.table_from(state), 1920, 1080))
+
     assert captions, "no captions collected -- the panels built nothing"
 
     bad, ghosts = [], set()
@@ -2285,8 +2292,8 @@ def walk_raw(node, out=None):
 
 
 def gui_lua():
-    lua = fresh("Layout.lua", "Settings.lua", "Event.lua", "EventHud.lua",
-                "EventGui.lua", "ConfirmGui.lua",
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Event.lua", "EventHud.lua",
+                "RosterHud.lua", "EventGui.lua", "ConfirmGui.lua",
                 "SettingsGui.lua", "PlotsGui.lua", "MenuGui.lua", "MyPlotGui.lua")
     lua.globals().Settings.Sv_Load(False)
     return lua
@@ -2628,7 +2635,576 @@ def the_confirm_panel_puts_the_dangerous_button_somewhere_else():
         "cancel")
 
 
+
+# --------------------------------------------------------- the trim profile ---
+
+def _plot_fixture(lua):
+    """A real Plots, a real Protection, the real World resolver, and a body
+    standing on plot 1.
+
+    Shared by the over-budget checks below. Deliberately NOT at the origin: the
+    origin is the plaza, which resolves to "sweep", and a check written there
+    would pass for entirely the wrong reason.
+    """
+    lua.globals().Settings.Sv_Load(False)
+    P, Prot = lua.globals().Plots, lua.globals().Protection
+
+    plots = lua.eval("Plots()")
+    P.sv_onCreate(plots, lua.table_from({"grid": lua.table_from({}), "enabled": True}))
+    plots["enabled"] = True
+    lua.globals().g_swPlots = plots
+
+    prot = lua.eval("Protection()")
+    Prot.sv_onCreate(prot, "open")
+    lua.globals().g_swProtection = prot
+
+    resolver = lua.execute("""
+        return function( body )
+            if g_swPlots:sv_isScenery( body ) then return "locked" end
+            local zone = g_swPlots:sv_bodyIsOpen( body )
+            if zone == "sweep" then return "sweep" end
+            if Settings.Get( "buildopen" ) == false
+                and not g_swProtection:sv_modeClosesBuilding() then
+                return false
+            end
+            return zone
+        end
+    """)
+    Prot.sv_setResolver(prot, resolver)
+
+    bx, by = lua.globals().Layout.plotCentre(plots["layout"], 1)
+    assert bx is not None, "plot 1 does not exist -- the fixture is wrong"
+    block = float(P.BLOCK)
+    make_body = lua.execute("""
+        return function( x, y, z )
+            local b = { worldPosition = { x = x, y = y, z = z } }
+            function b:getShapes() return { { shapeUuid = "not-ours" } } end
+            function b:getWorldAabb()
+                return { x = x, y = y, z = z }, { x = x, y = y, z = z + 1 }
+            end
+            return b
+        end
+    """)
+    body = make_body(float(bx) * block, float(by) * block, 1.5)
+
+    zone = P.sv_bodyIsOpen(plots, body)
+    assert zone is True, (
+        f"the fixture is not standing on a buildable plot -- sv_bodyIsOpen says "
+        f"{zone!r}, so every check built on it would pass for the wrong reason")
+    return plots, prot, body
+
+
+def over_budget_still_lets_you_trim():
+    """Going over the part limit must not lock the way OUT of going over it.
+
+    REPORTED: "I cant break the block if I hit the limit. so like I am stuck in a
+    loop I cant remove the bearing that prevents from building."
+
+    The old code returned `false` -- the LOCKED profile, erasable = false -- from
+    the top of sv_bodyIsOpen. So the only action that could satisfy the limit was
+    the one the limit forbade.
+
+    This runs the real resolver rather than reading the PROFILES table, because
+    reading the table is exactly what would have passed while the feature was
+    unreachable. See buffer_time_actually_reaches_the_polish_profile for the
+    version of this mistake that shipped.
+    """
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Protection.lua",
+                "Plots.lua", "Event.lua")
+    P, Prot = lua.globals().Plots, lua.globals().Protection
+    plots, prot, body = _plot_fixture(lua)
+
+    def profile():
+        got = Prot.sv_profileForTest(prot, body)
+        return got[0] if isinstance(got, tuple) else got
+
+    before = profile()
+    assert before["buildable"] is True, "the fixture plot is not buildable to start with"
+
+    # over budget, exactly the way World.sv_checkRules sets it
+    plots["overBudget"] = lua.table_from({1: True})
+
+    got = profile()
+    assert got["buildable"] is False, (
+        "a plot over its part budget still accepts new parts -- the limit does nothing")
+    assert got["erasable"] is True, (
+        "OVER BUDGET LOCKED ERASING. This is the reported deadlock: the owner "
+        "cannot remove the part that put them over the limit, so there is no way "
+        "back under it without the host.")
+    assert got["paintable"] is True, "trimming a plot should not cost you painting"
+    assert got["connectable"] is True, "trimming a plot should not cost you wiring"
+    assert got["usable"] is True, "trimming a plot should not cost you the seats"
+
+    # and it clears again
+    plots["overBudget"] = lua.table_from({})
+    assert profile()["buildable"] is True, "trimming the plot did not reopen it"
+
+
+def over_budget_never_opens_somebody_elses_plot():
+    """The downgrade only ever takes away. It must never grant.
+
+    Body permission flags are per-BODY, so "erasable" means erasable BY EVERYONE.
+    If the over-budget verdict were applied before the ownership rules -- which
+    is where it used to live -- then a plot that was locked to a passer-by would
+    become erasable to them the moment its owner went one bearing over. That
+    turns the part limit into a griefing tool.
+    """
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Protection.lua",
+                "Plots.lua", "Event.lua")
+    P, Prot = lua.globals().Plots, lua.globals().Protection
+    plots, prot, body = _plot_fixture(lua)
+
+    # claimed by somebody who is not here, which is the LOCKED case
+    ok, why = P.sv_claim(plots, 1, "SW-0001")
+    assert ok, f"could not claim plot 1: {why}"
+    assert P.sv_bodyIsOpen(plots, body) is False, (
+        "an empty claimed plot is not locked -- the fixture cannot test this")
+
+    plots["overBudget"] = lua.table_from({1: True})
+    verdict = P.sv_bodyIsOpen(plots, body)
+    assert verdict is False, (
+        f"an over-budget plot that was LOCKED to you came back {verdict!r}. The "
+        f"downgrade must only ever take building away from a plot that was open, "
+        f"never hand erasing to somebody who had none.")
+
+
+def over_budget_during_buffer_stays_polish():
+    """Buffer time is "no placing and no breaking". Over budget must not add breaking.
+
+    trim is derived from whichever open profile is in force, and during the
+    buffer that is `polish`, which is erasable = false on purpose. Mapping trim
+    to the plain trim profile there would quietly put erasing back into the one
+    window that exists to have neither verb.
+    """
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Protection.lua",
+                "Plots.lua", "Event.lua")
+    Prot = lua.globals().Protection
+    plots, prot, body = _plot_fixture(lua)
+
+    plots["overBudget"] = lua.table_from({1: True})
+    Prot.sv_setMode(prot, "polish")
+    got = Prot.sv_profileForTest(prot, body)
+    got = got[0] if isinstance(got, tuple) else got
+
+    assert got["buildable"] is False, "buffer time let somebody place a block"
+    assert got["erasable"] is False, (
+        "an over-budget plot became ERASABLE during buffer time. Buffer is the "
+        "one window with neither verb; trim must map to polish there.")
+    assert got["paintable"] is True, "buffer time stopped being paintable"
+
+
+# ------------------------------------------------------- the scoped audit ---
+
+def _rules_fixture(lua, active):
+    """A Rules, a fake Plots that reports `active` as its occupied plots, and a
+    joint-heavy body sitting on plot 1."""
+    R = lua.globals().Rules
+    rules = lua.eval("Rules()")
+    R.sv_onCreate(rules)
+    plots = lua.execute("""
+        return function( active )
+            local p = { active = active }
+            function p:sv_activePlots() return self.active end
+            function p:sv_bodyZone( body ) return { kind = "plot", index = body.plot } end
+            return p
+        end
+    """)(lua.table_from(active))
+    return rules, plots
+
+
+def the_fast_audit_only_looks_at_plots_people_are_on():
+    """The scoped pass must skip the per-shape work for everything else.
+
+    Asked for as: "item detection is a bit too slow. you can run it faster if you
+    only check ocupied places with players curently on the server ocupied."
+
+    A body on a plot nobody is standing on must not have getShapes() called on it
+    during a fast pass -- that walk is the entire cost of the audit, and skipping
+    it is the whole optimisation. Counted rather than assumed.
+    """
+    lua = fresh("Rules.lua")
+    lua.execute("function isGhostBody( body ) return false end")
+    rules, plots = _rules_fixture(lua, {1: True})
+
+    lua.execute("""
+        swShapeCalls = 0
+        local function body( plot, joints )
+            local b = { plot = plot }
+            function b:getShapes()
+                swShapeCalls = swShapeCalls + 1
+                return {}
+            end
+            function b:getCreationId() return "c" .. plot end
+            function b:getCreationJoints()
+                local out = {}
+                for i = 1, joints do out[i] = i end
+                return out
+            end
+            return b
+        end
+        swTestBodies = { body( 1, 3 ), body( 2, 99 ), body( 3, 99 ) }
+    """)
+    get = lua.execute("""
+        return function( key )
+            if key == "maxjoints" then return 10 end
+            return 0
+        end
+    """)
+
+    # tick 0 is the FULL pass -- nextFull starts at 0
+    report = lua.globals().Rules.sv_audit(rules, 0, plots, get)
+    assert report is not None, "the first audit did not run at all"
+    assert report["full"] is True, "the first audit should be a full pass"
+    full_calls = int(lua.globals().swShapeCalls)
+    assert full_calls == 3, f"a full pass looked at {full_calls} bodies, expected 3"
+    assert rules["violations"][2] is not None, "the full pass missed a 99-joint plot"
+
+    # one second later: a FAST pass, scoped to plot 1
+    lua.globals().swShapeCalls = 0
+    report = lua.globals().Rules.sv_audit(rules, 40, plots, get)
+    assert report is not None, "the fast pass did not run"
+    assert report["full"] is False, "tick 40 should not have been a full pass"
+    fast_calls = int(lua.globals().swShapeCalls)
+    assert fast_calls == 1, (
+        f"the fast pass walked the shapes of {fast_calls} bodies. It is supposed "
+        f"to look only at plots somebody is standing on, which is 1 of 3 here -- "
+        f"if it walks all of them the optimisation does not exist.")
+
+    # ...and it must not have forgotten what the full pass knew about plot 2
+    assert rules["violations"][2] is not None, (
+        "a scoped pass wiped the violation on a plot it never looked at. A plot "
+        "nobody is standing on must keep the last full pass's verdict.")
+
+
+def trimming_a_plot_reopens_it_on_the_fast_pass():
+    """Removing the offending part must clear the violation within a second.
+
+    The trap: a scoped pass only writes buckets for bodies it FINDS. Delete the
+    last body on a plot -- or every joint on it -- and the plot would never
+    appear in perPlot, so its stale violation would survive until the next full
+    pass five seconds later. Seeding an empty bucket for every scoped plot is
+    what makes "trim it and it reopens" mean one second rather than five.
+    """
+    lua = fresh("Rules.lua")
+    lua.execute("function isGhostBody( body ) return false end")
+    rules, plots = _rules_fixture(lua, {1: True})
+    get = lua.execute("""
+        return function( key )
+            if key == "maxjoints" then return 10 end
+            return 0
+        end
+    """)
+    lua.execute("""
+        local function body( plot, joints )
+            local b = { plot = plot }
+            function b:getShapes() return {} end
+            function b:getCreationId() return "c" .. plot end
+            function b:getCreationJoints()
+                local out = {}
+                for i = 1, joints do out[i] = i end
+                return out
+            end
+            return b
+        end
+        swMakeBody = body
+        swTestBodies = { body( 1, 40 ) }
+    """)
+
+    lua.globals().Rules.sv_audit(rules, 0, plots, get)
+    assert rules["violations"][1] is not None, "40 joints did not trip a limit of 10"
+
+    # the owner trims it right down
+    lua.execute("swTestBodies = { swMakeBody( 1, 2 ) }")
+    lua.globals().Rules.sv_audit(rules, 40, plots, get)
+    assert rules["violations"][1] is None, (
+        "the plot is still locked one fast pass after being trimmed")
+
+    # and the same again with the body removed outright
+    lua.execute("swTestBodies = { swMakeBody( 1, 40 ) }")
+    lua.globals().Rules.sv_audit(rules, 80, plots, get)
+    assert rules["violations"][1] is not None, "the fixture did not go back over"
+    lua.execute("swTestBodies = {}")
+    lua.globals().Rules.sv_audit(rules, 120, plots, get)
+    assert rules["violations"][1] is None, (
+        "deleting the whole build left the plot locked. A scoped plot has to be "
+        "recomputed even when nothing is found standing on it.")
+
+
+def the_occupancy_pass_is_what_names_the_active_plots():
+    """activePlots must come from the per-tick presence pass, not a second walk.
+
+    The point of scoping the audit is that the answer is already known:
+    sv_updateOccupancy runs every tick and is the only thing in the mod that
+    looks at where players stand. If activePlots were computed separately the
+    optimisation would be paying for itself twice.
+    """
+    src = io.open(SCRIPTS / "Plots.lua", encoding="utf-8").read()
+    assert "self.activePlots = {}" in src, (
+        "sv_updateOccupancy no longer resets activePlots, so it accumulates "
+        "forever and every plot becomes permanently 'active'")
+    body = src[src.index("function Plots.sv_updateOccupancy"):]
+    body = body[:body.index("\nfunction Plots.sv_holdNearby")]
+    assert "activePlots[z.index] = true" in body, (
+        "standing on a plot no longer marks it active")
+    rules = io.open(SCRIPTS / "Rules.lua", encoding="utf-8").read()
+    assert "plots:sv_activePlots()" in rules, (
+        "Rules no longer asks Plots which plots are occupied")
+    assert "sm.player.getAllPlayers" not in rules, (
+        "Rules walks the player list itself. That is the occupancy pass's job "
+        "and it already runs every tick -- see Plots.sv_updateOccupancy.")
+
+
+# ------------------------------------------------------------ city style ---
+
+def the_palette_is_the_paint_tools_own():
+    """Forty swatches, four rows of ten, every name distinct."""
+    lua = fresh("Palette.lua")
+    Pal = lua.globals().Palette
+
+    rows = list(Pal.ROWS.values())
+    assert len(rows) == 4, f"{len(rows)} rows, the paint tool has 4"
+    for i, row in enumerate(rows, 1):
+        cols = list(row.values())
+        assert len(cols) == 10, f"row {i} has {len(cols)} swatches, the tool has 10"
+        for hexv in cols:
+            assert len(hexv) == 6 and all(c in "0123456789abcdef" for c in hexv), \
+                f"{hexv!r} is not a six digit hex colour"
+
+    order = list(Pal.COLOUR_ORDER.values())
+    assert len(order) == 40, f"{len(order)} colour names for 40 swatches"
+    assert len(set(order)) == 40, (
+        "two swatches share a name, so one of them can never be selected: "
+        f"{sorted(n for n in order if order.count(n) > 1)}")
+
+    # the anchors that identify the run in the executable
+    assert Pal.COLOURS["orange"] == "df7f00", (
+        "the default orange every new block is painted is not in the palette -- "
+        "the run read out of the executable is probably not the palette")
+    assert Pal.COLOURS["darkgrey"] == "4a4a4a"
+    assert Pal.Hex("green") == "19e753"
+    assert Pal.Hex("beef42") == "beef42", "a raw hex should be accepted"
+    assert Pal.Hex("chartreuse") is None, "an invented colour name was accepted"
+
+
+def every_style_preset_names_real_blocks_and_colours():
+    """A style preset with a typo in it builds a city out of nothing.
+
+    Sv_Set validates, so a bad name is REFUSED rather than stored -- which means
+    a typo shows up as a piece of the city silently keeping its old material,
+    not as an error. Checked here instead.
+    """
+    lua = fresh("Palette.lua", "Settings.lua")
+    Pal, S = lua.globals().Palette, lua.globals().Settings
+    keys = {row["key"] for row in S.SCHEMA.values()}
+
+    pieces = ["pad", "border", "road", "plaza", "stand"]
+    wanted = {p + s for p in pieces for s in ("block", "colour")}
+    missing = wanted - keys
+    assert not missing, f"the schema has no setting for {sorted(missing)}"
+
+    order = list(Pal.STYLE_ORDER.values())
+    for name in order:
+        style = Pal.STYLES[name]
+        assert style is not None, f"STYLE_ORDER names {name!r} but STYLES has no such style"
+        got = set()
+        for key in style:
+            got.add(key)
+            assert key in keys, f"style {name!r} sets unknown setting {key!r}"
+            value = style[key]
+            if key.endswith("block"):
+                assert Pal.MaterialUuid(value) is not None, \
+                    f"style {name!r}: {key} = {value!r} is not a block in Palette.MATERIALS"
+            else:
+                assert Pal.Hex(value) is not None, \
+                    f"style {name!r}: {key} = {value!r} is not a palette colour"
+        assert got == wanted, (
+            f"style {name!r} does not set every piece -- missing {sorted(wanted - got)}. "
+            f"A partial style leaves half the city looking like the last one.")
+    for name in Pal.STYLES:
+        assert name in order, f"style {name!r} exists but /citystyle will never list it"
+
+
+def the_style_defaults_are_selectable_values():
+    """Every default must be a value the panel can cycle back to.
+
+    A default outside the choice list is a setting that can be changed once and
+    never changed back, because SettingsGui.NextValue cycles the list and /set
+    refuses anything not on it.
+    """
+    lua = fresh("Palette.lua", "Settings.lua")
+    Pal, S = lua.globals().Palette, lua.globals().Settings
+    for row in S.SCHEMA.values():
+        key, default = row["key"], row["default"]
+        if key.endswith("block"):
+            assert Pal.MaterialUuid(default) is not None, \
+                f"{key} defaults to {default!r}, which is not a block"
+            assert default in list(Pal.MATERIAL_ORDER.values()), \
+                f"{key} defaults to {default!r}, which the panel cannot cycle to"
+        elif key.endswith("colour") and row["kind"] == "string":
+            assert default in list(Pal.COLOUR_ORDER.values()), \
+                f"{key} defaults to {default!r}, which the panel cannot cycle to"
+
+
+def the_city_is_built_out_of_the_selected_blocks():
+    """Change the setting, rebuild, and the blueprint changes with it.
+
+    The failure this catches is the one that matters: a style setting that is
+    stored, echoed back, listed on the panel, and never actually read by the
+    thing that builds the city.
+    """
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Plots.lua")
+    lua.globals().Settings.Sv_Load(False)
+    P, Pal, S = lua.globals().Plots, lua.globals().Palette, lua.globals().Settings
+
+    plots = lua.eval("Plots()")
+    P.sv_onCreate(plots, lua.table_from({"grid": lua.table_from({}), "enabled": True}))
+
+    def materials_of_plot():
+        bp = P.sv_plotBlueprint(plots, 0, 0)
+        assert bp is not None, "plot 0,0 does not exist -- the fixture is wrong"
+        return {c["shapeId"]: c["color"] for c in bp["bodies"][1]["childs"].values()}
+
+    S.Sv_Set("padblock", "carpet")
+    S.Sv_Set("padcolour", "deepgreen")
+    got = materials_of_plot()
+    carpet = Pal.MaterialUuid("carpet")
+    assert carpet in got, (
+        "the pad is not made of the selected block. The style setting is stored "
+        "and ignored, which is the exact shape of a feature that looks broken.")
+    assert got[carpet] == Pal.Hex("deepgreen"), \
+        f"the pad is {got[carpet]!r}, not the selected deepgreen"
+
+    S.Sv_Set("padblock", "concrete")
+    got = materials_of_plot()
+    assert Pal.MaterialUuid("concrete") in got, "switching the pad block did nothing"
+    assert carpet not in got, "the old pad block is still in the blueprint"
+
+    # a raw hex, for a host who wants a colour the paint tool does not ship
+    S.Sv_Set("padcolour", "ff00ff")
+    got = materials_of_plot()
+    assert got[Pal.MaterialUuid("concrete")] == "ff00ff", "a raw hex colour was ignored"
+
+
+def a_plot_can_never_be_scenery_whatever_it_is_made_of():
+    """Scenery is locked in every mode. A plot must never resolve to it.
+
+    This used to be safe by accident: scenery meant "every shape is metal 2 or
+    metal 3" and the pad was always concrete. The pad is a setting now, and
+    nothing stops a host setting the pad and the roads to the same block -- at
+    which point every plot in the city would be permanently locked and the only
+    clue would be that nobody could build.
+    """
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Plots.lua")
+    lua.globals().Settings.Sv_Load(False)
+    P, Pal, S = lua.globals().Plots, lua.globals().Palette, lua.globals().Settings
+
+    plots = lua.eval("Plots()")
+    P.sv_onCreate(plots, lua.table_from({"grid": lua.table_from({}), "enabled": True}))
+
+    for block in ("metal3", "carpet", "concrete"):
+        S.Sv_Set("padblock", block)
+        S.Sv_Set("roadblock", block)
+        S.Sv_Set("plazablock", block)
+        P.sv_restyle(plots)
+        street = P.sv_streetUuids(plots)
+        pad = Pal.MaterialUuid(block)
+        assert street[pad] is None, (
+            f"with everything set to {block!r} the plot pad counts as street, so "
+            f"every plot slab in the city resolves to scenery and locks")
+
+
+def a_style_change_never_unmakes_the_existing_city():
+    """CITY_UUIDS has to cover every material, not the three in use.
+
+    Restyle the city while one still stands and the old one is still city: the
+    cleaner must not suddenly start treating the ground it has been protecting
+    as somebody's build, or the reverse.
+    """
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Plots.lua")
+    P, Pal = lua.globals().Plots, lua.globals().Palette
+    city = P.CITY_UUIDS
+    for name in Pal.MATERIAL_ORDER.values():
+        uuid = Pal.MaterialUuid(name)
+        assert city[uuid] is True, (
+            f"{name} can be selected as a city material but is not in "
+            f"CITY_UUIDS, so a city built out of it stops being recognised as "
+            f"city the moment the style changes again")
+
+
+# ------------------------------------------------------------ roster hud ---
+
+def the_roster_hud_fits_in_the_top_left_corner():
+    """Fully on screen, at every resolution the game ships a skin for.
+
+    The event clock spent four versions off the edge of the screen because a
+    root widget's x,y is its CENTRE and the canvas is not the window. Same
+    arithmetic, same trap, so it gets the same check.
+    """
+    lua = fresh("Event.lua", "EventHud.lua", "RosterHud.lua")
+    R = lua.globals().RosterHud
+    for w, h in ((1280, 720), (1920, 1080), (2560, 1440), (3840, 2160), (1720, 720)):
+        x, y = R.TopLeft(w, h)
+        left, top = x - R.W / 2, y - R.H / 2
+        right, bottom = x + R.W / 2, y + R.H / 2
+        assert left >= -w / 2 - 0.5, f"{w}x{h}: the panel hangs off the left edge"
+        assert top >= -h / 2 - 0.5, f"{w}x{h}: the panel hangs off the top edge"
+        assert right <= w / 2 + 0.5, f"{w}x{h}: the panel is wider than the canvas"
+        assert bottom <= h / 2 + 0.5, f"{w}x{h}: the panel is taller than the canvas"
+        # and it is actually in the TOP LEFT, not merely on screen
+        assert x < 0 and y < 0, (
+            f"{w}x{h}: the panel centre is at {x},{y}, which is not the top left. "
+            f"x,y is measured from the centre of the canvas with +y downwards.")
+
+
+def the_roster_hud_says_what_it_was_given():
+    lua = fresh("Event.lua", "EventHud.lua", "RosterHud.lua")
+    R = lua.globals().RosterHud
+    root = R.Build(lua.table_from({"online": 7, "residents": 23}), 1720, 720)
+    captions = {}
+    for kid in root["Childs"].values():
+        if kid["Caption"] is not None:
+            captions[kid["Name"]] = kid["Caption"]
+    assert captions.get("OnlineValue") == "7", f"online reads {captions.get('OnlineValue')!r}"
+    assert captions.get("ResidentValue") == "23", f"residents reads {captions.get('ResidentValue')!r}"
+    assert "ONLINE" in captions.values() and "RESIDENTS" in captions.values(), \
+        "the two numbers are unlabelled"
+
+    # and it survives being handed nothing at all, which is what a client that
+    # has not received an update yet has
+    empty = R.Build(None, 1720, 720)
+    assert empty is not None, "the roster HUD refuses to draw before its first update"
+
+
 def main():
+    check("rules: over budget still lets you trim", over_budget_still_lets_you_trim)
+    check("rules: over budget never opens somebody else's plot",
+          over_budget_never_opens_somebody_elses_plot)
+    check("rules: over budget during buffer stays polish",
+          over_budget_during_buffer_stays_polish)
+    check("rules: the fast audit only looks at occupied plots",
+          the_fast_audit_only_looks_at_plots_people_are_on)
+    check("rules: trimming a plot reopens it on the next fast pass",
+          trimming_a_plot_reopens_it_on_the_fast_pass)
+    check("rules: the occupancy pass is what names the active plots",
+          the_occupancy_pass_is_what_names_the_active_plots)
+
+    check("style: the palette is the paint tool's own forty",
+          the_palette_is_the_paint_tools_own)
+    check("style: every preset names real blocks and colours",
+          every_style_preset_names_real_blocks_and_colours)
+    check("style: every default is a value the panel can cycle to",
+          the_style_defaults_are_selectable_values)
+    check("style: the city is built out of the selected blocks",
+          the_city_is_built_out_of_the_selected_blocks)
+    check("style: a plot can never be scenery whatever it is made of",
+          a_plot_can_never_be_scenery_whatever_it_is_made_of)
+    check("style: a restyle never unmakes the existing city",
+          a_style_change_never_unmakes_the_existing_city)
+
+    check("hud: the roster fits in the top left corner",
+          the_roster_hud_fits_in_the_top_left_corner)
+    check("hud: the roster says what it was given", the_roster_hud_says_what_it_was_given)
+
     check("settings: schema is internally consistent", settings_schema_is_sane)
     check("settings: presets only name real keys", settings_presets_only_name_real_keys)
     check("settings: values round-trip and bad input is refused", settings_round_trip)

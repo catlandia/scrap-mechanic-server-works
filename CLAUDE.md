@@ -248,6 +248,82 @@ you close building if the mode might already be locked — and it will be, becau
 uses `display` (buildable false, usable true), which is the profile that means
 "you cannot build and nothing else changes".
 
+### The paint tool's palette is in the EXECUTABLE, as BGRA
+
+There is nothing to read in `Data/` or `Survival/`.
+`Data/Gui/Layouts/Tool/Tool_PaintTool.layout` is twenty lines long and declares
+one empty widget called `ColorGrid`; the swatches are filled in engine-side.
+
+They are not stored as text either, and the near-miss is worth knowing about:
+the string table is full of interned six-hex strings, sorted alphabetically, and
+they are the **shapeset** colours -- `8d8f89` in there is `blk_concrete1`, not a
+swatch. A different list entirely.
+
+**MEASURED.** Forty `uint32` BGRA values in a zero-terminated run at file offset
+`0x13e9b90` of `Release/ScrapMechanic.exe`:
+
+    eeeeee f5f071 cbf66f 68ff88 7eeded 4c6fe3 ae79f0 ee7bf0 f06767 eeaf5c
+    7f7f7f e2db13 a0ea00 19e753 2ce6e6 0a3ee2 7514ed cf11d2 d02525 df7f00
+    4a4a4a 817c00 577d07 0e8031 118787 0f2e91 500aa6 720a74 7c0000 673b00
+    222222 323000 375000 064023 0a4444 0a1d5a 35086c 520653 560202 472800
+
+Four rows of ten, exactly as the tool draws them: a greyscale column, then nine
+hues in four shades. `df7f00` is the default orange every new block is painted
+and `4a4a4a` is what this mod already used for metal 3 -- two independent
+anchors, which is what makes this the palette rather than a plausible run of
+bytes. `mod/Scripts/Palette.lua` holds them, named `green` / `palegreen` /
+`deepgreen` / `darkgreen` and `white` / `grey` / `darkgrey` / `black`.
+
+Re-derive after a game update: the offset moves, the terminator and the anchors
+do not.
+
+### A rule must never forbid its own remedy
+
+REPORTED: *"I cant break the block if I hit the limit. so like I am stuck in a
+loop I cant remove the bearing that prevents from building."*
+
+Going over the per-plot part budget returned `false` from the top of
+`Plots.sv_bodyIsOpen`, and `false` is the **locked** profile, which is
+`erasable = false`. The one action that could satisfy the limit was the one the
+limit forbade.
+
+The fix is two rules, and the second matters more than the first:
+
+- **`PROFILES.trim`** is the open profile with placing taken out and nothing
+  else. It exists so that a brake stays a brake.
+- **The over-budget check runs LAST and can only DOWNGRADE.** It used to run
+  before the ownership logic, which meant it also overrode "this is somebody
+  else's plot". Body flags are per-body -- `erasable` means erasable by
+  *everyone* -- so a version that handed out erasing would have made the part
+  limit a griefing tool: go one bearing over and the neighbours can clear your
+  plot.
+
+`trim` maps to `polish` during the buffer. Buffer time is the one window with
+neither verb, and being over budget blocks nothing there that was not already
+blocked, so handing out erasing would be a pure regression.
+
+### Anything that needs to know where players are already has the answer
+
+REPORTED: *"item detection is a bit too slow. you can run it faster if you only
+check ocupied places with players curently on the server ocupied."*
+
+Correct, and the reason it is cheap is the part worth writing down.
+`Plots.sv_updateOccupancy` runs **every tick** and is the only thing in the mod
+that looks at where anybody is standing. So `Rules` does not walk the player list
+-- it reads `plots:sv_activePlots()`, which that pass filled in as it went. A
+check forbids `sm.player.getAllPlayers` from appearing in `Rules.lua` at all.
+
+The audit has two cadences: a scoped pass every second over the plots people are
+on, and the full pass every five seconds over everything. A plot can only go over
+budget if somebody is building on it, and somebody building on it is standing on
+it -- so the scoped pass covers the case that matters, and the full pass still
+catches the owner who logged off mid-build and the contraband dropped on a road.
+
+**The trap, and it has a check.** A scoped pass only writes buckets for bodies it
+*finds*, so deleting the last offending part would leave the violation standing
+until the next full pass. Every plot in scope is seeded with an empty bucket
+first; that is what makes "trim it and it reopens" mean one second.
+
 ### The game does not ship whole fonts
 
 Scrap Mechanic builds a **limited glyph atlas per font** from the strings it
@@ -848,10 +924,12 @@ credit it with fixing the thing that actually degraded.
     mod/Scripts/Snapshots.lua   world and per-plot capture and rollback
 
     mod/Scripts/Layout.lua      ALL city geometry, pure -- no sm.* calls at all
+    mod/Scripts/Palette.lua     the paint tool's 40 colours + the city's blocks
     mod/Scripts/Event.lua       the clock: prep -> build -> buffer -> ended
     mod/Scripts/EventGui.lua    the host panel for it, so nothing needs typing
     mod/Scripts/ConfirmGui.lua  two doors in front of anything destructive
     mod/Scripts/EventHud.lua    top-right timer + handover to the warehouse timer
+    mod/Scripts/RosterHud.lua   top-left: who is online, and how many residents
     mod/Scripts/MyPlotGui.lua   the panel players use: claim, find, team, leave
     mod/Scripts/PlotMarker.lua  "find my plot", on the game's own compass HUD
                                 driven from Player.lua -- compassSetIconWorldPosition
@@ -864,13 +942,14 @@ credit it with fixing the thing that actually degraded.
     dev/check_lua.py            compiles every mod script through a real Lua parser
     dev/check_uuids.py          every uuid the mod names, against the install
     dev/test_layout.py          runs Layout.lua and proves the city is a partition
-    dev/test_logic.py           runs the mod's rules and panel layouts (26 checks)
+    dev/test_logic.py           runs the mod's rules and panel layouts (90 checks)
     dev/sync_mod.py             repo -> game Mods folder (preserves live BanList.json)
     dev/session_stats.py        tick/FPS reconstruction from any game log
     dev/dump_api.py             per-module Lua bindings out of the executable
 
 Commands, all host-only: `/lockdown` `/unlock` `/protection` `/buildtime` `/autosave`
-`/snapshot` `/snapshots` `/restore` `/players` `/ban` `/unban` `/banlist` `/kick`.
+`/snapshot` `/snapshots` `/restore` `/players` `/ban` `/unban` `/banlist` `/kick`
+`/citystyle`. `/budget` and `/players` are open to everyone.
 
 Three things run without the host watching, because the grief that started this project
 landed two minutes before an event ended and no amount of watching catches that:

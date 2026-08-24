@@ -10,6 +10,148 @@ was most of them.
 
 ---
 
+## V53 -- a rule that forbade its own remedy, a faster audit, and the city gets a look
+
+### "I cant break the block if I hit the limit"
+
+*"so like I am stuck in a loop I cant remove the bearing that prevents from
+building."*
+
+That is the whole bug in one sentence, and it was a plain one. Going over the
+per-plot part budget handed the plot the **locked** profile, and locked is
+`erasable = false`. So the single action that could satisfy the limit was the one
+the limit forbade, and the only way out was to find the host.
+
+Two things were wrong with it, not one:
+
+- it returned **locked**, which takes away removing as well as placing
+- it ran **first**, before any of the ownership logic, so it also overrode
+  "this is somebody else's plot"
+
+There is a `trim` profile now: everything the open profile allows, minus placing.
+Remove, repaint, rewire, sit in it and drive it -- just do not add. And the check
+runs **after** the ordinary verdict and only ever *downgrades* one, so a plot
+that was locked to a passer-by stays locked to them. Body flags are per-body, so
+a version that granted erasing would have turned the part limit into a griefing
+tool.
+
+`trim` maps to `polish` during the buffer, deliberately: buffer time is the one
+window with neither verb, and handing out erasing there would quietly undo it.
+
+### The audit has two cadences now
+
+*"item detection is a bit too slow. you can run it faster if you only check
+ocupied places with players curently on the server ocupied."*
+
+Right, and the reasoning is worth keeping: a plot can only go over its budget if
+somebody is **building** on it, and somebody building on it is standing on it.
+Every other plot in the city is one whose contents cannot have changed.
+
+So the fast pass runs **once a second** over the plots people are actually on,
+and the full pass keeps its five seconds and still covers everything -- a plot
+whose owner logged off mid-build, contraband dropped on a road, a body that
+drifted. Nothing is lost; the common case answers five times sooner.
+
+The scope costs nothing to compute. `Plots.sv_updateOccupancy` runs every tick
+and is already the only thing in the mod that looks at where people stand, so it
+records the answer as it goes.
+
+One trap, and it has a check: a scoped pass only writes buckets for bodies it
+FINDS, so deleting the last offending part would have left the violation standing
+until the next full pass. Every scoped plot is seeded with an empty bucket, which
+is what makes "trim it and it reopens" mean one second rather than five.
+
+### The city has a style, and the colours are the paint tool's own
+
+*"for style because I dont like brutalist that much... make a choice for blocks.
+so you can select custom blocks for the city foundation for style. and also their
+colour bassed on the in game paint tool pallete."*
+
+Five pieces of the city -- pad, border, road, plaza, stand -- each with a block
+and a colour, all ten on one page of the settings panel, all cyclable by
+clicking. `/citystyle` lists them; `/citystyle garden` sets all ten at once.
+
+**The palette is the real one, and finding it took reading the executable.**
+`Tool_PaintTool.layout` is twenty lines and declares one empty widget called
+`ColorGrid` -- the swatches are engine-side, so there is nothing in `Data/` or
+`Survival/` to read. They are not stored as text either: the hex strings in the
+string table are the *shapeset* colours, sorted alphabetically, which is a
+different list. They are BGRA uint32s, forty of them, in a zero-terminated run at
+offset `0x13e9b90`. `df7f00` in there is the default orange every new block is
+painted, and `4a4a4a` is what this mod was already using -- which is how the run
+was confirmed to be the right one rather than a coincidence.
+
+Four rows of ten, exactly as the tool draws them: a greyscale column and nine
+hues in four shades each. So the names are `green`, `palegreen`, `deepgreen`,
+`darkgreen`, and `white` / `grey` / `darkgrey` / `black`. A raw six-digit hex is
+accepted too.
+
+The default is `garden` -- the green carpet that was asked for before the ask
+became "make a choice". `/citystyle brutalist` is the concrete-and-grey it was.
+
+**A style change does not restyle a city that already stands.** The city is
+imported blueprints and a blueprint is not a live thing that can be repainted;
+BUILD CITY again. Every reply says so, because otherwise it reads as a setting
+that did nothing.
+
+Two things that only became possible once the materials were a setting, and both
+have checks:
+
+- **A plot must never count as scenery.** Scenery is locked in every mode, and
+  the test used to be "is every shape metal 2 or metal 3", which was safe only
+  because the pad was always concrete. Nothing stops a host setting the pad and
+  the roads to the same block, so the pad material is now excluded explicitly.
+- **`CITY_UUIDS` covers every selectable material, not the three in use.**
+  Otherwise restyling would make the city the cleaner had been protecting stop
+  looking like city.
+
+### A counter in the top left
+
+*"a counter of amount of players curently. and amount of residents. resident list
+is list of players that were here - the banned ones."*
+
+    ONLINE        7
+    RESIDENTS    23
+
+Online is `sm.player.getAllPlayers()`. Residents is every record in Players.json
+that is not banned -- which is the number a recurring event actually cares about,
+because it is the community the server has built up and it survives a restart,
+which the online count never does.
+
+Sent once a second and **only when a number moves**, because the panel redraws on
+receipt and an identical payload every second would be a redraw every second for
+every client forever.
+
+---
+
+## V52 -- /budget, and the switch that would have made the part limit look broken
+
+`plots` defaults to OFF, and with plots off `sv_bodyIsOpen` returns nil before
+the over-budget check is ever reached -- so the audit counted, warned, and locked
+nothing. Testing the per-tile part limit without `/set plots on` would have
+looked exactly like a feature that does not work.
+
+`/budget` prints what a plot is using against what it is allowed, says outright
+when plots are off, and is open to everyone: a builder needs it more than the
+host does.
+
+---
+
+## V51 -- the lifts leave the tool gate, and a comment stops overclaiming
+
+*"in survival lift is disabled by default. which means. just remove that thing
+that disables lifts."* All three lifts are out of `Settings.TOOLS`, and the
+`lift` / `hostlift` settings are gone with them. Nothing this mod does can take
+a lift out of anybody's hands any more.
+
+The `enableBuildOn*` comment claimed MEASURED and was caught: *"stop. read thje
+title. you sure its the right one?"* `DungeonWorld` does set three of those
+flags by hand -- but no creative world sets them either, and lifts work in
+vanilla creative, so the evidence is **against** these having been the lift bug.
+The comment says so now.
+
+---
+
 ## V50 -- the alarm stops locking, and a save on every phase boundary
 
 ### The automatic lockdown is off by default

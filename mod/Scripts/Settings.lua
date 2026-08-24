@@ -127,6 +127,12 @@ local TOOLS = {
 
 -- Every setting is { key, kind, default, help, apply }. Adding one means adding
 -- a row here and nothing else -- /set and /settings pick it up automatically.
+-- Choice lists are FUNCTIONS, not tables. Settings.lua and Palette.lua are
+-- separate files loaded by two different scripts, and a table here would make
+-- the schema depend on which one got there first. A closure does not.
+local function materials() return Palette.MATERIAL_ORDER end
+local function colours() return Palette.COLOUR_ORDER end
+
 Settings.SCHEMA = {
 	-- Two halves, because the engine has two mechanisms. setFireLimit caps how
 	-- many fire instances may exist; AttachedFireManager is the separate system
@@ -266,6 +272,46 @@ Settings.SCHEMA = {
 	  help = "grief alarm locks the world by itself (off: it only shouts)" },
 	{ key = "autosave", kind = "number", default = 10,
 	  help = "minutes between automatic snapshots, 0 for off" },
+
+	-- CITY STYLE. "make a choice for blocks. so you can select custom blocks for
+	-- the city foundation for style. and also their colour bassed on the in game
+	-- paint tool pallete."
+	--
+	-- The block names come from Palette.MATERIAL_ORDER, read out of the
+	-- installed shapesets. The colour names come from Palette.COLOUR_ORDER,
+	-- which is the paint tool's own forty swatches read out of the executable --
+	-- see the note at the top of Palette.lua. A raw six-digit hex is accepted
+	-- too, so nobody is boxed in by the forty.
+	--
+	-- CHANGING ONE OF THESE DOES NOT RESTYLE A CITY THAT ALREADY EXISTS. The
+	-- city is a set of imported blueprints, and a blueprint is not a live thing
+	-- that can be repainted -- run BUILD CITY again and the new style is what
+	-- comes out. Every reply says so, because otherwise it reads as a setting
+	-- that did nothing.
+	--
+	-- The defaults are the green carpet that was asked for before the ask turned
+	-- into "make a choice": a deep green carpet pad with a dark metal frame.
+	-- /citystyle brutalist is the concrete-and-grey the city used to be.
+	{ key = "padblock", kind = "string", default = "carpet", choices = materials,
+	  help = "block: the buildable pad in the middle of a plot" },
+	{ key = "padcolour", kind = "string", default = "deepgreen", choices = colours,
+	  help = "colour: the buildable pad" },
+	{ key = "borderblock", kind = "string", default = "metal2", choices = materials,
+	  help = "block: the frame welded round each plot" },
+	{ key = "bordercolour", kind = "string", default = "darkgrey", choices = colours,
+	  help = "colour: the frame round each plot" },
+	{ key = "roadblock", kind = "string", default = "metal3", choices = materials,
+	  help = "block: the streets between plots" },
+	{ key = "roadcolour", kind = "string", default = "black", choices = colours,
+	  help = "colour: the streets" },
+	{ key = "plazablock", kind = "string", default = "metal3", choices = materials,
+	  help = "block: the plaza everybody spawns on" },
+	{ key = "plazacolour", kind = "string", default = "darkgrey", choices = colours,
+	  help = "colour: the plaza" },
+	{ key = "standblock", kind = "string", default = "metal3", choices = materials,
+	  help = "block: the column under each plot and under the plaza" },
+	{ key = "standcolour", kind = "string", default = "black", choices = colours,
+	  help = "colour: the columns" },
 }
 
 local function schemaFor( key )
@@ -379,7 +425,28 @@ function Settings.Sv_Set( key, raw )
 
 	local value
 	if row.kind == "string" then
-		value = tostring( raw )
+		value = string.lower( tostring( raw ) )
+		-- A choice list is checked here rather than left to whoever reads the
+		-- value later. A typo'd block name would otherwise be stored happily and
+		-- only surface as a city built out of nothing, several minutes and one
+		-- BUILD CITY later.
+		local allowed = row.choices and row.choices()
+		if allowed then
+			local ok = false
+			for _, name in ipairs( allowed ) do
+				if name == value then ok = true break end
+			end
+			-- Colours also take a raw six-digit hex, so a host is never boxed in
+			-- by the forty swatches the paint tool happens to ship.
+			if not ok and string.match( row.key, "colour$" )
+				and string.match( value, "^%x%x%x%x%x%x$" ) then
+				ok = true
+			end
+			if not ok then
+				return false, string.format( "'%s' is not a value for %s -- /citystyle lists them",
+					value, row.key )
+			end
+		end
 	elseif row.kind == "bool" then
 		local t = string.lower( tostring( raw ) )
 		if t == "on" or t == "true" or t == "yes" or t == "1" then

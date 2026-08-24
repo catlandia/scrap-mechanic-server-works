@@ -11,7 +11,7 @@ Companions:
 [`CHANGELOG.md`](CHANGELOG.md) what every version fixed ·
 [`PLAN.md`](PLAN.md) the original plan of record
 
-Current version: **V52**. All 76 checks pass. `python dev/check_all.py --sync`
+Current version: **V53**. All 90 checks pass. `python dev/check_all.py --sync`
 before playing, and **restart Scrap Mechanic** — scripts are read at world load.
 
 ---
@@ -50,6 +50,19 @@ a 500-block static sculpture is nearly free, twenty bearings are not.
   announcing that a live cornade exists and leaving it there helps nobody.
 - The owner is told what to trim, and told again on a cooldown, not every pass.
 
+### V53 fixed the deadlock this had
+
+REPORTED, from the first test: *"I cant break the block if I hit the limit. so
+like I am stuck in a loop I cant remove the bearing that prevents from
+building."*
+
+Going over budget handed the plot the **locked** profile, which is
+`erasable = false` — so the one action that could satisfy the limit was the one
+the limit forbade. There is a `trim` profile now: everything the open profile
+allows, minus placing. The check also moved to run *after* the ownership logic
+and can only ever downgrade an open verdict, so an over-budget plot that was
+locked to a passer-by stays locked to them.
+
 ### Two things before you test it
 
 **1. `plots` defaults to OFF.** With plots off, `sv_bodyIsOpen` returns nil
@@ -73,7 +86,9 @@ seconds stale, because that is the audit interval.
 ### What to check, in order
 
 1. **Does the count land on the right tile?** Build something with 12 bearings on
-   one plot. The owner should be told, and that plot alone should lock.
+   one plot. The owner should be told, and that plot alone should stop taking
+   new parts — while still letting you *remove* the bearings. That second half is
+   V53 and has not been run either.
 2. **Does a creation get counted once?** `getCreationJoints()` returns the joints
    of the *whole creation*, and every body in it returns the same list — so a
    4-bearing car must not count as 4 × 4. `countedCreations` keys on
@@ -85,8 +100,10 @@ seconds stale, because that is the audit interval.
    (`Plots.sv_bodyZone`), so a build spanning a team's plots lands on whichever
    plot the middle of it is over. Decide whether that is right for teams, or
    whether a team should share one pooled budget.
-4. **Does trimming unlock it again?** The audit runs every 5 s, so a plot should
-   reopen within about five seconds of the offending part being removed.
+4. **Does trimming unlock it again?** About **one second** now, not five: V53
+   added a scoped pass at 1 Hz over the plots people are standing on, on top of
+   the 5 s full pass. If it still takes five, the scope is coming back empty —
+   `Plots.sv_updateOccupancy` fills it, so plots being off would do it.
 5. **The numbers themselves are yours.** 10 joints, 1 bot, 25 lights are the
    2026-08-22 board. `/menu → SERVER SETTINGS`, or `/set maxjoints 15`.
 
@@ -142,7 +159,21 @@ Next: `/tool` while holding it, during **build** phase, and read
 `[ServerWorks] ghost body seen and skipped` — if a lift was used and that line is
 absent, the ghost guard is not recognising ghosts and that is where to look.
 
-### 3. The rest, in one list
+### 3. New in V53, none of it run
+
+- **The trim profile** — over budget stops placing and nothing else. Watch for
+  the message: it now says *"You CAN still remove parts, paint and rewire."*
+- **The two-cadence audit** — 1 Hz over occupied plots, 5 s over everything.
+  Contraband is only collected on the full pass.
+- **City style** — `/citystyle` for the list, `/citystyle brutalist` for the old
+  concrete-and-grey, or one of the ten settings on the **CITY STYLE** page of
+  `/settings`. **The default changed to `garden`: a deep green carpet pad.**
+  Nothing restyles a city that already stands — BUILD CITY again.
+- **The top-left counter** — ONLINE and RESIDENTS. If it is missing entirely,
+  look for `[ServerWorks] roster HUD unavailable` in the log; if it is in the
+  wrong corner, `RosterHud.TopLeft` has the arithmetic and the check for it.
+
+### 4. The rest, in one list
 
 - **The city as separate bodies with stands** (V39). Rebuild and look at it.
 - **Buffer time polishing** (V41) — paint, wire, drive; no placing or breaking.
@@ -170,7 +201,12 @@ absent, the ghost guard is not recognising ghosts and that is where to look.
    strips. If the wedges were doing something specific — a bevel, a ramp — say
    so and it can be matched.
 3. **Team budgets** — per plot or pooled? Per plot today.
-4. **`/purge here <radius>`** is the same guess-and-delete shape as the sweep
+4. **Is `garden` the right default?** The green carpet was asked for, then the
+   ask became "make a choice". The choice is built and the green carpet is what
+   it defaults to; say the word and the default goes back to `brutalist`.
+5. **Six style presets exist** — garden, brutalist, boardwalk, arctic,
+   warehouse, neon. They are guesses at taste and cost nothing to change.
+6. **`/purge here <radius>`** is the same guess-and-delete shape as the sweep
    that was removed on request. Say the word and it goes too.
 
 ---
@@ -189,7 +225,7 @@ absent, the ghost guard is not recognising ghosts and that is where to look.
 ## How to work on this
 
 - `python dev/check_all.py --sync` — four suites, ten seconds, then installs.
-  **76 checks.** A pass does not mean it works; a failure is always real.
+  **90 checks.** A pass does not mean it works; a failure is always real.
 - **Read the log first.** Every hard bug in this project was named by
   `Logs/game-*.log`, several of them weeks before anybody looked.
 - **Write the check by breaking the code.** Every check added in this session was

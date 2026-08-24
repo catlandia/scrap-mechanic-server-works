@@ -245,6 +245,14 @@ function Plots.sv_updateOccupancy( self, identify, tick )
 	-- what stops that locking somebody out of their own plot the moment they step
 	-- onto the seam at its edge.
 	self.zoneHeld = {}
+	-- Which plots have somebody on them or beside them RIGHT NOW.
+	--
+	-- "you can run it faster if you only check ocupied places with players
+	-- curently on the server ocupied." Right, and this pass already knows: it
+	-- runs every tick and it is the only thing in the mod that looks at where
+	-- people are standing. Recording it here costs one table write and saves the
+	-- rules audit a walk over the whole city. See Rules.sv_audit.
+	self.activePlots = {}
 	if not self.enabled then
 		return
 	end
@@ -260,6 +268,10 @@ function Plots.sv_updateOccupancy( self, identify, tick )
 				occupied[zk] = occupied[zk] or { zone = z, players = {} }
 				table.insert( occupied[zk].players, player )
 			end
+			-- Standing on a plot makes it active whoever you are. The team marks
+			-- in sv_holdTeam only cover plots somebody is AUTHORISED for, and an
+			-- unclaimed plot being built on by the host has neither.
+			if z and z.kind == "plot" then self.activePlots[z.index] = true end
 			-- Standing NEAR your own land holds it open, wherever you happen to
 			-- be standing. See Plots.HOLD_RANGE: without this, stepping onto a
 			-- road locked your own plot behind you.
@@ -352,6 +364,7 @@ function Plots.sv_holdTeam( self, z )
 
 	for other in pairs( self:sv_teamOf( index ) ) do
 		self.zoneHeld[key_plot( other )] = true
+		if self.activePlots then self.activePlots[other] = true end
 		local col, row = Layout.plotColRow( self.layout, other )
 		if col then
 			-- and the seams around it, which are the team's ground too
@@ -399,11 +412,18 @@ function Plots.sv_pushOut( self, player, z, tick )
 end
 
 -- Called by Protection for each body it sweeps.
+--
+-- One wrapper around the real answer, so the over-budget downgrade cannot be
+-- forgotten on one of the six return paths below it.
 function Plots.sv_bodyIsOpen( self, body )
 	if not self.enabled then
 		return nil     -- plots off: let the global mode decide
 	end
 	local z = self:sv_bodyZone( body )
+	return self:sv_overBudgetVerdict( z, self:sv_zoneVerdict( body, z ) )
+end
+
+function Plots.sv_zoneVerdict( self, body, z )
 
 	-- "sweep" rather than "locked" for every zone nobody is allowed to build in.
 	-- Locking them would make junk dumped on a walkway permanent, which is how a
@@ -439,12 +459,6 @@ function Plots.sv_bodyIsOpen( self, body )
 		end
 	end
 
-	-- Over its part budget: locked until trimmed, but never sweepable, so the
-	-- owner does not lose work to a passer-by while they are sorting it out.
-	if z.kind == "plot" and self.overBudget[z.index] then
-		return false
-	end
-
 	local zk = self:sv_zoneKey( z )
 
 	-- SOMEBODY IS STANDING HERE. Open only if everyone standing here belongs.
@@ -476,6 +490,36 @@ function Plots.sv_bodyIsOpen( self, body )
 	-- owner working at the edge of their plot steps onto the one-block seam all
 	-- the time, and locking their plot the moment they do would be unusable.
 	return self.zoneHeld[zk] == true
+end
+
+-- THE DEADLOCK, AND WHY IT WAS ONE.
+--
+-- REPORTED: "I cant break the block if I hit the limit. so like I am stuck in a
+-- loop I cant remove the bearing that prevents from building."
+--
+-- Exactly right, and it was a plain bug rather than a hard case. Going over the
+-- part budget returned `false` -- the LOCKED profile -- from the top of
+-- sv_bodyIsOpen, before any of the presence logic ran. Locked is erasable =
+-- false. So the one action that could get the plot back under its limit was the
+-- one action the limit forbade, and the only way out was the host.
+--
+-- Two things were wrong with where that check sat, not one:
+--
+--   it returned LOCKED, which takes away removing as well as placing
+--   it ran FIRST, so it also overrode "this is somebody else's plot"
+--
+-- So it moves here, after the ordinary verdict, and it only ever DOWNGRADES an
+-- open verdict. A plot that was already locked to you stays locked to you -- a
+-- passer-by does not get to erase somebody's over-budget build -- and a plot
+-- that was open to you becomes "trim": everything the open profile allows,
+-- minus placing. Remove parts, repaint, rewire, drive it. Just do not add.
+--
+-- See PROFILES.trim in Protection.lua for the other half.
+function Plots.sv_overBudgetVerdict( self, z, verdict )
+	if verdict ~= true then return verdict end
+	if z == nil or z.kind ~= "plot" then return verdict end
+	if not self.overBudget[z.index] then return verdict end
+	return "trim"
 end
 
 
@@ -638,6 +682,12 @@ function Plots.sv_describe( self, index, nameOf )
 		#mates > 0 and ( "  team: " .. table.concat( mates, ", " ) ) or "" )
 end
 
+-- The plots the fast rules audit has to look at. Empty means nobody is near a
+-- plot at all, which is the whole city between events and most of prep.
+function Plots.sv_activePlots( self )
+	return self.activePlots or {}
+end
+
 function Plots.sv_counts( self )
 	local claimed = 0
 	for _ in pairs( self.owners ) do claimed = claimed + 1 end
@@ -671,6 +721,54 @@ Plots.METAL3_COLOR = "4a4a4a"
 Plots.PLAZA_COLOR = "5a5651"
 -- Darker than the deck, so a stand reads as structure from ground level.
 Plots.STAND_COLOR = "35353a"
+
+-- WHAT THE CITY IS MADE OF IS A SETTING NOW.
+--
+-- "make a choice for blocks. so you can select custom blocks for the city
+-- foundation for style. and also their colour bassed on the in game paint tool
+-- pallete."
+--
+-- Five pieces, each a block and a colour. The block names and the colour names
+-- both come from Palette.lua -- the blocks read out of the installed shapesets,
+-- the colours read out of the paint tool's own swatch grid in the executable.
+--
+-- The fallbacks are the greys the city was before, and they are what gets used
+-- if Settings or Palette is not loaded -- which is the case in dev/test_logic.py
+-- for anything that builds a Plots without a settings file.
+Plots.STYLE_PIECES = { "pad", "border", "road", "plaza", "stand" }
+
+Plots.STYLE_FALLBACK = {
+	pad    = { Plots.CONCRETE, Plots.CONCRETE_COLOR },
+	border = { Plots.METAL2, Plots.METAL2_COLOR },
+	road   = { Plots.METAL3, Plots.ROAD_COLOR },
+	plaza  = { Plots.METAL3, Plots.PLAZA_COLOR },
+	stand  = { Plots.METAL3, Plots.STAND_COLOR },
+}
+
+-- uuid, hex for one piece of the city. Every child() in this file goes through
+-- it; nothing below names a material directly any more.
+function Plots.Style( piece )
+	local fb = Plots.STYLE_FALLBACK[piece] or Plots.STYLE_FALLBACK.pad
+	local uuid, hex = fb[1], fb[2]
+	if Settings and Settings.Get and Palette then
+		uuid = Palette.MaterialUuid( Settings.Get( piece .. "block" ) ) or uuid
+		hex = Palette.Hex( Settings.Get( piece .. "colour" ) ) or hex
+	end
+	return uuid, hex
+end
+
+-- What the style currently reads as, one line per piece, for /citystyle.
+function Plots.StyleLines()
+	local out = {}
+	for _, piece in ipairs( Plots.STYLE_PIECES ) do
+		local block, colour = piece .. "block", piece .. "colour"
+		out[#out + 1] = string.format( "  %-7s %-16s %s",
+			piece,
+			Settings and tostring( Settings.Get( block ) ) or "?",
+			Settings and tostring( Settings.Get( colour ) ) or "?" )
+	end
+	return out
+end
 
 Plots.DECK_Z = 4        -- blocks above ground that the city deck sits at
 
@@ -759,9 +857,27 @@ Plots.BORDER = 1
 -- rely on, so the threshold is set where both give the same answer.
 Plots.CITY_CEILING = ( Plots.DECK_Z + 0.75 ) * Plots.BLOCK
 
+-- EVERY material the city COULD be made of, not the ones it is made of today.
+--
+-- This is what sv_isCityShape tests against, and it has to survive a style
+-- change: a city built out of concrete is still city after the host switches the
+-- pad to carpet, and if the set narrowed to the current selection the cleaner
+-- would immediately stop recognising the ground it had been refusing to delete a
+-- minute earlier.
+--
+-- Widening it is safe because a uuid is never the whole test. sv_isCityShape
+-- also requires the shape to be inside the city footprint and below
+-- CITY_CEILING, and CITY_CEILING sits three quarters of the way up our own
+-- layer -- so a player's block, which starts one layer higher, can never match
+-- however it is built.
 Plots.CITY_UUIDS = {
 	[Plots.CONCRETE] = true, [Plots.METAL2] = true, [Plots.METAL3] = true,
 }
+if Palette then
+	for uuid in pairs( Palette.AllMaterialUuids() ) do
+		Plots.CITY_UUIDS[uuid] = true
+	end
+end
 
 local function child( uuid, colour, x, y, z, sx, sy, sz )
 	return {
@@ -778,11 +894,11 @@ local function blueprint( childs )
 	return { version = 4, bodies = { { childs = childs } }, joints = {} }
 end
 
-local DECK_MATERIAL = {
-	plaza = { Plots.METAL3, Plots.PLAZA_COLOR },
-	road = { Plots.METAL3, Plots.ROAD_COLOR },
-	filler = { Plots.METAL2, Plots.METAL2_COLOR },
-}
+-- A street piece's style. The filler strips -- the seams that become shared
+-- ground once the plots either side team up -- follow the plot BORDER rather
+-- than the road, so a seam reads as part of the two plots it joins rather than
+-- as another street.
+local DECK_PIECE = { plaza = "plaza", road = "road", filler = "border" }
 
 -- One plot: just the slab. Only the PLAZA has a pillar -- the whole deck is
 -- static, so it needs no support, and a forest of 100 columns read as clutter
@@ -792,13 +908,14 @@ function Plots.sv_plotBlueprint( self, col, row )
 	local r = Layout.plotRect( self.layout, col, row )
 	if r == nil then return nil end
 
+	local padUuid, padColour = Plots.Style( "pad" )
+
 	local b = Plots.BORDER
 	-- A plot too small to carry a ring is left as a plain slab rather than
 	-- turned into a block of solid metal.
 	if b <= 0 or r.w <= b * 2 or r.h <= b * 2 then
 		return blueprint{
-			child( Plots.CONCRETE, Plots.CONCRETE_COLOR,
-				r.x, r.y, Plots.DECK_Z, r.w, r.h, 1 ),
+			child( padUuid, padColour, r.x, r.y, Plots.DECK_Z, r.w, r.h, 1 ),
 		}
 	end
 
@@ -806,13 +923,13 @@ function Plots.sv_plotBlueprint( self, col, row )
 	-- which is what welds them. The strips are cut so no two overlap: top and
 	-- bottom run the full width, left and right fill only what is between them.
 	local z = Plots.DECK_Z
-	local M, MC = Plots.METAL2, Plots.METAL2_COLOR
+	local M, MC = Plots.Style( "border" )
 	local childs = {
 		child( M, MC, r.x, r.y, z, r.w, b, 1 ),                      -- bottom
 		child( M, MC, r.x, r.y + r.h - b, z, r.w, b, 1 ),            -- top
 		child( M, MC, r.x, r.y + b, z, b, r.h - b * 2, 1 ),          -- left
 		child( M, MC, r.x + r.w - b, r.y + b, z, b, r.h - b * 2, 1 ),-- right
-		child( Plots.CONCRETE, Plots.CONCRETE_COLOR,
+		child( padUuid, padColour,
 			r.x + b, r.y + b, z, r.w - b * 2, r.h - b * 2, 1 ),      -- the pad
 	}
 
@@ -825,13 +942,13 @@ end
 
 -- A column from the ground to the underside of a rectangle, centred on it.
 -- Shared by the plots and the plaza, because both stand the same way.
-function Plots.sv_standChild( self, r, colour )
+function Plots.sv_standChild( self, r )
 	if Plots.DECK_Z <= 0 then return nil end
 	local size = math.max( 2, math.min( Plots.STAND, math.min( r.w, r.h ) ) )
 	local x = r.x + math.floor( ( r.w - size ) / 2 )
 	local y = r.y + math.floor( ( r.h - size ) / 2 )
-	return child( Plots.METAL3, colour or Plots.STAND_COLOR,
-		x, y, 0, size, size, Plots.DECK_Z )
+	local uuid, hex = Plots.Style( "stand" )
+	return child( uuid, hex, x, y, 0, size, size, Plots.DECK_Z )
 end
 
 -- Every piece of shared ground, as a SEPARATE blueprint each.
@@ -854,8 +971,8 @@ function Plots.sv_deckBlueprints( self )
 	local plaza = nil
 
 	for _, p in ipairs( Layout.deckPieces( self.layout ) ) do
-		local m = DECK_MATERIAL[p.kind] or DECK_MATERIAL.filler
-		local childs = { child( m[1], m[2], p.x, p.y, Plots.DECK_Z, p.w, p.h, 1 ) }
+		local uuid, hex = Plots.Style( DECK_PIECE[p.kind] or "border" )
+		local childs = { child( uuid, hex, p.x, p.y, Plots.DECK_Z, p.w, p.h, 1 ) }
 
 		-- The plaza gets a stand of its own too, sized to it rather than to a
 		-- plot: it is the biggest single piece of the city and the one everybody
@@ -863,7 +980,7 @@ function Plots.sv_deckBlueprints( self )
 		if p.kind == "plaza" then
 			local size = math.max( 4, math.floor( math.min( p.w, p.h ) / 4 ) * 2 )
 			local stand = Plots.sv_standChild( self,
-				{ x = p.x, y = p.y, w = p.w, h = p.h }, Plots.METAL3_COLOR )
+				{ x = p.x, y = p.y, w = p.w, h = p.h } )
 			if stand then
 				stand.bounds.x, stand.bounds.y = size, size
 				stand.pos.x = p.x + math.floor( ( p.w - size ) / 2 )
@@ -962,13 +1079,48 @@ function Plots.sv_isScenery( self, body )
 
 	local got, shapes = pcall( function() return body:getShapes() end )
 	if not got or shapes == nil or #shapes == 0 then return false end
+	local street = self:sv_streetUuids()
 	for _, shape in ipairs( shapes ) do
-		local u = tostring( shape.shapeUuid )
-		if u ~= Plots.METAL2 and u ~= Plots.METAL3 then
+		if not street[tostring( shape.shapeUuid )] then
 			return false
 		end
 	end
 	return true
+end
+
+-- Which materials count as STREET, for the scenery test above.
+--
+-- This used to be the literal question "is every shape metal 2 or metal 3", and
+-- that was fine while the city was always made of those. It is a setting now, so
+-- a host who paints their streets in carpet would otherwise have unprotected
+-- streets and not be told.
+--
+-- The legacy metals stay in the set whatever the style is, so a city built
+-- before the style changed is still scenery afterwards.
+--
+-- Deliberately NOT the pad material: a plot slab must never come out as scenery,
+-- because scenery is locked in every mode and a plot has to be buildable. Today
+-- that follows from the pad and the streets being different materials, but the
+-- host can set them to the same block -- so it is enforced here rather than
+-- assumed.
+--
+-- Cached, because this is on the patrol path. sv_restyle drops the cache; World
+-- calls it whenever a setting changes.
+function Plots.sv_streetUuids( self )
+	if self.streetUuids then return self.streetUuids end
+	local out = { [Plots.METAL2] = true, [Plots.METAL3] = true }
+	for _, piece in ipairs( { "road", "plaza", "border", "stand" } ) do
+		local uuid = Plots.Style( piece )
+		if uuid then out[uuid] = true end
+	end
+	local pad = Plots.Style( "pad" )
+	if pad then out[pad] = nil end
+	self.streetUuids = out
+	return out
+end
+
+function Plots.sv_restyle( self )
+	self.streetUuids = nil
 end
 
 -- Is this one of OUR shapes, sitting at deck height?

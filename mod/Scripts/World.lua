@@ -1,5 +1,6 @@
 dofile( "$GAME_DATA/Scripts/game/worlds/CreativeFlatWorld.lua" )
 dofile( "$CONTENT_DATA/Scripts/Layout.lua" )
+dofile( "$CONTENT_DATA/Scripts/Palette.lua" )
 dofile( "$CONTENT_DATA/Scripts/Protection.lua" )
 dofile( "$CONTENT_DATA/Scripts/Plots.lua" )
 dofile( "$CONTENT_DATA/Scripts/Rules.lua" )
@@ -164,6 +165,10 @@ end
 
 function World.sv_applySettings( self )
 	g_swPlots.enabled = Settings.Get( "plots" ) == true
+	-- The scenery test caches which materials count as street, and the style
+	-- settings decide that. Nothing else drops the cache, so if this line goes
+	-- the streets keep whatever protection the previous style gave them.
+	g_swPlots:sv_restyle()
 	Plots.PUSH_INTRUDERS = Settings.Get( "pushintruders" ) == true
 
 	local minutes = tonumber( Settings.Get( "autosave" ) ) or 0
@@ -363,8 +368,10 @@ function World.sv_checkRules( self, tick )
 	end
 	if report == nil then return end       -- not due yet
 
-	-- A plot over budget stops being buildable until its owner trims it. Nothing
-	-- already built is taken away: over-budget is a brake, not a punishment.
+	-- A plot over budget stops accepting NEW parts until its owner trims it.
+	-- Removing, repainting and rewiring all still work -- see PROFILES.trim in
+	-- Protection.lua, and the deadlock it exists to undo. Nothing already built
+	-- is ever taken away: over-budget is a brake, not a punishment.
 	g_swPlots.overBudget = {}
 	for index, reasons in pairs( g_swRules.violations ) do
 		g_swPlots.overBudget[index] = true
@@ -374,16 +381,22 @@ function World.sv_checkRules( self, tick )
 			for _, p in ipairs( sm.player.getAllPlayers() ) do
 				if name and p.name == name then
 					self:sv_reply( p, string.format(
-						"Plot %d is over the server limits and is locked until you trim it:", index ) )
+						"Plot %d is over the server limits -- no NEW parts until you trim it:", index ) )
 					for _, reason in ipairs( reasons ) do
 						self:sv_reply( p, "   " .. reason )
 					end
+					-- Said outright, because the previous build locked erasing
+					-- too and the first thing anybody will try is removing the
+					-- part the message just named.
+					self:sv_reply( p, "   You CAN still remove parts, paint and rewire. /budget for the numbers." )
 				end
 			end
 		end
 	end
 
-	if #report.contraband > 0 then
+	-- Only a full pass collects contraband -- a scoped pass never looks at the
+	-- roads, which is where dropped contraband lands. See Rules.FAST_SECONDS.
+	if report.contraband and #report.contraband > 0 then
 		local autoremove = Settings.Get( "autoremove" ) == true
 		local labels, removedAny = {}, false
 		for _, item in ipairs( report.contraband ) do
