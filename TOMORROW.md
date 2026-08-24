@@ -63,6 +63,28 @@ streets and the plaza in one press.
 - The **event clock should be in the top right**. It was off the edge of the
   canvas entirely, which is why you never saw it.
 
+## The city is many bodies again (V39)
+
+V32 welded a slab under the whole footprint to make the city "one platform".
+That was the wrong fix, and you caught why: **a body is the unit the engine
+rebuilds**, so welding the city means one person placing a block reprocesses
+everybody's plot.
+
+Rebuild the city and it should now be:
+
+- **every street its own creation**, welded to neither panel beside it
+- **every plot with its own stand** -- a metal column from the ground to the
+  underside of its pad, welded into the plot's own body
+- **the plaza on its own pillar**
+- **nothing spanning the footprint**
+
+Visually it will read as a grid of panels each on its own leg, with detached
+strips between them -- separated, on purpose.
+
+The log now says how many separate creations the shared ground came out as:
+
+    [ServerWorks] shared ground: 31 separate creations, 0 failed, 0 short
+
 ## One decision waiting on you
 
 Your blueprint is **22x22 with a 20x20 concrete interior** -- you put the metal

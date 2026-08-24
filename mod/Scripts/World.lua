@@ -1057,38 +1057,47 @@ function World.sv_buildFloor( self, reply )
 end
 
 -- The plaza and the streets. Imported once the old city has actually gone.
+-- The shared ground: the plaza first, then every street as its OWN creation.
+--
+-- One import per piece, deliberately. See the note by Plots.STAND: a body is the
+-- unit the engine rebuilds, so a street welded to nothing else means editing
+-- anything in the city can never reprocess the rest of it.
 function World.sv_buildShared( self )
-	-- The middle goes down first: the pillar, then the deck, then the plots
-	-- outwards. Nothing overlaps anything, so this is purely about what the host
-	-- sees appear -- but seeing spawn appear first is how you know the centre is
-	-- where you meant it to be.
-	for _, label in ipairs( { "pillar", "deck" } ) do
-		local bp = ( label == "pillar" ) and g_swPlots:sv_pillarBlueprint()
-			or g_swPlots:sv_deckBlueprint()
-		if bp then
-			local want = #bp.bodies[1].childs
-			local bodies, err = self:sv_importBlueprint( bp )
-			if bodies then
-				self:sv_pinCity( bodies, false )   -- nobody builds on shared ground
-				-- Count what actually landed. A blueprint child with `bounds` is
-				-- one shape, so placed should equal want -- and if it ever does
-				-- not, that is the missing walkway, named in the log instead of
-				-- being noticed from a screenshot.
-				local placed = 0
-				for _, body in ipairs( bodies ) do
-					if sm.exists( body ) then placed = placed + body:getShapeCount() end
-				end
-				if placed ~= want then
-					sm.log.warning( string.format(
-						"[ServerWorks] %s: asked for %d shapes, got %d -- the city has holes",
-						label, want, placed ) )
-				end
-			else
+	local pieces = g_swPlots:sv_deckBlueprints()
+	local built, failed, holes = 0, 0, 0
+
+	for _, piece in ipairs( pieces ) do
+		local want = #piece.bp.bodies[1].childs
+		local bodies, err = self:sv_importBlueprint( piece.bp )
+		if bodies then
+			self:sv_pinCity( bodies, false )   -- nobody builds on shared ground
+			built = built + 1
+			-- Count what actually landed. A blueprint child with `bounds` is one
+			-- shape, so placed should equal want -- and if it ever does not, that
+			-- is a missing walkway named in the log rather than noticed from a
+			-- screenshot weeks later.
+			local placed = 0
+			for _, body in ipairs( bodies ) do
+				if sm.exists( body ) then placed = placed + body:getShapeCount() end
+			end
+			if placed ~= want then
+				holes = holes + 1
+				sm.log.warning( string.format(
+					"[ServerWorks] %s: asked for %d shapes, got %d -- the city has holes",
+					piece.label, want, placed ) )
+			end
+		else
+			failed = failed + 1
+			if failed == 1 then
 				sm.log.warning( string.format( "[ServerWorks] %s import failed: %s",
-					label, tostring( err ) ) )
+					piece.label, tostring( err ) ) )
 			end
 		end
 	end
+
+	sm.log.info( string.format(
+		"[ServerWorks] shared ground: %d separate creations, %d failed, %d short",
+		built, failed, holes ) )
 end
 
 function World.sv_importBlueprint( self, bp )

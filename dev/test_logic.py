@@ -358,23 +358,79 @@ def the_sentinel_tells_every_profile_apart():
     assert len(seen) >= 6, f"expected six profiles, found {len(seen)}"
 
 
-def a_plot_is_one_welded_body_of_concrete_and_metal():
-    """The plot blueprint is concrete with a metal ring, in ONE childs array.
+def the_city_is_many_separate_bodies():
+    """Nothing in the city spans the footprint, and no piece welds to another.
+
+    THE correction that undoes V32:
+
+      "the things NEED to be separated from the main city! in the original event
+       they were separated with wedges so updating one block wont update whole
+       city. but just the block! the block between the panels NEEDS to be
+       detached. and each panel shall have its own stand!"
+
+    A body is the unit the engine rebuilds. Weld the city into one and every
+    block anybody places anywhere costs a rebuild of all of it -- at an event
+    with twenty people building at once, which is goal 1 of this project.
+
+    So: one creation per street, one for the plaza, one per plot, and nothing
+    that covers the whole city.
+    """
+    lua, plots = plots_lua({"cols": 6, "rows": 6, "plazacells": 2})
+    P = lua.globals().Plots
+    grid = plots["layout"]
+
+    pieces = P.sv_deckBlueprints(plots)
+    assert pieces is not None, "sv_deckBlueprints returned nothing"
+    pieces = list(pieces.values())
+    assert len(pieces) > 1, (
+        f"the shared ground came back as {len(pieces)} creation(s) -- the streets "
+        "must be separate bodies, not one welded deck")
+
+    labels = [str(p["label"]) for p in pieces]
+    assert labels[0] == "plaza", (
+        f"the plaza should be built first, got {labels[0]!r}")
+
+    width, height = int(grid["width"]), int(grid["height"])
+    for piece in pieces:
+        bodies = list(piece["bp"]["bodies"].values())
+        assert len(bodies) == 1, "a shared-ground piece is more than one body"
+        for c in bodies[0]["childs"].values():
+            b = c["bounds"]
+            assert not (int(b["x"]) >= width and int(b["y"]) >= height), (
+                f"a {piece['label']} piece spans the whole {width}x{height} city "
+                "-- that is the base slab back again, and it welds everything "
+                "into one rebuild unit")
+
+    # the plaza carries its own stand, like every panel does
+    plaza = list(pieces[0]["bp"]["bodies"].values())[0]["childs"].values()
+    assert any(int(c["pos"]["z"]) == 0 for c in plaza), (
+        "the plaza has no stand reaching the ground")
+
+
+def a_plot_is_one_welded_body_with_its_own_stand():
+    """A plot is one body: metal ring, concrete pad, and a stand under it.
 
     MEASURED from a reference creation the owner built and saved in game --
-    "concrete panel with metal all around it", Blueprints/038852d7. It came back
-    as one body whose childs array holds concrete (a6c6ce30) and metal 2
-    (1016cafc) side by side. That is how Scrap Mechanic represents a weld: one
-    body's childs array IS the weld group. Two separate blueprints are two
-    separate bodies that merely touch, however well they line up.
+    "concrete panel with metal all around it", Blueprints/038852d7 -- which came
+    back as ONE body whose childs array holds concrete and metal 2 side by side.
+    One body's childs array IS the weld group.
 
-    The plot cannot also be welded to the deck, and that is not a preference:
-    body permission flags are per-BODY, so one plot per body is the only reason
-    plot ownership can exist at all.
+    And the stand is there because separation is the DESIGN, not a defect:
+
+      "the things NEED to be separated from the main city! in the original event
+       they were separated with wedges so updating one block wont update whole
+       city... each panel shall have its own stand!"
+
+    A body is the unit the engine rebuilds, so a panel standing on its own column
+    means one person placing a block never reprocesses anybody else's plot.
+
+    This rasterises in THREE dimensions. The first version of this check worked
+    in 2D and reported the stand as an overlap with the pad above it.
     """
     lua, plots = plots_lua()
     P = lua.globals().Plots
-    CONCRETE, METAL2 = str(P.CONCRETE), str(P.METAL2)
+    CONCRETE, METAL2, METAL3 = str(P.CONCRETE), str(P.METAL2), str(P.METAL3)
+    DECK_Z, border = int(P.DECK_Z), int(P.BORDER)
     L = lua.globals().Layout
 
     for col, row in [(0, 0), (3, 7), (9, 9), (2, 4)]:
@@ -390,36 +446,48 @@ def a_plot_is_one_welded_body_of_concrete_and_metal():
             "weld, however perfectly they line up")
         childs = list(bodies[0]["childs"].values())
 
-        mats = {str(c["shapeId"]) for c in childs}
-        assert CONCRETE in mats and METAL2 in mats, (
-            f"plot {col},{row} is only {mats} -- the point is concrete welded to "
-            "metal in the same childs array")
-
-        # the five pieces must tile the plot rect exactly: no overlap, no hole
-        x0, y0 = int(r["x"]), int(r["y"])
-        w, h = int(r["w"]), int(r["h"])
-        claimed = {}
+        cells = {}
         for c in childs:
             b, pos = c["bounds"], c["pos"]
             for dx in range(int(b["x"])):
                 for dy in range(int(b["y"])):
-                    cell = (int(pos["x"]) + dx, int(pos["y"]) + dy)
-                    assert cell not in claimed, (
-                        f"plot {col},{row}: block {cell} is claimed twice -- two "
-                        "shapes in one block is how an import loses one of them")
-                    claimed[cell] = str(c["shapeId"])
-        assert len(claimed) == w * h, (
-            f"plot {col},{row}: covered {len(claimed)} blocks of {w * h}")
+                    for dz in range(int(b["z"])):
+                        k = (int(pos["x"]) + dx, int(pos["y"]) + dy,
+                             int(pos["z"]) + dz)
+                        assert k not in cells, (
+                            f"plot {col},{row}: block {k} is claimed twice -- two "
+                            "shapes in one block is how an import loses one")
+                        cells[k] = str(c["shapeId"])
 
-        # the ring really is a ring: every edge block metal, every inner concrete
-        border = int(P.BORDER)
-        for (bx, by), mat in claimed.items():
+        x0, y0 = int(r["x"]), int(r["y"])
+        w, h = int(r["w"]), int(r["h"])
+
+        # the top layer is the panel: a metal ring round a concrete pad
+        top = {(x, y): m for (x, y, z), m in cells.items() if z == DECK_Z}
+        assert len(top) == w * h, (
+            f"plot {col},{row}: the deck layer covers {len(top)} blocks of {w*h}")
+        for (bx, by), mat in top.items():
             edge = (bx < x0 + border or bx >= x0 + w - border
                     or by < y0 + border or by >= y0 + h - border)
             want = METAL2 if edge else CONCRETE
             assert mat == want, (
-                f"plot {col},{row}: block ({bx},{by}) is "
-                f"{'metal' if mat == METAL2 else 'concrete'} and should not be")
+                f"plot {col},{row}: block ({bx},{by}) on the deck layer is the "
+                "wrong material")
+
+        # and there is a stand under it, reaching the ground
+        below = {(x, y, z): m for (x, y, z), m in cells.items() if z < DECK_Z}
+        assert below, f"plot {col},{row} has no stand -- it would be floating"
+        assert all(m == METAL3 for m in below.values()), (
+            f"plot {col},{row}: the stand is not metal 3")
+        assert min(z for (_, _, z) in below) == 0, (
+            f"plot {col},{row}: the stand does not reach the ground")
+        assert max(z for (_, _, z) in below) == DECK_Z - 1, (
+            f"plot {col},{row}: the stand does not reach the underside of the pad")
+        # centred, and inside the plot
+        sxs = [x for (x, _, _) in below]
+        sys_ = [y for (_, y, _) in below]
+        assert min(sxs) >= x0 and max(sxs) < x0 + w, "the stand pokes out sideways"
+        assert min(sys_) >= y0 and max(sys_) < y0 + h, "the stand pokes out sideways"
 
 
 def the_cleaner_is_wired_to_the_same_uuid_everywhere():
@@ -1757,8 +1825,10 @@ def main():
     check("plots: an empty unclaimed plot stays open", an_unclaimed_empty_plot_stays_open)
     check("plots: the decking is safe but litter standing on it is not",
           the_decking_is_safe_but_litter_on_it_is_not)
-    check("plots: a plot is one welded body of concrete and metal",
-          a_plot_is_one_welded_body_of_concrete_and_metal)
+    check("plots: the city is many separate bodies",
+          the_city_is_many_separate_bodies)
+    check("plots: a plot is one welded body with its own stand",
+          a_plot_is_one_welded_body_with_its_own_stand)
     check("tools: the cleaner is wired to one uuid everywhere",
           the_cleaner_is_wired_to_the_same_uuid_everywhere)
     check("protection: the city floor is never liftable or dynamic",

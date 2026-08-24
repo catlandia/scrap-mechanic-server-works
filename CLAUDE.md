@@ -376,37 +376,45 @@ So each plot is now one body: a concrete pad with a metal ring welded round it,
 which is exactly the reference creation. `Plots.BORDER` is the ring width; it
 costs the outer ring of buildable area, so a 20-block plot gives an 18-block pad.
 
-### The city is one platform, and it cannot be one body
+### SEPARATION IS THE DESIGN — a body is the unit the engine rebuilds
 
-REPORTED three sessions running: *"the plot is not attached to the rest of the
-build"*, then *"I dont think the concrete sticks to the borders still"*. Asked
-what it actually looked like, the answer was **flush, but a visible seam /
-separate body** — so the arithmetic was never wrong. `dev/test_layout.py` proves
-the geometry is a gapless partition over 13 configurations and it always was.
-The city just *read* as a hundred loose tiles, because that is what it was: one
-creation per plot, plus one for the streets.
+**This corrects V32, which had it exactly backwards, and it is the most important
+structural fact about the city.**
 
-**The plots cannot be welded into the deck**, and this is forced rather than
-chosen: body permission flags are per-BODY, so **one plot per body is the only
-reason plot ownership can exist at all.** Weld the city together and it becomes
-buildable by everyone or by nobody. A plot slab also has to stay its own creation
-because a player's build welds onto it, and `World.sv_plotOfBody` — which is what
-makes per-plot snapshot and per-plot restore possible at all — finds a build by
-asking which plot its *body* sits on. Weld the city together and every player's
-work joins one enormous body, `/restore` stops being per-plot, and the grief this
-project exists to undo becomes all-or-nothing again.
+Three reports read as "the city is not joined up" — *"the plot is not attached to
+the rest of the build"*, *"I dont think the concrete sticks to the borders
+still"* — so V32 welded a single slab under the whole footprint to tie it
+together. The owner caught it:
 
-So the platform goes **under** them. `Plots.BASE_Z = DECK_Z - 1` is one
-continuous slab over the whole footprint, welded into the deck creation, with the
-concrete plots and the metal streets inlaid flush in its top surface. The city
-becomes a raised platform two blocks thick with a proper edge all the way round,
-and every plot stays the separate creation the rest of the system needs. The
-central pillar stops at `BASE_Z` rather than `DECK_Z`, because two shapes in one
-block is how an import quietly loses one of them.
+> "the things NEED to be separated from the main city! in the original event they
+> were separated with wedges so updating one block wont update whole city. but
+> just the block! the block between the panels NEEDS to be detached. and each
+> panel shall have its own stand!"
 
-The base is deliberately **not** a `Layout.deckPieces` entry: it overlaps every
-one of them, one block lower, and `deckPieces` has to stay a partition for the
-layout check to mean anything.
+That is operational experience from an event they actually ran, and the mechanism
+is the same one their blueprint showed: **a body is the unit the engine
+rebuilds.** Change one block and the entire body it belongs to is reprocessed.
+Weld a hundred plots into one city and every block anyone places, anywhere, costs
+a rebuild of all of it — at an event with twenty people building at once, which
+is goal 1 of this project.
+
+So the city is deliberately **many** bodies, and nothing spans the footprint:
+
+| piece | body |
+|---|---|
+| a plot | its metal ring, its concrete pad and **its own stand**, welded together |
+| a street | its own body, welded to neither plot beside it |
+| the plaza | one body, with the pillar under it |
+
+Two checks hold the line: one asserts no piece spans the bounding box (the base
+slab, asserted away) and one rasterises a plot in 3D to prove the ring, the pad
+and the stand are one body with no block claimed twice.
+
+There is a second, independent reason the plots cannot be welded to anything:
+**body permission flags are per-BODY** — there is no `setBuildableBy( player )` —
+so one plot per body is the only reason plot ownership can exist at all. Weld the
+city and it is buildable by everyone or by nobody. Both reasons point the same
+way.
 
 ### Lifts are a plot primitive the engine already tracks
 

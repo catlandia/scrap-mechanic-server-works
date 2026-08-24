@@ -561,35 +561,42 @@ Plots.METAL2_COLOR = "68615c"
 Plots.ROAD_COLOR = "3c3c40"
 Plots.METAL3_COLOR = "4a4a4a"
 Plots.PLAZA_COLOR = "5a5651"
--- Darker than anything on top of it, so the two-block edge of the platform
--- reads as structure from ground level instead of as a second deck.
-Plots.BASE_COLOR = "35353a"
+-- Darker than the deck, so a stand reads as structure from ground level.
+Plots.STAND_COLOR = "35353a"
 
 Plots.DECK_Z = 4        -- blocks above ground that the city deck sits at
 
--- One block below the deck, and it spans the WHOLE city footprint as a single
--- welded slab.
+-- SEPARATION IS THE DESIGN. IT IS NOT A BUG, AND V32 GOT THIS BACKWARDS.
 --
--- REPORTED, three sessions running: "the plot is not attached to the rest of the
--- build", "I dont think the concrete sticks to the borders still". Asked what it
--- actually looked like, the answer was "flush, but a visible seam / separate
--- body" -- no gap and no step, so the arithmetic was never wrong. The city just
--- read as a hundred loose tiles laid next to each other, because that is exactly
--- what it was: one creation per plot plus one for the streets.
+-- Three reports read as "the city is not joined up" -- "the plot is not attached
+-- to the rest of the build", "I dont think the concrete sticks to the borders
+-- still" -- so V32 welded a single slab under the entire footprint to tie it
+-- together. Wrong fix, real observation, and the owner is the one who caught it:
 --
--- They cannot be welded into one body. A plot slab has to stay its own creation
--- because a player's build welds onto it, and sv_plotOfBody -- which is what
--- makes per-plot snapshot and per-plot restore possible at all -- finds a build
--- by asking which plot its BODY sits on. Weld the city together and every
--- player's work joins one enormous body, /restore stops being per-plot, and the
--- grief this project exists to undo becomes all-or-nothing again.
+--   "the things NEED to be separated from the main city! in the original event
+--    they were separated with wedges so updating one block wont update whole
+--    city. but just the block! the block between the panels NEEDS to be
+--    detached. and each panel shall have its own stand!"
 --
--- So the platform goes UNDER them instead. One continuous slab tying the whole
--- footprint together, with the concrete plots and the metal streets inlaid flush
--- in its top surface. The city becomes a raised platform two blocks thick with a
--- proper edge all the way round, which is what "one platform" looks like --
--- while every plot stays the separate creation the rest of the system needs.
-Plots.BASE_Z = Plots.DECK_Z - 1
+-- That is operational experience from an event they actually ran, and the
+-- mechanism behind it is the same one their blueprint showed: **a body is the
+-- unit the engine rebuilds.** Change one block and the whole body it belongs to
+-- is reprocessed. Weld a hundred plots into one city and every block anyone
+-- places, anywhere, costs a rebuild of all of it -- at an event with twenty
+-- people building at once, which is goal 1 of this project.
+--
+-- So the city is deliberately MANY bodies and nothing spans the footprint:
+--
+--   one body per plot     its ring, its pad and its own stand, welded
+--   one body per street   detached from the plots on either side of it
+--   one body for the plaza and the pillar under it
+--
+-- What looked like sloppiness was the point. The base slab is gone.
+
+-- How wide a plot's stand is, in blocks. "each panel shall have its own stand":
+-- a column from the ground to the underside of the plot, welded into the plot's
+-- own body, so the panel is held up by itself and by nothing shared.
+Plots.STAND = 4
 
 -- How wide a plot's own metal border is, in blocks.
 --
@@ -670,7 +677,7 @@ function Plots.sv_plotBlueprint( self, col, row )
 	-- bottom run the full width, left and right fill only what is between them.
 	local z = Plots.DECK_Z
 	local M, MC = Plots.METAL2, Plots.METAL2_COLOR
-	return blueprint{
+	local childs = {
 		child( M, MC, r.x, r.y, z, r.w, b, 1 ),                      -- bottom
 		child( M, MC, r.x, r.y + r.h - b, z, r.w, b, 1 ),            -- top
 		child( M, MC, r.x, r.y + b, z, b, r.h - b * 2, 1 ),          -- left
@@ -678,46 +685,69 @@ function Plots.sv_plotBlueprint( self, col, row )
 		child( Plots.CONCRETE, Plots.CONCRETE_COLOR,
 			r.x + b, r.y + b, z, r.w - b * 2, r.h - b * 2, 1 ),      -- the pad
 	}
-end
 
--- Every piece of shared ground as one creation. The pieces come from
--- Layout.deckPieces, which is a partition by construction and is proved to be
--- one over a dozen configurations by dev/test_layout.py -- so nothing here has
--- to test whether a strip collides with the plaza, because nothing ever can.
-function Plots.sv_deckBlueprint( self )
-	local childs = {}
-	-- The base first, so it is the piece everything else sits on. It is one
-	-- child covering the whole bounding box; see BASE_Z for why the city needs a
-	-- floor under it rather than a weld between its tiles.
-	local g = self.layout
-	if g.width > 0 and g.height > 0 then
-		childs[#childs + 1] = child( Plots.METAL3, Plots.BASE_COLOR,
-			g.x0, g.y0, Plots.BASE_Z, g.width, g.height, 1 )
-	end
-	for _, p in ipairs( Layout.deckPieces( self.layout ) ) do
-		local m = DECK_MATERIAL[p.kind] or DECK_MATERIAL.filler
-		childs[#childs + 1] = child( m[1], m[2], p.x, p.y, Plots.DECK_Z, p.w, p.h, 1 )
-	end
-	if #childs == 0 then return nil end
+	-- Its own stand, welded into the same body. The panel stands on itself and
+	-- on nothing shared -- see the note by Plots.STAND.
+	local stand = Plots.sv_standChild( self, r )
+	if stand then childs[#childs + 1] = stand end
 	return blueprint( childs )
 end
 
--- The single pillar the whole city stands on, under the plaza. This is the only
--- one: "the center pillar shall be the only one, the spawn shall be the center
--- pillar".
-function Plots.sv_pillarBlueprint( self )
-	local p = self.layout.plaza
-	if p == nil then return nil end
-	local size = math.max( 4, math.floor( math.min( p.w, p.h ) / 4 ) * 2 )
-	local cx = p.x + math.floor( p.w / 2 )
-	local cy = p.y + math.floor( p.h / 2 )
-	local at = -math.floor( size / 2 )
-	-- Stops at BASE_Z, not at DECK_Z: the base slab occupies that block now, and
-	-- two shapes in the same block is how an import quietly loses one of them.
-	return blueprint{
-		child( Plots.METAL3, Plots.METAL3_COLOR,
-			cx + at, cy + at, 0, size, size, Plots.BASE_Z ),
-	}
+-- A column from the ground to the underside of a rectangle, centred on it.
+-- Shared by the plots and the plaza, because both stand the same way.
+function Plots.sv_standChild( self, r, colour )
+	if Plots.DECK_Z <= 0 then return nil end
+	local size = math.max( 2, math.min( Plots.STAND, math.min( r.w, r.h ) ) )
+	local x = r.x + math.floor( ( r.w - size ) / 2 )
+	local y = r.y + math.floor( ( r.h - size ) / 2 )
+	return child( Plots.METAL3, colour or Plots.STAND_COLOR,
+		x, y, 0, size, size, Plots.DECK_Z )
+end
+
+-- Every piece of shared ground, as a SEPARATE blueprint each.
+--
+-- One creation per street, not one for the whole deck. "the block between the
+-- panels NEEDS to be detached" -- so it is its own body, welded to neither of
+-- the plots it runs between, and editing one part of the city can never
+-- reprocess another. See the note by Plots.STAND for why that is the whole
+-- design rather than a detail.
+--
+-- The pieces come from Layout.deckPieces, which is a partition by construction
+-- and is proved to be one over a dozen configurations by dev/test_layout.py, so
+-- nothing here has to test whether a strip collides with the plaza.
+--
+-- Returns a list of { label, bp }. The plaza is first, because it is the middle
+-- of the city and seeing it appear first is how the host knows the centre landed
+-- where they meant it to.
+function Plots.sv_deckBlueprints( self )
+	local out = {}
+	local plaza = nil
+
+	for _, p in ipairs( Layout.deckPieces( self.layout ) ) do
+		local m = DECK_MATERIAL[p.kind] or DECK_MATERIAL.filler
+		local childs = { child( m[1], m[2], p.x, p.y, Plots.DECK_Z, p.w, p.h, 1 ) }
+
+		-- The plaza gets a stand of its own too, sized to it rather than to a
+		-- plot: it is the biggest single piece of the city and the one everybody
+		-- spawns on.
+		if p.kind == "plaza" then
+			local size = math.max( 4, math.floor( math.min( p.w, p.h ) / 4 ) * 2 )
+			local stand = Plots.sv_standChild( self,
+				{ x = p.x, y = p.y, w = p.w, h = p.h }, Plots.METAL3_COLOR )
+			if stand then
+				stand.bounds.x, stand.bounds.y = size, size
+				stand.pos.x = p.x + math.floor( ( p.w - size ) / 2 )
+				stand.pos.y = p.y + math.floor( ( p.h - size ) / 2 )
+				childs[#childs + 1] = stand
+			end
+			plaza = { label = "plaza", bp = blueprint( childs ) }
+		else
+			out[#out + 1] = { label = p.kind, bp = blueprint( childs ) }
+		end
+	end
+
+	if plaza then table.insert( out, 1, plaza ) end
+	return out
 end
 
 -- Where a player spawns and where /home sends them when they own nothing: the

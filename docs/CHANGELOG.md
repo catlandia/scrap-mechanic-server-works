@@ -10,6 +10,52 @@ was most of them.
 
 ---
 
+## V39 — separation was the design, and V32 had it backwards
+
+> "WAIT I REMEMBERED!!!! the things NEED to be separated from the main city! in
+> the original event they were separated with wedges so updating one block wont
+> update whole city. but just the block! so my bad. the block between the panels
+> NEEDS to be detached. and each panel shall have its own stand!"
+
+Three reports read as *"the city is not joined up"* and V32 answered them by
+welding a single slab under the entire footprint. Wrong fix, real observation —
+and the reason it was wrong is the same mechanism the reference blueprint
+showed: **a body is the unit the engine rebuilds.**
+
+Change one block and the whole body it belongs to is reprocessed. Weld a hundred
+plots into one city and every block anyone places, anywhere, costs a rebuild of
+all of it. At an event with twenty people building at once — goal 1 of this
+project — that is the difference between a server that works and one that does
+not. Separating the panels was not sloppiness at the original event; it was the
+thing that made it run.
+
+### What changed
+
+- **The base slab is gone.** It was the single biggest thing welding the city
+  into one rebuild unit.
+- **Every street is its own creation.** One import per piece, so the block
+  between two panels is welded to neither of them.
+- **Every plot has its own stand** — a metal column from the ground to the
+  underside of the pad, welded into the plot's own body. The panel is held up by
+  itself and by nothing shared.
+- **The plaza keeps its pillar**, now welded into the plaza's own body rather
+  than imported separately.
+
+The city goes from 2 bodies of shared ground to one per piece. More bodies, each
+far smaller, which is the trade the whole design is making.
+
+### Two checks hold the line
+
+One asserts **no piece spans the bounding box** — the base slab, asserted away.
+Written by putting the slab back and watching it fail.
+
+The other rasterises a plot **in three dimensions** and proves the ring, the pad
+and the stand are one body with no block claimed twice. The first version of that
+check worked in 2D and reported the stand as an overlap with the pad above it —
+a 2D check on a 3D structure will lie about exactly the thing it exists to catch.
+
+---
+
 ## V38 — the plot floor could be carried away with a lift
 
 Checking what else the blueprint answered turned up a live bug, and it is the
