@@ -942,7 +942,7 @@ credit it with fixing the thing that actually degraded.
     dev/check_lua.py            compiles every mod script through a real Lua parser
     dev/check_uuids.py          every uuid the mod names, against the install
     dev/test_layout.py          runs Layout.lua and proves the city is a partition
-    dev/test_logic.py           runs the mod's rules and panel layouts (90 checks)
+    dev/test_logic.py           runs the mod's rules and panel layouts (91 checks)
     dev/sync_mod.py             repo -> game Mods folder (preserves live BanList.json)
     dev/session_stats.py        tick/FPS reconstruction from any game log
     dev/dump_api.py             per-module Lua bindings out of the executable
@@ -1017,9 +1017,23 @@ to be wrong:
 2. **`sm.creation.importFromString`'s last two arguments.** Vanilla passes `true, true`
    in `BuilderWorld` and only five arguments in `MenuWorld`; the meaning is not documented
    anywhere and was not derivable from the binding names.
-3. **Whether `sm.json.save` can write into an installed mod's directory at runtime.**
-   Workshop mods are replaced wholesale on update, so the master ban list should live
-   outside the mod and be synced in regardless.
+3. ~~**Whether `sm.json.save` can write into an installed mod's directory at
+   runtime.**~~ **ANSWERED, and it can.** The installed mod's `Snapshots/`
+   directory holds 341 KB files the game wrote itself, alongside a live
+   `Settings.json`, `Players.json`, `Plots.json` and `Event.json`. Found by
+   reading the folder, not by running a test.
+
+   The advice that follows from it still stands for a different reason: Workshop
+   mods are replaced wholesale on update, so the master ban list should live
+   outside the mod and be synced in regardless. Not because the write fails —
+   because the file gets overwritten.
+
+   The same folder settles two more: **snapshot capture works and the export is
+   real** (195 entries, 676 children, exactly the six shape/colour pairs a
+   96-plot city is made of), and **V50's phase snapshots fire in order** —
+   prepstart, buildstart, buildend, eventend, one minute apart. `RESTORE` is
+   still untested; capture and restore are different halves. See
+   [`docs/STATUS.md`](docs/STATUS.md).
 
 Every one of those is guarded with `pcall` and logs once rather than per tick.
 
@@ -1028,6 +1042,17 @@ Every one of those is guarded with `pcall` and logs once rather than per tick.
 **[`docs/NEXT.md`](docs/NEXT.md) is the handover** — what is done, what has never
 been run in a real event, what the next step is, and which decisions are waiting
 on the owner. Start there.
+
+Two companions to it, and the first one matters most:
+
+- **[`docs/STATUS.md`](docs/STATUS.md) — the honest ledger.** Which features have
+  been *seen working in game*, which were seen broken and have a fix that has
+  never been re-tested, and which have never been executed at all. Every other
+  document here describes what the code is meant to do; that one says what has
+  actually been observed. `check_all.py` passing is not evidence, and it says so.
+- **[`docs/ROADMAP.md`](docs/ROADMAP.md)** — the phased plan. Phase 1 is not a
+  feature: it is a step-by-step session that turns red ledger lines green, with
+  the log line that settles each one.
 
 The next step is the **per-tile part limit**: `Rules.lua` already enforces the
 2026-08-22 rules board, including rule 10 -- ten bearings, pistons and

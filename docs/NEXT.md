@@ -5,6 +5,8 @@ the chat. **This file is the handover.** Everything the next session needs is
 here or linked from here; nothing important lives only in the conversation.
 
 Companions:
+[`STATUS.md`](STATUS.md) **what is verified and what is not** — read this one ·
+[`ROADMAP.md`](ROADMAP.md) the phased plan, in detail ·
 [`../CLAUDE.md`](../CLAUDE.md) engine facts with citations ·
 [`ANTI-GRIEF.md`](ANTI-GRIEF.md) why protection cannot be prevention ·
 [`BUTTONS.md`](BUTTONS.md) everything a json GUI needs ·

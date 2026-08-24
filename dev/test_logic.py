@@ -3175,6 +3175,77 @@ def the_roster_hud_says_what_it_was_given():
     assert empty is not None, "the roster HUD refuses to draw before its first update"
 
 
+
+def clicking_a_style_row_cycles_it_all_the_way_round():
+    """The panel path, end to end: NextValue -> Sv_Set -> the blueprint.
+
+    Every other style check goes through /set. This one goes the way the host
+    actually will: click the value, take whatever NextValue hands back, and feed
+    it to Sv_Set -- which VALIDATES. A cycle list and a validator that disagreed
+    by one entry would give a button that works nine times out of ten, which is
+    the hardest kind of broken to report.
+
+    All the way round, not one step, because the failure would be at whichever
+    entry the two lists disagree on.
+    """
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "SettingsGui.lua", "Plots.lua")
+    S, G, Pal = lua.globals().Settings, lua.globals().SettingsGui, lua.globals().Palette
+    S.Sv_Load(False)
+
+    rows = {row["key"]: row for row in S.SCHEMA.values()}
+    style_keys = [k for k in rows if k.endswith("block") or
+                  (k.endswith("colour") and rows[k]["kind"] == "string")]
+    assert len(style_keys) == 10, f"expected 10 style settings, found {len(style_keys)}"
+
+    for key in style_keys:
+        row = rows[key]
+        choices = list(row["choices"]().values())
+        seen = []
+        for _ in range(len(choices) + 1):
+            current = S.Get(key)
+            nxt = G.NextValue(row, current)
+            # Sv_Set returns ( ok, detail, row ), so lupa hands back a 3-tuple
+            got = S.Sv_Set(key, str(nxt))
+            ok, detail = got[0], got[1]
+            assert ok, (
+                f"the panel cycled {key} to {nxt!r} and Sv_Set refused it: {detail}. "
+                f"SettingsGui.NextValue and the schema's choice list disagree.")
+            assert S.Get(key) == nxt, f"{key} did not take the value {nxt!r}"
+            seen.append(nxt)
+        assert set(seen) == set(choices), (
+            f"cycling {key} did not visit every option -- missed "
+            f"{sorted(set(choices) - set(seen))}")
+
+    # A NAME THAT IS NOT A BLOCK MUST BE REFUSED, not stored.
+    #
+    # This is the other half of the same pairing and it is the more dangerous
+    # half: a stored typo does not error, it builds a plot out of a uuid the
+    # engine has never heard of. Which imports as nothing -- a city with holes
+    # in it and no message anywhere saying why.
+    before = S.Get("padblock")
+    got = S.Sv_Set("padblock", "banana")
+    assert got[0] is False, "'banana' was accepted as a block name"
+    assert S.Get("padblock") == before, "a refused value was stored anyway"
+    got = S.Sv_Set("padcolour", "chartreuse")
+    assert got[0] is False, "'chartreuse' was accepted as a colour"
+    # ...but a raw hex still is, because the forty swatches are not a cage
+    got = S.Sv_Set("padcolour", "FF00FF")
+    assert got[0] is True, "a raw hex colour was refused"
+    assert S.Get("padcolour") == "ff00ff", "a raw hex was not normalised to lower case"
+
+    # and after all that clicking the city still builds out of real blocks
+    P = lua.globals().Plots
+    plots = lua.eval("Plots()")
+    P.sv_onCreate(plots, lua.table_from({"grid": lua.table_from({}), "enabled": True}))
+    bp = P.sv_plotBlueprint(plots, 0, 0)
+    known = set(Pal.AllMaterialUuids().keys())
+    for c in bp["bodies"][1]["childs"].values():
+        assert c["shapeId"] in known, (
+            f"the plot blueprint contains {c['shapeId']!r}, which is not a block "
+            f"this mod can name -- the city would import as nothing")
+        assert len(str(c["color"])) == 6, f"bad colour {c['color']!r} in the blueprint"
+
+
 def main():
     check("rules: over budget still lets you trim", over_budget_still_lets_you_trim)
     check("rules: over budget never opens somebody else's plot",
@@ -3196,6 +3267,8 @@ def main():
           the_style_defaults_are_selectable_values)
     check("style: the city is built out of the selected blocks",
           the_city_is_built_out_of_the_selected_blocks)
+    check("style: clicking a style row cycles all the way round",
+          clicking_a_style_row_cycles_it_all_the_way_round)
     check("style: a plot can never be scenery whatever it is made of",
           a_plot_can_never_be_scenery_whatever_it_is_made_of)
     check("style: a restyle never unmakes the existing city",
