@@ -1,68 +1,78 @@
 # Next session
 
-**The buttons work.** Confirmed in game 2026-08-24. Four bugs stacked on top of
-each other, each hiding the next — the whole story is in `docs/BUTTONS.md` under
-*SETTLED*, and `/guitest` stays in the mod for re-checking after a game update.
+V38 is installed. **Restart Scrap Mechanic** -- scripts are read at world load.
 
-That unblocks everything built in V29-V32, none of which has ever been seen.
-In rough order of what matters:
+Nothing below has ever been run in game. It is ordered so that if you only have
+ten minutes, the first two are the ones worth having.
 
-## 1. Does building work when prep ends?
+## 1. Can you build on your plot? (the one still-unexplained bug)
 
-Still the single most important thing to confirm, and it has never been verified
-in game. `/menu` -> EVENT CLOCK -> set prep to 2 minutes -> START. When the prep
-clock runs out, try to place a block.
+Start an event, get to BUILD, try to place a block on your own plot.
 
-- **prep** should close building and change nothing else — seats and buttons
-  still work
-- **build** opens it
-- the last 5 minutes of build get the warehouse alarm
-- **buffer** (optional) closes building again without locking anything
-- **ending** locks every build and takes a full world snapshot
+Every path I can trace says the slab should be buildable, and no error appears in
+the log, so the mod now says what it decided. Look for this line:
 
-## 2. Rebuild the city and look at it
+    event build -> protection open (99 bodies, 99 changed) [locked 2, open 96, sweep 1]
 
-`/menu` -> CITY LAYOUT -> BUILD CITY. There is a continuous slab under the whole
-city now, so it should read as one raised platform two blocks thick with a proper
-edge all round — not a hundred loose tiles. That was the "concrete doesnt stick
-to the borders" report.
+- **96 open** -- the plots ARE buildable and the problem is somewhere else
+- **96 locked** -- the resolver is refusing them, and that narrows it to
+  `Plots.sv_bodyIsOpen`
 
-## 3. The panels stay open now
+Or point at your plot and type **`/why`**, which prints the zone, the mode,
+`buildopen` and every flag on that exact body.
 
-Press PAUSE on the event panel: it should stay put with "paused" written under
-the title. Same for every control. BACK returns to the hub. Only CLOSE closes.
+## 2. The lift
 
-## 4. CLEAR CITY asks twice
+`hostlift` defaulted ON, which combined with the host restriction was pulling it
+out of everyone's hands. Default is off now, and a settings **migration** flips
+your saved value -- a changed default alone would never have reached you.
 
-`/menu` -> CITY LAYOUT -> CLEAR CITY. The first ask lists what is actually on the
-city, counted live. On the second the buttons swap sides so a reflex double-click
-lands on CANCEL. Cancelling puts you back on the city panel.
+`/tool` while holding it still says which of the two lifts you have.
 
-## 5. FIND MY PLOT
+## 3. The cleaner -- new tool, looks like a sledgehammer
 
-Claim a plot, walk away, `/menu` -> MY PLOT -> FIND MY PLOT. A marker should
-appear on the compass. It has never worked before — it was being driven from a
-script with no world, twice.
+The answer to "I cant remove them, remove like delete then". Carryable props are
+*picked up* by the remove tool rather than erased, so no permission flag reaches
+them; script-side destroy is the only thing that works.
 
-## Housekeeping
+- **click** -- delete the block or prop you point at
+- **F + click** (or right click) -- delete the whole creation
+- host only, never touches the city floor
 
-`/menu` still writes four `gui 1/4`..`gui 4/4` trace lines per click. Harmless
-(four lines per *click*, not per tick) and useful while the other panels get
-exercised for the first time. Say the word and they come out.
+Every call in it was checked against the base game and four did not survive --
+see V37 in the changelog.
 
-## Still unknown
+## 4. Buffer time polishes
 
-### The lift
+Set a buffer of a minute or two. During it you should be able to **paint, rewire
+a controller, sit in a seat and drive** -- but not place or break a block.
 
-Untouched this round. `/tool` while holding it says outright whether you have the
-creative lift (`5cc12f03`) or the survival one (`8f190ce2`). There should be two
-"Lift" items in the menu.
+## 5. Litter
 
-If `/tool` says survival, the toolset addition did not load and that is a
-different problem from the lift itself. If it says creative and E still does
-nothing, no Lua change will fix it — the blueprint menu is engine-side
-(`GarageImportGui`) and the next step is finding what else the engine gates it
-on.
+Craftbots and gems on the plaza should now be clearable, in every mode including
+after an event has ended. `/menu` -> CITY LAYOUT -> **SWEEP LITTER** clears the
+streets and the plaza in one press.
+
+## 6. The city, and the compass
+
+- Rebuild the city: each plot should be a concrete pad with a **metal ring welded
+  round it**, and the whole thing should sit on one continuous platform.
+- The plot floor should now be impossible to pick up with a lift. It was not.
+- Claim a plot, walk off, **FIND MY PLOT** -- the compass marker should not be
+  stretched any more.
+- The **event clock should be in the top right**. It was off the edge of the
+  canvas entirely, which is why you never saw it.
+
+## One decision waiting on you
+
+Your blueprint is **22x22 with a 20x20 concrete interior** -- you put the metal
+ring *around* a 20-block pad. I built it the other way: the ring eats the outer
+block of a 20-block plot, leaving an **18x18** pad. That quietly shrinks
+everyone's build area, which you never asked for.
+
+Matching your blueprint means street width going from 1 to 2 (each plot's ring
+takes one block of the seam, two rings fill it exactly) and the city getting
+about 10% wider. Say which you want and it is a small change either way.
 
 ## Not started
 
