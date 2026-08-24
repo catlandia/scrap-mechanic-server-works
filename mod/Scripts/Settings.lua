@@ -100,9 +100,14 @@ local TOOLS = {
 	-- (SurvivalLift). baseGameContent "Survival" only ships the second, so our
 	-- toolset adds the first -- and a gate that named one of them would let the
 	-- other straight through.
+	-- THREE lifts now. 5cc12f03 is the creative one, 8f190ce2 the survival one,
+	-- and the third is ours -- the Import Lift, added under a uuid nothing else
+	-- declares so nothing can win the first-declaration race against it. A gate
+	-- that named only some of them would let the others straight through.
 	lift = {
 		sm.uuid.new( "5cc12f03-275e-4c8e-b013-79fc0f913e1b" ),
 		sm.uuid.new( "8f190ce2-3a59-423e-8483-a7aa67bd5bc0" ),
+		sm.uuid.new( "4c893da9-484d-495b-a013-87beed81c148" ),
 	},
 	glowsticks = { sm.uuid.new( "9506abb9-e415-4229-a824-28a479cca788" ) },
 	-- Ours. See CleanerTool.lua: point at anything and it is deleted, including

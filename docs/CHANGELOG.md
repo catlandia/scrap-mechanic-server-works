@@ -10,6 +10,36 @@ was most of them.
 
 ---
 
+## V49 -- the Import Lift, and the reason the cleaner had no name
+
+*"make a new lift called import lift that is just regular lift just with the
+functions of the creative lift"* -- and the answer to whether that was even
+possible came from the owner: **"we litteraly made a nugdupS."**
+
+Quite right. The toolset has no name field at all, but
+`mod/Gui/Language/English/inventoryDescriptions.json` does, keyed by uuid, and
+the nugdupS canary has been the standing proof of it since V25.
+
+**Import Lift**: a fresh uuid nothing else in the game declares, pointed at the
+creative `Lift` class, named in our own inventory descriptions so it cannot be
+confused with either of the two lifts already in the menu. Being an addition is
+the whole point -- nothing can win the first-declaration race against a uuid
+nobody else owns, which is the one case a Custom Game toolset can rely on.
+
+It is governed by the same `lift` setting as the other two, and by the same
+"building is shut" warning.
+
+**And the cleaner has a name now.** It never had an entry in that file, so it sat
+in the menu with nothing to call itself -- which is what "I dont see my deleting
+thing appear" actually was, about a tool the logs had already proved was being
+created and held.
+
+`dev/check_uuids.py` now prints the menu name of every tool the toolset adds and
+flags **NO NAME IN THE MENU** on any that lack one. Written by taking the
+cleaner's entry back out and watching it fire.
+
+---
+
 ## V48 — a dead event was resurrecting itself on every load
 
 *"still broken red colour"* — and it was never the remove tool. It was the event

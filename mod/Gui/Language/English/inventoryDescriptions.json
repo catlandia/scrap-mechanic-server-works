@@ -8,5 +8,15 @@
 		"title": "Lift",
 		"upperCaseTitle": "LIFT",
 		"description": "The creative lift. Build on it to make creations that are not fixed to the ground, raise and lower them, and flip one back upright. This is the lift that opens the creations menu, which the survival lift does not."
+	},
+	"4c893da9-484d-495b-a013-87beed81c148": {
+		"title": "Import Lift",
+		"upperCaseTitle": "IMPORT LIFT",
+		"description": "An ordinary lift running the creative lift's script, so E opens the creations menu. Added under its own uuid rather than replacing anything, because a Custom Game toolset can add a tool but never override one."
+	},
+	"bbbb0cc8-5dd0-46e1-9299-8080c3cc80db": {
+		"title": "Cleaner",
+		"upperCaseTitle": "CLEANER",
+		"description": "Point at anything and click to delete it. Hold F to delete the whole creation. It is the only thing that can remove a craftbot, a gem or a crate, because the remove tool picks those up instead of erasing them. Host only. It will not touch the city floor."
 	}
 }

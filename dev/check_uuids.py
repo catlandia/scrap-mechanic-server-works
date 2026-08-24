@@ -193,17 +193,41 @@ def main():
             kind, gwhere = game[u]
             print(f"        {names.get(u, '?'):<16} {u}  ->  {cls}   IGNORED")
             print(f"        {gwhere} declares it first and keeps it")
+    unnamed = []
     if invented:
+        # A tool we add gets its menu name from our OWN inventoryDescriptions,
+        # not from the toolset -- the toolset has no name field at all. Without
+        # an entry the tool is still there and still works, it just has nothing
+        # to call itself, which is exactly why "I dont see my deleting thing
+        # appear" was reported about a tool the logs proved was in the game.
+        ours = {}
+        desc = ROOT / "mod" / "Gui" / "Language" / "English" / "inventoryDescriptions.json"
+        if desc.is_file():
+            try:
+                ours = json.load(io.open(desc, encoding="utf-8"))
+            except Exception as exc:
+                print(f"  inventoryDescriptions.json will not parse: {exc}")
         print()
         print("  tools our toolset ADDS (nothing in the loaded base content")
         print("  declares these, so they take effect):")
         for u, cls, where in sorted(invented):
-            title = names.get(u, "?")
-            print(f"        {title:<16} {u}  ->  {cls}")
+            title = ours.get(u, {}).get("title") or names.get(u, "?")
+            named = u in ours
+            print(f"        {title:<16} {u}  ->  {cls}"
+                  f"{'' if named else '   <-- NO NAME IN THE MENU'}")
+            if not named:
+                unnamed.append((title, u))
 
     print()
     print(f"{len(ok)} uuids resolve, {len(missing)} do not "
           f"(out of {len(seen)} named by the mod)")
+    if unnamed:
+        print()
+        print(f"  {len(unnamed)} tool(s) we add have no entry in")
+        print("  mod/Gui/Language/English/inventoryDescriptions.json, so they")
+        print("  appear in the creative menu with no name and no description.")
+        for _, u in unnamed:
+            print(f"        {u}")
     if missing:
         print("a uuid the game does not know is a silent no-op, not an error")
         return 1

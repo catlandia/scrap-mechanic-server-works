@@ -53,6 +53,28 @@
 			"script": { "class": "Lift", "file": "$GAME_DATA/Scripts/game/Lift.lua" }
 		},
 
+		// THE IMPORT LIFT.
+		//
+		// "if the lift doesnt work. make a new lift called import lift that is
+		// just regular lift just with the functions of the creative lift."
+		//
+		// That is exactly what this is: a uuid nothing else in the game declares,
+		// pointed at the creative Lift class, and given its own name in
+		// mod/Gui/Language/English/inventoryDescriptions.json so it cannot be
+		// confused with either of the two lifts already in the menu.
+		//
+		// The point is that it is an ADDITION. Nothing else owns this uuid, so
+		// nothing can win the first-declaration race against it -- which is the one
+		// case this file can rely on. 5cc12f03 below is also an addition and also
+		// runs class Lift, so if the creative lift is broken this will be too; what
+		// this buys is a lift you can find and name with certainty.
+		{
+			"uuid": "4c893da9-484d-495b-a013-87beed81c148",
+			"previewRenderable": "$GAME_DATA/Character/Char_Tools/char_lift_preview.rend",
+			"previewRotation": [ 1, 0, 0, 0, 0, -1, 0, 1, 0 ],
+			"script": { "class": "Lift", "file": "$GAME_DATA/Scripts/game/Lift.lua" }
+		},
+
 		// THE CLEANER, and the answer to "I want to be able to DELETE them when
 		// pressing F while removing".
 		//

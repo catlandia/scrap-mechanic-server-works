@@ -134,6 +134,24 @@ Two builds were spent on overrides that never executed. `grep "Created Tool"` in
 `Logs/game-*.log` settles it in one command, and `dev/check_uuids.py` now flags
 a dead entry before the game ever sees it.
 
+### A tool we ADD gets its menu name from our own inventoryDescriptions
+
+The toolset has **no name field**. A tool entry is uuid, preview renderable,
+preview rotation and script, and nothing else. The name and the description in
+the creative menu come from
+
+    mod/Gui/Language/English/inventoryDescriptions.json
+
+keyed by uuid. Without an entry the tool is still in the menu and still works, it
+just has nothing to call itself -- which is exactly how "I dont see my deleting
+thing appear" got reported about a tool the logs proved was in the game.
+
+The nugdupS canary is the standing proof this works: a uuid nothing else
+declares, a name nothing else could produce, visible in the menu.
+
+`dev/check_uuids.py` now prints the menu name of every tool the toolset adds and
+says **NO NAME IN THE MENU** for any that lack an entry.
+
 ### `baseGameContent` decides which tool databases exist at all
 
 `"Survival"` loads `Survival/Tools/toolsets.json`; `"Creative"` and `"None"` load

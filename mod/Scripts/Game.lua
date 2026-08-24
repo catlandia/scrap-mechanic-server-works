@@ -742,6 +742,7 @@ end
 local LIFT_UUIDS = {
 	["5cc12f03-275e-4c8e-b013-79fc0f913e1b"] = true,   -- the creative lift
 	["8f190ce2-3a59-423e-8483-a7aa67bd5bc0"] = true,   -- the survival one
+	["4c893da9-484d-495b-a013-87beed81c148"] = true,   -- our Import Lift
 }
 
 function Game.cl_warnIfBuildingIsShut( self, uuid )
@@ -1934,6 +1935,10 @@ function Game.sv_n_adminCommand( self, params, player )
 				"the SURVIVAL lift -- it carries and raises, but has no creations menu",
 			["748b6656-84b2-440f-8f4c-8cc7deeba63c"] =
 				"nugdupS, the stale-mod canary. Mod content is reaching the game",
+				"Import Lift -- the creative lift under our own uuid, so nothing "
+					.. "can take it. E opens the creations menu.",
+				"Cleaner -- point and click to delete, hold F for the whole "
+					.. "creation. Host only.",
 		}
 		if KNOWN[id] then reply( "  " .. KNOWN[id] ) end
 		local blocked = self.sv.blockedTools[id] or self.sv.hostOnlyTools[id]
