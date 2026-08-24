@@ -812,9 +812,10 @@ def a_bulk_purge_never_touches_the_city():
     """Every bulk purge skips anything holding a piece of the city.
 
     /purge walkways removed every body not standing on a plot -- which is the
-    deck, the streets, the plaza and the pillar. It survived only because it was
-    a chat command nobody ran; putting it behind a SWEEP LITTER button would have
-    made one press delete the world.
+    deck, the streets, the plaza and the pillar. That branch is gone now, removed
+    on the owner's instruction because "not on a plot" is not a test for litter
+    at all -- but /purge here <radius> is the same shape and still needs the
+    guard.
 
     The guard is per SHAPE, not per body, because a build welded to a plot slab
     is one body with our concrete in it -- so the same test protects player work.
@@ -825,7 +826,7 @@ def a_bulk_purge_never_touches_the_city():
 
     # every bulk loop over getAllBodies that destroys shapes must consult it
     import re
-    for name in ("walkways", "here"):
+    for name in ("here",):
         start = src.index('what == "%s"' % name)
         chunk = src[start:start + 1200]
         assert "destroyShape" in chunk, f"/purge {name} no longer destroys anything"
@@ -1534,6 +1535,24 @@ def no_button_is_buried(label, items, H):
             f"them cannot be pressed")
 
 
+def walk_raw(node, out=None):
+    """Every widget in the tree, as its raw property table.
+
+    walk() flattens to geometry and walk_full() keeps captions; neither can see
+    a property like Static, which is the whole difference between a box you can
+    type in and one you cannot.
+    """
+    out = [] if out is None else out
+    if node is None:
+        return out
+    out.append(node)
+    childs = node["Childs"]
+    if childs is not None:
+        for child in childs.values():
+            walk_raw(child, out)
+    return out
+
+
 def gui_lua():
     lua = fresh("Layout.lua", "Settings.lua", "Event.lua", "EventHud.lua",
                 "EventGui.lua", "ConfirmGui.lua",
@@ -1761,6 +1780,75 @@ def the_event_hud_reads_correctly_in_every_phase():
     assert "PAUSED" in caps, f"a paused clock does not say so: {caps!r}"
 
 
+def any_number_can_be_typed_into_the_event_clock():
+    """The durations accept typed numbers, not just the stepper presets.
+
+    "allow for custom numbers from the keyboard so I can set my own time."
+
+    A json GUI takes typed text through an EditBox with Static = false and an
+    onTextEnter callback -- DigitalSign.gui's EnterTextBox is the base game's
+    only example, and DigitalSign.lua:157 gives the signature
+    ( self, widgetName, text ). A text event carries no onClickData, so the
+    WIDGET NAME is the only thing that says which field was typed into.
+    """
+    lua = gui_lua()
+    G = lua.globals().EventGui
+    state = lua.table_from({"phase": "off", "prep": 10, "build": 60, "buffer": 5})
+    root = G.Build(state)
+
+    boxes = {}
+    for node in walk_raw(root):
+        # node["Type"], not node.get(...) -- a lupa table has no .get, and
+        # asking for one silently resolves to the Lua key "get", which is nil.
+        if node["Type"] == "EditBox":
+            boxes[node["Name"]] = node
+    fields = [f for f in G.FIELDS.values()]
+    assert len(boxes) == len(fields), (
+        f"{len(boxes)} typed boxes for {len(fields)} durations -- every duration "
+        "must be typeable")
+
+    for f in fields:
+        name = str(f["box"])
+        assert name in boxes, f"{f['label']} has no typed box called {name!r}"
+        box = boxes[name]
+        assert box["Static"] is False, (
+            f"{name} is Static -- it would display the number and never accept one")
+        assert box["NeedKey"] is True, f"{name} cannot take the keyboard"
+        assert box["onTextEnter"] is not None, f"{name} has no onTextEnter"
+        assert G.FieldForBox(name) is not None, (
+            f"{name} does not map back to a field, so a typed value has nowhere "
+            "to go")
+
+    # and what it does with what you type.
+    #
+    # ParseTime returns ( minutes ) when the value is taken as typed, and
+    # ( minutes, reason ) when it had to clamp -- so lupa hands back a tuple for
+    # the clamped cases and a bare number otherwise. Both are the same answer.
+    def parsed(box, typed):
+        got = G.ParseTime(box, typed)
+        return got[0] if isinstance(got, tuple) else got
+
+    prep = str(fields[0]["box"])
+    build = str(fields[1]["box"])
+    lo, hi = int(fields[1]["min"]), int(fields[0]["max"])
+
+    assert parsed(prep, "37") == 37, "a plain number was not accepted"
+    assert parsed(prep, " 12 min ") == 12, "a number with noise round it failed"
+    assert parsed(prep, "2.6") == 3, "fractions should round to whole minutes"
+    assert parsed(prep, "0") == 0, "zero prep is legal and must stay legal"
+    assert parsed(build, "0") == lo, (
+        "a build of zero must clamp up, not start an event with no build time")
+    assert parsed(prep, "99999") == hi, "a huge number did not cap"
+    assert parsed(prep, "banana") is None, "nonsense was accepted as a time"
+    assert parsed("NotAField", "10") is None, "an unknown widget was accepted"
+
+    # a clamp must SAY it clamped; a value taken as typed must stay quiet
+    assert isinstance(G.ParseTime(build, "0"), tuple), (
+        "clamping to the minimum happens silently -- the host would not know")
+    assert not isinstance(G.ParseTime(prep, "37"), tuple), (
+        "a perfectly good number produced a complaint")
+
+
 def the_event_panel_fits_running_and_stopped():
     lua = gui_lua()
     G = lua.globals().EventGui
@@ -1868,6 +1956,8 @@ def main():
     check("event: the clock reads the way a clock should", the_clock_reads_the_way_a_clock_should)
     check("event: the per-second broadcast stays small", the_client_state_is_small_and_complete)
 
+    check("gui: any number can be typed into the event clock",
+          any_number_can_be_typed_into_the_event_clock)
     check("gui: the event panel fits running and stopped",
           the_event_panel_fits_running_and_stopped)
     check("gui: the second confirm moves the dangerous button",

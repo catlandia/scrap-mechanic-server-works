@@ -590,20 +590,20 @@ function World.sv_e_swCommand( self, params )
 				end
 			end
 			reply( string.format( "cleared %d bodies within %g m", removed, radius ) )
-		elseif what == "walkways" then
-			for _, body in ipairs( sm.body.getAllBodies() ) do
-				if sm.exists( body ) and not isGhostBody( body ) and not holdsCity( body ) then
-					local z = g_swPlots:sv_locate( body.worldPosition )
-					if z == nil or z.kind ~= "plot" then
-						for _, shape in ipairs( body:getShapes() ) do shape:destroyShape() end
-						removed = removed + 1
-					end
-				end
-			end
-			reply( ( removed == 0 )
-				and "nothing to sweep -- the streets and the plaza are clear"
-				or string.format( "swept %d things off the streets and the plaza", removed ) )
 		end
+		-- There was a "walkways" branch here -- delete every body that is not
+		-- standing on a plot. REMOVED on the owner's instruction: "it just doesnt
+		-- work as intended and just deletes stuff."
+		--
+		-- They are right about why, and it is worth keeping: "not on a plot" is
+		-- not a test for litter. It cannot tell a dropped craftbot from a car
+		-- somebody parked on a road, or from a build that overhangs its own plot
+		-- edge, and there is no flag on a body that says "this is rubbish". A
+		-- sweep that guesses will eventually delete something that mattered, and
+		-- nobody will know which press did it.
+		--
+		-- The cleaner tool replaces it. It deletes exactly what is under the
+		-- crosshair, which is a decision a person makes rather than a rule.
 		if removed > 0 then
 			self:sv_quietAlarm( 20 )       -- our own cleanup must not trip the alarm
 			sm.log.info( string.format( "[ServerWorks] purge %s: %d bodies", tostring( what ), removed ) )

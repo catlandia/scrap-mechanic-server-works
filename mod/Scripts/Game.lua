@@ -774,10 +774,10 @@ function Game.client_onCreate( self )
 		{ { "string", "name", false }, { "number", "plot", true } }, "cl_onAdminCommand",
 		"Host: rebuild from a snapshot. Add a plot number to repair one plot. Run twice to confirm" )
 	sm.game.bindChatCommand( "/purge",
-		{ { "string", "what", false, { "look", "carry", "here", "plot", "walkways" } },
+		{ { "string", "what", false, { "look", "carry", "here", "plot" } },
 		  { "number", "n", true } },
 		"cl_onAdminCommand",
-		"Host: delete junk. look | carry | here <m> | plot <n> | walkways" )
+		"Host: delete junk. look | carry | here <m> | plot <n>" )
 
 	sm.game.bindChatCommand( "/known", {}, "cl_onAdminCommand", "Host: everyone who has ever joined" )
 	sm.game.bindChatCommand( "/ban", nameParams(), "cl_onAdminCommand",
@@ -1439,6 +1439,28 @@ function Game.cl_onEventGuiClick( self, widgetName, data )
 		  prep = cfg.prep, build = cfg.build, buffer = cfg.buffer } )
 end
 
+-- A typed duration. ( self, widgetName, text ) -- a text event carries no
+-- onClickData, so the widget NAME is the only thing saying which field it was;
+-- see EventGui.FieldForBox. Signature confirmed against DigitalSign.lua:157.
+function Game.cl_onEventTimeTyped( self, widgetName, text )
+	if self.cl == nil or self.cl.eventCfg == nil then return end
+	local field = EventGui.FieldForBox( widgetName )
+	if field == nil then return end
+
+	local minutes, why = EventGui.ParseTime( widgetName, text )
+	if why then sm.gui.chatMessage( why ) end
+	if minutes == nil then
+		-- Nothing usable was typed. Re-render anyway so the box goes back to
+		-- showing the value that is actually set, rather than the rubbish.
+		self:cl_showPanel( "event", EventGui.Build( self.cl.eventCfg ) )
+		return
+	end
+
+	self.cl.eventCfg[field.key] = minutes
+	self.cl.eventCfg.status = string.format( "%s set to %d min", field.label, minutes )
+	self:cl_showPanel( "event", EventGui.Build( self.cl.eventCfg ) )
+end
+
 function Game.sv_n_eventGuiAction( self, data, player )
 	if player ~= sm.player.getHostPlayer() then return end
 	if g_swEvent == nil or type( data ) ~= "table" then return end
@@ -1595,11 +1617,6 @@ function Game.sv_n_plotsGuiAction( self, data, player )
 	elseif data.action == "build" then
 		self:sv_toWorld( "/plotapply", {}, player,
 			{ cfg = data.cfg, panel = "city" } )
-	elseif data.action == "sweep" then
-		-- No confirmation. It only ever removes things off ground nobody is
-		-- allowed to build on, so there is nothing here anyone can lose.
-		self:sv_toWorld( "/purge", { "/purge", "walkways" }, player,
-			{ panel = "city" } )
 	end
 end
 
@@ -1670,7 +1687,7 @@ function Game.sv_n_adminCommand( self, params, player )
 			reply( "  /purge look         delete whatever you are pointing at" )
 			reply( "  /purge look 1       delete the whole creation, not one block" )
 			reply( "  /purge carry        destroy whatever you picked up" )
-			reply( "  /purge here <m> | /purge plot <n> | /purge walkways" )
+			reply( "  /purge here <m> | /purge plot <n>" )
 			reply( "  /why                point at a build, ask why it is locked" )
 			reply( "  /ban <who>  /unban <who>  /banlist  /known  /kick <who>" )
 			reply( "  /allow <who>  /unallow <who>  /allowlist" )

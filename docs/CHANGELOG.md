@@ -10,6 +10,58 @@ was most of them.
 
 ---
 
+## V40 — type your own times, and the sweep is gone
+
+### The sweep is removed
+
+*"remove the sweep function since it just doesnt work as intended and just
+deletes stuff. DONT try to fix this I know you cant. just remove the function."*
+
+Gone: the SWEEP LITTER button and the `/purge walkways` branch behind it.
+
+The reasoning is worth keeping, because it is right. "Not standing on a plot" is
+not a test for litter. It cannot tell a dropped craftbot from a car somebody
+parked on a road, or from a build that overhangs its own plot edge, and there is
+no flag on a body that says *this is rubbish*. A sweep that guesses will
+eventually delete something that mattered and nobody will know which press did
+it. The cleaner tool replaces it: it deletes exactly what is under the crosshair,
+which is a decision a person makes rather than a rule.
+
+`/purge here <radius>` is the same shape and is still there — say the word and it
+goes too.
+
+### Any number can be typed into the event clock
+
+*"on event clock. allow for custom numbers from the keyboard so I can set my own
+time."*
+
+Click a duration, type a number, press Enter. The steppers stay for the usual
+values.
+
+Typed input in a json GUI needs an `EditBox` with **`Static = false`** — that one
+flag is the whole difference between a box that displays a number and one that
+accepts it — plus `NeedKey = true` and an `onTextEnter` callback. The base game
+has exactly one editable box (`DigitalSign.gui`'s `EnterTextBox`), so that is
+where every property came from, and `DigitalSign.lua:157` gives the signature:
+`( self, widgetName, text )`.
+
+**A text event carries no `onClickData`**, unlike a click — so the widget *name*
+is the only thing that says which field was typed into, and it has to map back
+by hand.
+
+What it does with what you type: strips anything that is not a number, rounds to
+whole minutes, clamps to the field's range and **says so when it clamps** — a
+build time of 0 becomes 1 with a message, rather than silently starting an event
+with no build phase. Nonsense leaves the value alone and puts the real one back
+in the box.
+
+The check covers all of that, and caught two things: `.get()` on a lupa table
+silently resolves to the Lua key `"get"` and returns nil, and a Lua function
+returning `( value, reason )` arrives in Python as a tuple — so "did it clamp?"
+is testable, and now asserted in both directions.
+
+---
+
 ## V39 — separation was the design, and V32 had it backwards
 
 > "WAIT I REMEMBERED!!!! the things NEED to be separated from the main city! in

@@ -85,6 +85,17 @@ The log now says how many separate creations the shared ground came out as:
 
     [ServerWorks] shared ground: 31 separate creations, 0 failed, 0 short
 
+## New in V40
+
+- **The event clock takes typed numbers.** Click a duration, type, press Enter.
+  It rounds to whole minutes, clamps to a sane range and tells you when it has
+  clamped -- a build time of 0 becomes 1 with a message rather than silently
+  starting an event with no build phase.
+- **SWEEP LITTER is gone**, on your call. `/purge walkways` went with it. The
+  cleaner tool is the replacement: aimed, one thing at a time.
+  (`/purge here <radius>` is the same guess-and-delete shape and is still there
+  -- say the word and it goes too.)
+
 ## One decision waiting on you
 
 Your blueprint is **22x22 with a 20x20 concrete interior** -- you put the metal

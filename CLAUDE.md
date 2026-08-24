@@ -269,6 +269,29 @@ top-right with a margin is
 
 `Anchor = "TopRight"` is not a value the engine accepts; `"Center"` is.
 
+### Typed input in a json GUI: `EditBox` + `Static = false` + `onTextEnter`
+
+The base game has exactly **one** editable box in a json GUI —
+`Data/Gui/JsonGuis/DigitalSign.gui`'s `EnterTextBox` — so it is the only proof of
+what one needs:
+
+```lua
+{ Type = "EditBox", Skin = "EditBoxEmpty",
+  Static = false,          -- THE flag. Every other TextBox is Static = true
+  NeedKey = true,          -- or it never takes the keyboard
+  MultiLine = false, WordWrap = false, HeightFromText = false,
+  MaxTextLength = 40,
+  CaptionDisableReplacing = true,   -- stop #{...} being read as a localisation key
+  onTextEdit = "cl_...",   -- every keystroke
+  onTextEnter = "cl_..." } -- Enter
+```
+
+The handler is `( self, widgetName, text )` — `DigitalSign.lua:157`. **A text
+event carries no `onClickData`**, so the widget *name* is the only thing that
+says which field was typed into; map it back yourself (`EventGui.FieldForBox`).
+
+Used by the event clock so any duration can be typed rather than stepped.
+
 ### GUI skins that draw no text
 
 `UpgradeButton` is a progress bar. Given a Button and a Caption it renders the
