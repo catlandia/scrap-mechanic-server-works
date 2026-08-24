@@ -79,6 +79,13 @@ function CleanerTool.client_onUpdate( self, dt )
 end
 
 function CleanerTool.client_onEquippedUpdate( self, primaryState, secondaryState, forceBuild )
+	-- A crosshair prompt, so the tool visibly IS a delete tool. sm.gui
+	-- .setInteractionText is proven inside a tool script (Fertilizer.lua:242),
+	-- unlike sm.gui.chatMessage which no vanilla tool calls at all -- reported as
+	-- "I dont see my deleting thing appear".
+	pcall( sm.gui.setInteractionText, "", sm.gui.getKeyBinding( "Create", true ),
+		"delete this block   --   hold F for the whole creation" )
+
 	if not pressed( primaryState ) and not pressed( secondaryState ) then
 		-- Swallow both buttons whatever happens, so the inherited sledgehammer
 		-- swing can never fire from this tool.

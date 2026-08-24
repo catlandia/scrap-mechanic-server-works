@@ -453,6 +453,22 @@ code did.
 A check asserts every return path in `profileFor` goes through the pin, and it
 runs the real resolver rather than reading the table.
 
+### NEVER locate a body by `body.worldPosition`
+
+It is the body's own **origin**, not where the body is. Every piece of this city
+is imported at `sm.vec3.zero()` because the blueprint carries absolute block
+coordinates, so an origin can report a point nowhere near the thing on screen.
+
+**MEASURED by its symptoms**: *"I cant place blocks on the concrete but I can
+delete it. I can delete others plots."* buildable false with erasable true is
+exactly one profile out of six — `sweep` — which is what `sv_bodyIsOpen` returns
+for a body it cannot place in the city at all. Every plot was being located
+somewhere it was not and treated as litter.
+
+Use `Plots.sv_bodyZone`, which takes the **centre of the AABB**. A check fails if
+any file goes back to `sv_locate( body.worldPosition )`, and the city logs where
+every one of its bodies actually landed after each build.
+
 ### Body flags are global, so "only build on your own tile" needs presence AND absence
 
 If a plot body is buildable, it is buildable **by everybody, from anywhere within

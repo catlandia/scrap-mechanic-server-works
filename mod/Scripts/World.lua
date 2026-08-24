@@ -348,7 +348,7 @@ end
 
 function World.sv_plotOfBody( self )
 	return function( body )
-		local z = g_swPlots:sv_locate( body.worldPosition )
+		local z = g_swPlots:sv_bodyZone( body )
 		return ( z and z.kind == "plot" ) and z.index or nil
 	end
 end
@@ -359,7 +359,7 @@ function World.sv_clearPlot( self, index )
 	local removed = 0
 	for _, body in ipairs( sm.body.getAllBodies() ) do
 		if sm.exists( body ) and not isGhostBody( body ) then
-			local z = g_swPlots:sv_locate( body.worldPosition )
+			local z = g_swPlots:sv_bodyZone( body )
 			if z and z.kind == "plot" and z.index == index then
 				for _, shape in ipairs( body:getShapes() ) do
 					shape:destroyShape()
@@ -674,7 +674,7 @@ function World.sv_e_swCommand( self, params )
 			return
 		end
 		local body = result:getBody()
-		local z = g_swPlots:sv_locate( body.worldPosition )
+		local z = g_swPlots:sv_bodyZone( body )
 		reply( string.format( "body at %.2f,%.2f,%.2f  shapes=%d  static=%s",
 			body.worldPosition.x, body.worldPosition.y, body.worldPosition.z,
 			body:getShapeCount(), tostring( body:isStatic() ) ) )
@@ -831,7 +831,7 @@ function World.sv_cityCensus( self, player )
 			local theirs = body:getShapeCount() - ours
 			if theirs > 0 then
 				buildShapes = buildShapes + theirs
-				local z = g_swPlots:sv_locate( body.worldPosition )
+				local z = g_swPlots:sv_bodyZone( body )
 				local owner = ( z and z.kind == "plot" ) and g_swPlots.owners[z.index] or nil
 				if owner and not builders[owner] then
 					builders[owner] = true
@@ -1170,6 +1170,7 @@ function World.sv_stepCity( self )
 		local w, h = g_swPlots:sv_extent()
 		sm.log.info( string.format( "[ServerWorks] city built: %d plots, %d failed",
 			job.built, job.failed ) )
+		self:sv_reportWhereTheCityLanded()
 		self:sv_broadcast( string.format(
 			"City built: %d plots of %d blocks, %.0f x %.0f m across, %d block plaza at spawn.%s",
 			job.built, g.plot, w * Plots.BLOCK, h * Plots.BLOCK,
@@ -1183,6 +1184,44 @@ end
 -- is part of that build's body, so destroying the body would delete their work
 -- and testing the body's height missed it entirely -- which is how a rebuild
 -- ended up laying a second city on top of the first.
+-- Say what zone every city body actually resolves to.
+--
+-- The check that would have caught "I cant place blocks on the concrete but I
+-- can delete it" the moment the city was built, instead of several versions
+-- later. Every plot slab should locate to a PLOT; if they are coming back as
+-- plaza or as nothing, the plot rules are being applied to the wrong ground and
+-- nothing downstream can be right.
+--
+-- Once per build, not per tick.
+function World.sv_reportWhereTheCityLanded( self )
+	local ok, err = pcall( function()
+		local kinds, checked = {}, 0
+		for _, body in ipairs( sm.body.getAllBodies() ) do
+			if sm.exists( body ) and not isGhostBody( body ) and holdsCity( body ) then
+				local z = g_swPlots:sv_bodyZone( body )
+				local kind = z and z.kind or "OFF THE CITY"
+				kinds[kind] = ( kinds[kind] or 0 ) + 1
+				checked = checked + 1
+			end
+		end
+		local parts = {}
+		for kind, n in pairs( kinds ) do
+			parts[#parts + 1] = string.format( "%s %d", kind, n )
+		end
+		table.sort( parts )
+		sm.log.info( string.format(
+			"[ServerWorks] where the city landed: %d bodies -- %s",
+			checked, table.concat( parts, ", " ) ) )
+		if ( kinds.plot or 0 ) < 1 then
+			sm.log.warning( "[ServerWorks] NOT ONE plot body located to a plot. "
+				.. "Plot permissions cannot work in this state." )
+		end
+	end )
+	if not ok then
+		sm.log.warning( "[ServerWorks] city report failed: " .. tostring( err ) )
+	end
+end
+
 function World.sv_clearFloor( self )
 	local removed = 0
 	for _, body in ipairs( sm.body.getAllBodies() ) do

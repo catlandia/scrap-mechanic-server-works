@@ -898,6 +898,64 @@ def spawn_is_the_middle_of_the_map():
         f"the world origin is {z['kind'] if z else 'off the map'}, not the plaza")
 
 
+def a_body_is_located_by_where_it_is_not_by_its_origin():
+    """A plot body must resolve to its own plot, not to nothing.
+
+    REPORTED: "I cant place blocks on the concrete but I can delete it. I can
+    delete others plots."
+
+    buildable = false with erasable = true is exactly ONE profile out of six:
+    `sweep`. And sweep is what sv_bodyIsOpen returns when it cannot place a body
+    in the city at all -- so every plot was being located somewhere it was not
+    and treated as litter on open ground.
+
+    body.worldPosition is a body's own ORIGIN. Every piece of this city is
+    imported at sm.vec3.zero() because the blueprint carries absolute block
+    coordinates, so an origin can report a point nowhere near the thing you are
+    looking at. The AABB centre is the middle of where the body actually is.
+    """
+    lua, plots = plots_lua()
+    P = lua.globals().Plots
+    L = lua.globals().Layout
+    B = float(P.BLOCK)
+
+    # a body whose ORIGIN is the world origin -- the plaza -- but whose actual
+    # extent is out on plot 34. This is the shape of the bug.
+    bx, by = L.plotCentre(plots["layout"], 34)
+    make = lua.execute("""
+        return function( cx, cy, half )
+            local b = { worldPosition = { x = 0, y = 0, z = 0 } }
+            function b:getWorldAabb()
+                return { x = cx - half, y = cy - half, z = 1.0 },
+                       { x = cx + half, y = cy + half, z = 1.25 }
+            end
+            return b
+        end
+    """)
+    body = make(float(bx) * B, float(by) * B, 2.0)
+
+    z = P.sv_bodyZone(plots, body)
+    assert z is not None, "the body located to nothing at all"
+    assert str(z["kind"]) == "plot", (
+        f"a body sitting on plot 34 located as {z['kind']!r}. If it locates by "
+        "origin every city body lands on the plaza and every plot becomes sweep")
+    assert int(z["index"]) == 34, f"located to plot {z['index']}, not 34"
+
+    # and it must not be open to everybody once claimed
+    P.sv_claim(plots, 34, "OWNER")
+    plots["zoneOpen"] = lua.table_from({})
+    plots["zoneHeld"] = lua.table_from({})
+    assert P.sv_bodyIsOpen(plots, body) is not "sweep", "still sweep"
+    assert P.sv_bodyIsOpen(plots, body) is False, (
+        "a claimed plot with nobody on it must be locked, not sweepable")
+
+    # nothing in the mod may go back to locating a body by its origin
+    for name in ("Plots.lua", "World.lua", "Rules.lua"):
+        src = io.open(SCRIPTS / name, encoding="utf-8").read()
+        assert "sv_locate( body.worldPosition )" not in src, (
+            f"{name} locates a body by its origin again -- use sv_bodyZone")
+
+
 def you_can_only_build_on_ground_that_is_yours():
     """A claimed plot with nobody on it is LOCKED, not open.
 
@@ -2241,6 +2299,8 @@ def main():
           buffer_time_actually_reaches_the_polish_profile)
     check("protection: buffer time polishes but never places or breaks",
           buffer_time_lets_you_polish_but_not_place_or_break)
+    check("plots: a body is located by where it is, not by its origin",
+          a_body_is_located_by_where_it_is_not_by_its_origin)
     check("plots: you can only build on ground that is yours",
           you_can_only_build_on_ground_that_is_yours)
     check("plots: junk outside the city stays clearable", outside_the_city_is_sweepable)

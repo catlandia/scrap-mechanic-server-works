@@ -360,7 +360,7 @@ function Plots.sv_bodyIsOpen( self, body )
 	if not self.enabled then
 		return nil     -- plots off: let the global mode decide
 	end
-	local z = self:sv_locate( body.worldPosition )
+	local z = self:sv_bodyZone( body )
 
 	-- "sweep" rather than "locked" for every zone nobody is allowed to build in.
 	-- Locking them would make junk dumped on a walkway permanent, which is how a
@@ -853,6 +853,34 @@ end
 -- plot rules -- which is exactly what makes the whole plot exportable as one
 -- piece. The cost is that an owner can erase their own floor; /plotbuild puts it
 -- back.
+-- WHERE A BODY IS, for the purpose of deciding whose ground it is on.
+--
+-- NOT body.worldPosition. That is a body's own origin, and for a creation
+-- imported at sm.vec3.zero() -- which is every piece of this city, because the
+-- blueprint carries absolute block coordinates -- it can report a point nowhere
+-- near the thing you are looking at.
+--
+-- REPORTED: "I cant place blocks on the concrete but I can delete it. I can
+-- delete others plots." Buildable false with erasable true is exactly ONE
+-- profile out of six: `sweep`. And sweep is what sv_bodyIsOpen returns when it
+-- cannot place a body in the city at all -- so every plot in the city was being
+-- located somewhere it was not, and treated as litter on open ground.
+--
+-- The AABB centre cannot be an origin artefact: it is the middle of where the
+-- body actually IS. A build welded to a plot slab keeps its centre over the
+-- plot, and a tall tower on it still does.
+function Plots.sv_bodyZone( self, body )
+	local ok, aabbMin, aabbMax = pcall( function() return body:getWorldAabb() end )
+	if ok and aabbMin and aabbMax then
+		local x = ( aabbMin.x + aabbMax.x ) * 0.5
+		local y = ( aabbMin.y + aabbMax.y ) * 0.5
+		return Layout.locate( self.layout, x / Plots.BLOCK, y / Plots.BLOCK )
+	end
+	local got, pos = pcall( function() return body.worldPosition end )
+	if not got or pos == nil then return nil end
+	return self:sv_locate( pos )
+end
+
 -- Is this body part of the city floor, or welded to it?
 --
 -- ONE aabb call, not a walk over every shape, because this runs per body per

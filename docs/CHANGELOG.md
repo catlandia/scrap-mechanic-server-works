@@ -10,6 +10,60 @@ was most of them.
 
 ---
 
+## V46 — every plot in the city was being located somewhere it was not
+
+*"I cant place blocks on the concrete but I can delete it. I can delete others
+plots."*
+
+**buildable = false with erasable = true is exactly ONE profile out of six:
+`sweep`.** And `sweep` is what `sv_bodyIsOpen` returns when it cannot place a
+body in the city at all — the profile for litter on open ground, where nobody may
+build and anybody may clear.
+
+So every plot in the city was being located somewhere it was not.
+
+The cause: **`body.worldPosition` is a body's own ORIGIN.** Every piece of this
+city is imported at `sm.vec3.zero()`, because the blueprint carries absolute
+block coordinates — so an origin can report a point nowhere near the thing you
+are looking at. `Plots.sv_bodyZone` uses the **centre of the AABB** instead,
+which cannot be an origin artefact: it is the middle of where the body actually
+is. A build welded to a plot keeps its centre over that plot; a tall tower on it
+still does.
+
+All six call sites moved, and a check fails if any of them goes back.
+
+**This may well be the answer to "I cant build on my plot even when the time has
+started"**, which has been open and unexplained since V28. Not confirmed — but it
+is the first explanation that produces exactly the symptoms, including the ones
+in this report that the old theories never accounted for.
+
+### The city now says where it landed
+
+The diagnostic that would have caught this the moment the city was built, rather
+than eighteen versions later. Once per build:
+
+    [ServerWorks] where the city landed: 196 bodies -- filler 99, plot 96, plaza 1
+
+Every plot slab should locate to a **plot**. If they come back as plaza or as
+nothing, the plot rules are being applied to the wrong ground and nothing
+downstream can possibly be right — and it says so in as many words.
+
+### The cleaner tool
+
+*"I dont see my deleting thing appear."*
+
+It is there — the logs confirm `Created Tool ... {bbbb0cc8(CleanerTool)}`, so the
+toolset addition resolves and the tool has been in somebody's hands. It looks
+like a sledgehammer in the menu, which is not obvious.
+
+What was missing was any sign it was live. It now shows a crosshair prompt —
+*delete this block — hold F for the whole creation* — using
+`sm.gui.setInteractionText`, which is **proven inside a tool script**
+(`Fertilizer.lua:242`), unlike `sm.gui.chatMessage`, which no vanilla tool calls
+at all.
+
+---
+
 ## V45 — the lift is not broken, the world is shut; and the text boxes touch nothing
 
 ### The lift

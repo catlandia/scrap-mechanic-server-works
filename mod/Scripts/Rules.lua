@@ -138,7 +138,7 @@ function Rules.sv_audit( self, tick, plots, getSetting )
 	-- somebody stood there holding a blueprint.
 	for _, body in ipairs( sm.body.getAllBodies() ) do
 		if sm.exists( body ) and not isGhostBody( body ) then
-			local z = plots:sv_locate( body.worldPosition )
+			local z = plots:sv_bodyZone( body )
 			local index = ( z and z.kind == "plot" ) and z.index or nil
 
 			local shapes = body:getShapes()
