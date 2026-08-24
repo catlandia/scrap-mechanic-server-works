@@ -239,8 +239,11 @@ Settings.SCHEMA = {
 	{ key = "protection", kind = "string", default = "open", hidden = true,
 	  help = "current protection mode: open, polish, display, sweep or locked" },
 
-	{ key = "alarmdrop", kind = "number", default = 250,
-	  help = "blocks that must vanish at once to trip the grief alarm" },
+	-- Above 256, deliberately. The remove tool deletes at most 16x16 = 256
+	-- shapes in one action, so anything at or below that fires on an ordinary
+	-- delete. 400 means one big sweep is quiet and two inside the window are not.
+	{ key = "alarmdrop", kind = "number", default = 400,
+	  help = "blocks that must vanish within 20s to trip the grief alarm" },
 	{ key = "alarmlock", kind = "bool", default = true,
 	  help = "grief alarm locks the world by itself" },
 	{ key = "autosave", kind = "number", default = 10,
@@ -278,6 +281,13 @@ end
 Settings.MIGRATIONS = {
 	{ key = "lift_free_v34", run = function( values )
 		values.hostlift = false
+	end },
+	-- 250 and below fires on a single ordinary delete: the remove tool takes
+	-- 16x16 = 256 shapes at once. Anybody who has played already has the old
+	-- number written down, so it needs a migration to reach them.
+	{ key = "alarmdrop_above_one_delete_v47", run = function( values )
+		local n = tonumber( values.alarmdrop )
+		if n == nil or n <= 256 then values.alarmdrop = 400 end
 	end },
 }
 
@@ -420,7 +430,7 @@ Settings.PRESETS = {
 			plasmadrills = false, radios = false, horns = false,
 			sledgehammer = true, spudguns = true, glowsticks = true,
 			painttool = true, connecttool = true, weldtool = true, lift = true,
-			alarmlock = true, alarmdrop = 250, autosave = 10, autoremove = true,
+			alarmlock = true, alarmdrop = 400, autosave = 10, autoremove = true,
 		},
 	},
 	show = {
@@ -428,7 +438,7 @@ Settings.PRESETS = {
 		values = {
 			buildopen = false, protection = "display",
 			plots = true, pushintruders = false,
-			alarmlock = true, alarmdrop = 100, autosave = 0,
+			alarmlock = true, alarmdrop = 300, autosave = 0,
 		},
 	},
 	lockdown = {
@@ -436,7 +446,7 @@ Settings.PRESETS = {
 		values = {
 			buildopen = false, protection = "locked",
 			plots = true, pushintruders = true,
-			alarmlock = true, alarmdrop = 50, autosave = 0,
+			alarmlock = true, alarmdrop = 260, autosave = 0,
 		},
 	},
 	sandbox = {

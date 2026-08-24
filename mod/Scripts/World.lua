@@ -245,22 +245,64 @@ end
 -- The engine fires nothing when a plain block is destroyed, so mass deletion can
 -- only be noticed by watching the world's total shape count fall. Protection's
 -- patrol already produces that number once per cycle for one extra call per body.
+-- The alarm watches a WINDOW, not one census cycle.
+--
+-- Both halves of this are wrong without it, and the owner supplied the fact that
+-- shows why: **the remove tool deletes at most 16x16 at a time.** So one
+-- ordinary action is up to 256 shapes.
+--
+--   * The old threshold was 250, compared cycle to cycle -- so a SINGLE
+--     legitimate delete tripped the alarm and locked the world.
+--   * Raise the threshold above 256 and the opposite appears. A census cycle is
+--     128 bodies per tick at 40 Hz, so a 200-body city completes one every four
+--     hundredths of a second. Somebody deleting 256 at a time, over and over,
+--     never shows a drop bigger than 256 in any single cycle and never trips it
+--     at all.
+--
+-- So the drop is measured across ALARM_WINDOW seconds. One big delete is normal
+-- and stays quiet; several in twenty seconds is a rampage and is not.
+World.ALARM_WINDOW = 20 * TICKS_PER_SECOND
+
 function World.sv_checkGriefAlarm( self, tick )
 	local census = g_swProtection:sv_census()
 	if census == nil then return end
 
-	local previous = self.sw.lastCensus
-	self.sw.lastCensus = census
+	local log = self.sw.censusLog
+	if log == nil then
+		log = {}
+		self.sw.censusLog = log
+	end
 
-	if previous == nil or tick < self.sw.alarmQuietUntil then return end
+	-- Only record when the number actually moves, so the window is a list of
+	-- changes rather than one sample per tick forever.
+	if #log == 0 or log[#log].n ~= census then
+		log[#log + 1] = { tick = tick, n = census }
+	end
+
+	-- Drop everything that has aged out, but always keep one sample older than
+	-- the window so there is something to compare the present against.
+	while #log > 1 and ( tick - log[2].tick ) > World.ALARM_WINDOW do
+		table.remove( log, 1 )
+	end
+
+	if tick < self.sw.alarmQuietUntil then return end
 	if g_swSnapshots:sv_busy() then return end
 
-	local lost = previous - census
-	if lost < ( tonumber( Settings.Get( "alarmdrop" ) ) or 250 ) then return end
+	-- The high-water mark inside the window, not the previous sample: a griefer
+	-- who pauses between deletes must not get a fresh baseline for free.
+	local peak = census
+	for _, sample in ipairs( log ) do
+		if sample.n > peak then peak = sample.n end
+	end
 
-	sm.log.info( string.format( "[ServerWorks] GRIEF ALARM: %d shapes lost", lost ) )
-	self:sv_broadcast( string.format( "*** %d blocks just disappeared ***", lost ) )
+	local lost = peak - census
+	if lost < ( tonumber( Settings.Get( "alarmdrop" ) ) or 400 ) then return end
+
+	sm.log.info( string.format( "[ServerWorks] GRIEF ALARM: %d shapes lost in %ds",
+		lost, World.ALARM_WINDOW / TICKS_PER_SECOND ) )
+	self:sv_broadcast( string.format( "*** %d blocks have disappeared ***", lost ) )
 	self:sv_quietAlarm( 30 )
+	self.sw.censusLog = { { tick = tick, n = census } }   -- fresh baseline
 
 	if Settings.Get( "alarmlock" ) and g_swProtection:sv_getMode() ~= "locked" then
 		local locked, detail = g_swProtection:sv_setMode( "locked" )

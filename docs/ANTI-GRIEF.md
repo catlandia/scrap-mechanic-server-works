@@ -92,8 +92,10 @@ if self.cursor > n then          -- a full cycle finished
 end
 ```
 
-Every tick, `World.sv_checkGriefAlarm` compares this cycle's census with the
-last. If the count has fallen by `alarmdrop` (default **250** blocks) it:
+Every tick, `World.sv_checkGriefAlarm` compares the current census against the
+**high-water mark of the last 20 seconds** (see the next section for why a window
+and not the previous sample). If the count has fallen by `alarmdrop`
+(default **400** blocks) it:
 
 1. writes `GRIEF ALARM: N shapes lost` to the log,
 2. announces `*** N blocks just disappeared ***` to everyone,
@@ -115,6 +117,23 @@ one automatically, and `/restore` puts a world or a single plot back.
 
 ---
 
+## The remove tool deletes at most 16x16 at a time
+
+**The owner's fact, and it sets the threshold.** One action of the remove tool
+takes at most **256** shapes. Everything about the alarm follows from that:
+
+- A threshold **at or below 256** fires on a single ordinary delete. The old
+  default was 250, so one legitimate sweep locked the world.
+- A threshold **above 256, compared cycle to cycle**, never fires at all. The
+  patrol does 128 bodies per tick at 40 Hz, so a 200-body city finishes a census
+  every four hundredths of a second — somebody deleting 256 at a time, over and
+  over, never shows a drop bigger than 256 in any single cycle.
+
+So the alarm measures a **20-second window** against its **high-water mark**,
+not the previous sample: a griefer who pauses between deletes does not get a
+fresh baseline for free. Default **400** — one big sweep is quiet, two inside the
+window are not.
+
 ## What the alarm cannot do — say this out loud
 
 - **It fires after the fact.** Up to a full patrol cycle late. Blocks are already
@@ -126,11 +145,11 @@ one automatically, and `/restore` puts a world or a single plot back.
   around our own bulk work — purges, restores, snapshots and city rebuilds all
   suppress it, because an alarm that cries wolf is one nobody believes at the
   moment it matters.
-- **It is a whole-world total.** Somebody removing 249 blocks at a time, waiting
-  for the census to settle, and doing it again is invisible to it. Slow, dull,
-  and possible.
+- **It is a whole-world total.** Somebody removing less than the threshold per
+  window, waiting it out, and doing it again is invisible. Slow, dull, possible.
 - **A low `alarmdrop` costs false alarms**, a high one misses small damage. The
-  presets set it: `build` 250, `show` 100, `lockdown` 50, `sandbox` off.
+  presets set it: `build` 400, `show` 300, `lockdown` 260, `sandbox` off. None
+  of them go at or below 256, because that is one ordinary delete.
 
 ---
 
@@ -142,6 +161,25 @@ one automatically, and `/restore` puts a world or a single plot back.
 | **Not prevented, by design** | damage done on your own plot, or a teammate's, while the event is running |
 | **Detected and contained** | mass deletion anywhere — the alarm locks the world and calls it out |
 | **Reversible** | everything, via snapshots and `/restore`, per plot or whole world |
+
+## Which is why banning is the real enforcement
+
+Build permission is per-BODY and cannot be aimed at a person, so **the only way
+to stop someone specific is to remove them.** That makes `/ban` load-bearing
+rather than a convenience. Its honest strength:
+
+- **`sm.game.banPlayer` is the engine's own ban** and is what actually keeps
+  somebody out. Every path that decides a person is banned reaches it now,
+  including the one that fires when somebody banned while offline comes back.
+- **Our own list is keyed on the DISPLAY NAME**, because Lua is handed no stable
+  player id at all. The `Player` binding list has `id` — a session slot that
+  shifts — and `name`, and nothing else. There is no Steam id to key on. So the
+  list records aliases and catches renames it has *seen*; a brand new name is a
+  brand new identity.
+- **The allow list is therefore the stronger tool.** A ban names who must stay
+  out and loses to a rename. An allow list names everyone who may come in, and a
+  rename just produces another name that is not on it. For a public stream
+  event, `/set allowlist on` is the setting that actually holds.
 
 Griefing is possible because building is possible. The system is not a wall; it
 is a fence with a burglar alarm and a rewind button, and each of those three

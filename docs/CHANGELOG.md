@@ -10,6 +10,63 @@ was most of them.
 
 ---
 
+## V47 — the alarm was wrong in both directions, and banning is load-bearing
+
+### 16x16 is the number everything hangs off
+
+The owner's fact: **the remove tool deletes at most 16x16 = 256 shapes in one
+action.** Both halves of the grief alarm were wrong because of it.
+
+- The threshold was **250, compared cycle to cycle** — so a *single ordinary
+  delete* tripped the alarm and locked the world.
+- Raise it above 256 and the opposite appears: the patrol finishes a census every
+  four hundredths of a second on a 200-body city, so somebody deleting 256 at a
+  time, forever, never shows a drop bigger than 256 in any one cycle and **never
+  trips it at all**.
+
+The alarm now measures a **20-second window** against its **high-water mark**
+rather than the previous sample, so pausing between deletes does not hand out a
+fresh baseline. Default **400**: one big sweep is quiet, two inside the window are
+not. A migration raises any saved value of 256 or less, because a default alone
+reaches nobody who has already played.
+
+### Banning
+
+*"we need to make sure banning works. cause its the only way."*
+
+It is the only way, and for a reason worth stating: build permission is per-BODY
+and cannot be aimed at a person, so removing the person **is** the enforcement.
+
+Every path that decides somebody is banned now reaches **`sm.game.banPlayer`** —
+including the one that fires when somebody banned while offline comes back, which
+previously only kicked them, over and over, forever.
+
+And what has to be said out loud: **our list is keyed on the display name.** Lua
+is handed no stable player id — the `Player` binding list has `id` (a session slot
+that shifts) and `name`, and nothing else. No Steam id. So the list catches
+renames it has *seen*, and a brand new name is a brand new identity. **The allow
+list is the stronger tool**, and the docs now say so: a ban loses to a rename, an
+allow list does not.
+
+### Backups
+
+*"and also backups. the whole save backups. we need to make sure they work too."*
+
+There is now a check that drives a real capture end to end — the job, the index,
+the file it writes, the list afterwards. It needed the stub to grow
+`getCreationsFromBodies` and an `sm.creation` shim, which is itself the honest
+limit: **`exportToString` / `importFromString` are the engine's, and nothing
+outside the game can prove them.** Everything around them is proved now.
+
+### Also
+
+The vanilla right-click delete preview not showing red was almost certainly the
+V46 body-location bug — every plot was resolving to `sweep`, which is
+`buildable = false, erasable = true`. Worth re-testing now that bodies locate
+properly.
+
+---
+
 ## V46 — every plot in the city was being located somewhere it was not
 
 *"I cant place blocks on the concrete but I can delete it. I can delete others

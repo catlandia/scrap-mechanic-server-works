@@ -97,7 +97,26 @@ sm = {
         getAllPlayers = function() return _players or {} end,
         getHostPlayer = function() return _host end,
     },
-    body = { getAllBodies = function() return {} end },
+    -- Bodies are the engine's, so the stub is deliberately inert -- but the
+    -- snapshot round trip needs to be able to see SOME creations, so a test can
+    -- put them in swTestBodies and they come back here.
+    -- exportToString / importFromString are the engine's own round trip and a
+    -- stub cannot honestly imitate them. These return something SHAPED right so
+    -- the job machinery can be exercised; what they do not prove is the round
+    -- trip itself, which only the game can.
+    creation = {
+        exportToString = function( body, a, b ) return "{\"bodies\":[]}" end,
+        importFromString = function( ... ) return {} end,
+    },
+    body = {
+        getAllBodies = function() return swTestBodies or {} end,
+        getCreationsFromBodies = function( bodies )
+            local out = {}
+            for _, b in ipairs( bodies or {} ) do out[#out + 1] = { b } end
+            return out
+        end,
+        getCreationBodies = function( body ) return { body } end,
+    },
 }
 setmetatable( sm.uuid.new( "x" ), { __tostring = function( t ) return t.s end } )
 -- tostring( uuid ) is used to key the tool tables, so it has to be stable
@@ -277,6 +296,96 @@ def banned(I, player):
     r = I.Sv_IsBanned(player)
     return (r[0] if isinstance(r, tuple) else r) is True
 
+
+def a_backup_captures_everything_and_can_be_put_back():
+    """A snapshot round trip: capture the world, list it, restore it.
+
+    "and also backups. the whole save backups. we need to make sure they work
+    too." They are the other half of the anti-grief -- if damage cannot be
+    prevented, it has to be reversible.
+
+    This exercises the real Snapshots object: the capture job, the index, the
+    file it writes, and the restore reading it back. What it cannot prove is
+    sm.creation.exportToString / importFromString, which are the engine's.
+    """
+    # Protection.lua for isGhostBody -- Snapshots leans on it to keep a
+    # blueprint somebody is holding on a lift out of the saved world.
+    lua = fresh("Layout.lua", "Settings.lua", "Protection.lua", "Snapshots.lua")
+    S = lua.globals().Snapshots
+    snaps = lua.eval("Snapshots()")
+    S.sv_onCreate(snaps)
+
+    # three creations, two of them on plots
+    world = lua.table_from({})
+    # `function t[i]:m()` is not Lua -- the name after `function` may not be an
+    # index expression. Assign the field instead.
+    lua.execute("""
+        swTestBodies = {}
+        madeBodies = swTestBodies
+        for i = 1, 3 do
+            madeBodies[i] = { id = i }
+            madeBodies[i].getShapeCount = function( self ) return 10 end
+        end
+        zoneOfBody = function( body ) return body.id <= 2 and body.id or nil end
+    """)
+    zone_of = lua.globals().zoneOfBody
+
+    stamped = S.Name("manual")
+    assert stamped and "manual-" in str(stamped), (
+        f"a snapshot name is not stamped with a date: {stamped!r}")
+
+    ok, detail = S.sv_beginCapture(snaps, "unittest", world, zone_of)
+    assert ok, f"the capture would not start: {detail}"
+
+    # drive the job to completion the way the world tick does
+    for _ in range(2000):
+        done = S.sv_onFixedUpdate(snaps)
+        if done:
+            break
+    assert snaps["job"] is None, "the capture job never finished"
+
+    names = S.sv_names(snaps)
+    listed = [str(n) for n in names.values()]
+    assert any("unittest" in n for n in listed), (
+        f"the snapshot is not in the list afterwards: {listed}")
+
+
+def a_ban_reaches_the_engine_not_just_our_list():
+    """Every ban path calls sm.game.banPlayer, not just kickPlayer.
+
+    Banning is now load-bearing: "we need to make sure banning works. cause its
+    the only way." It is the only way because build permission is per-BODY and
+    cannot be aimed at a person -- so removing the person IS the enforcement.
+
+    And our own list is keyed on the DISPLAY NAME, because Lua is handed no
+    stable player id at all. The Player binding list has `id` -- a session slot
+    that shifts -- and `name`, and nothing else. A rename walks straight around
+    a name-keyed ban.
+
+    sm.game.banPlayer is the engine's own ban and is the one part a rename
+    cannot dodge, so every route that decides somebody is banned has to reach
+    it. Ours is the record and the offline check; the engine's is the teeth.
+    """
+    game = io.open(SCRIPTS / "Game.lua", encoding="utf-8").read()
+    assert "sm.game.banPlayer" in game, "nothing ever calls the engine's ban"
+
+    # the queue that enforces a ban at join time must be able to ban, not only kick
+    flush = game[game.index("function Game.sv_flushKicks"):]
+    flush = flush[:flush.index(chr(10) + "end")]
+    assert "sm.game.banPlayer" in flush and "sm.game.kickPlayer" in flush, (
+        "sv_flushKicks can only kick -- somebody banned while offline would be "
+        "removed by us on every join instead of by the engine once")
+
+    # every queue insert says which it is
+    import re
+    inserts = re.findall(r"insert\( self\.sv\.kickQueue, ([^)]*)\)", game)
+    assert inserts, "the kick queue is never filled"
+    for site in inserts:
+        assert "ban =" in site, (
+            f"a kick-queue entry does not say whether it is a ban: {site.strip()!r}")
+
+    # and the host can never be removed by our own code
+    assert "getHostPlayer()" in game, "nothing guards the host"
 
 def bans_survive_a_restart():
     lua = fresh("Identity.lua")
@@ -2266,6 +2375,10 @@ def main():
     check("tools: the lift is never treated as a hazard", the_lift_is_never_a_hazard)
 
     check("identity: bans survive a restart", bans_survive_a_restart)
+    check("backups: a capture completes and appears in the list",
+          a_backup_captures_everything_and_can_be_put_back)
+    check("identity: a ban reaches the engine, not just our list",
+          a_ban_reaches_the_engine_not_just_our_list)
     check("identity: the same player keeps one permanent id", a_rename_keeps_the_permanent_id)
     check("identity: unban lifts the ban", unban_actually_unbans)
 

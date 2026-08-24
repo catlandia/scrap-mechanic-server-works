@@ -233,7 +233,9 @@ function Game.server_onFixedUpdate( self, dt )
 		local host = sm.player.getHostPlayer()
 		for _, player in ipairs( sm.player.getAllPlayers() ) do
 			if player ~= host and Identity.Sv_IsBanned( player ) then
-				table.insert( self.sv.kickQueue, player )
+				-- Banned by another machine editing the shared list while they
+				-- were already in. The engine gets told too, so it sticks.
+				table.insert( self.sv.kickQueue, { player = player, ban = true } )
 			end
 		end
 	end
@@ -432,10 +434,22 @@ function Game.sv_flushKicks( self )
 	if #self.sv.kickQueue == 0 then return end
 	local pending = self.sv.kickQueue
 	self.sv.kickQueue = {}
-	for _, player in ipairs( pending ) do
-		if sm.exists( player ) then
-			sm.log.info( "[ServerWorks] kicking " .. tostring( player.name ) )
-			sm.game.kickPlayer( player )
+	for _, entry in ipairs( pending ) do
+		-- Entries used to be bare players; accept both so an in-flight queue
+		-- across a reload cannot throw.
+		local player = ( type( entry ) == "table" and entry.player ) or entry
+		local ban = ( type( entry ) == "table" ) and entry.ban == true or false
+		if player and sm.exists( player ) then
+			local ok = pcall( function()
+				if ban then
+					sm.game.banPlayer( player )
+				else
+					sm.game.kickPlayer( player )
+				end
+			end )
+			sm.log.info( string.format( "[ServerWorks] %s %s%s",
+				ban and "banning" or "kicking", tostring( player.name ),
+				ok and "" or " -- FAILED (host?)" ) )
 		end
 	end
 end
@@ -451,14 +465,22 @@ function Game.server_onPlayerJoined( self, player, newPlayer )
 	-- in, and a rename just produces another name that is not on it.
 	if Settings.Get( "allowlist" ) and player ~= host and not Identity.Sv_IsAllowed( player ) then
 		sm.log.info( "[ServerWorks] not on allow list: " .. tostring( player.name ) )
-		table.insert( self.sv.kickQueue, player )
+		table.insert( self.sv.kickQueue, { player = player, ban = false } )
 		return
 	end
 
 	if Identity.Sv_IsBanned( player ) then
 		-- Not kicked inline: the player is still being constructed here and the
 		-- base class has spawn work queued behind us. One tick later is safe.
-		table.insert( self.sv.kickQueue, player )
+		--
+		-- BANNED, not kicked. sm.game.banPlayer is the engine's own ban and it
+		-- is the only part of this that a rename cannot walk around -- our list
+		-- is keyed on the display name, because Lua is given no stable player
+		-- id at all (the Player binding list has `id`, which is a session slot,
+		-- and `name`, and nothing else). So when somebody banned while offline
+		-- turns up, the engine is told too, and from then on it is the engine
+		-- keeping them out rather than us.
+		table.insert( self.sv.kickQueue, { player = player, ban = true } )
 		return
 	end
 
@@ -1945,7 +1967,8 @@ function Game.sv_n_adminCommand( self, params, player )
 		if ok and cmd == "/unallow" and Settings.Get( "allowlist" ) then
 			local target = resolveTarget( token )
 			if target and sm.exists( target ) and target ~= sm.player.getHostPlayer() then
-				table.insert( self.sv.kickQueue, target )
+				-- Taken off the allow list, not banned: a kick, not a ban.
+				table.insert( self.sv.kickQueue, { player = target, ban = false } )
 			end
 		end
 
