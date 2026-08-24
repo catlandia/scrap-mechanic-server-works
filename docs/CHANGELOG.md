@@ -10,6 +10,53 @@ was most of them.
 
 ---
 
+## V36 — the cleaner: point at it, press F, it is gone
+
+*"look. the problem is I cant remove them. remove like delete then. I want to be
+able to DELETE them when pressing F while removing."*
+
+V35 made craftbots and gems *erasable*. That was necessary and it was not
+sufficient, because **carryable props are picked up by the remove tool rather
+than erased** — no permission flag reaches them at all. Script-side
+`destroyShape()` is the only mechanism that deletes one.
+
+### F is `ForceBuild`, and only a tool can see it
+
+**MEASURED**, from `keybinds.json`: `"ForceBuild": [ { "K": 70 } ]`. 70 is F.
+
+That action reaches Lua in exactly one place — the third argument of a tool's
+`client_onEquippedUpdate( self, primary, secondary, forceBuild )`. A Game script,
+a World script and a player script get no key state whatsoever;
+`client_onAction` exists only on interactables that lock the player. So a key
+press means a tool, and a Custom Game toolset can **add** a tool but never
+override one — which together leave exactly one shape for this feature.
+
+### The cleaner
+
+A new tool, new uuid, so it is an addition and provably resolves to our class.
+
+- **click** — delete the block or prop you are pointing at
+- **F + click** (or right click) — delete the whole creation
+- works on harvestables too
+- **host only** by default, because a delete-anything tool in a lobby is a
+  griefing tool. Setting `hostcleaner`.
+- **never touches the city floor.** CLEAR CITY exists for that, asks twice, and
+  snapshots first. "Whole creation" also stops at our concrete, so deleting a
+  build welded to a plot slab leaves the plot.
+
+It is defensive about the Lua environment: a tool script may not share the
+Game/World globals, so `Settings` and `g_swPlots` are both guarded and both fall
+back to the safe answer — host-only if the settings cannot be read, "that is city
+floor" if a shape cannot be classified. Replies go through `Game.sv_e_swReply`,
+because a tool's network has `sendToServer` and `sendToClients` and no vanilla
+tool ever calls `sendToClient( player, ... )`.
+
+A check asserts the uuid, the class, the tool-guard entry and the host gate all
+agree — a tool named consistently in two of those three places is one that either
+cannot be blocked or blocks something else.
+
+---
+
 ## V35 — unremovable craftbots, and a sweep button that would have deleted the city
 
 **REPORTED:** *"you need to fix the unremovable craft bots, gems and others."*

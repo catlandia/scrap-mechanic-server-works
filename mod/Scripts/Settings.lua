@@ -58,7 +58,7 @@ local HAZARD = {
 -- Tools only the host may hold, even when the tool itself is switched on. The
 -- lift is here because it spawns whole saved creations out of thin air: fine for
 -- whoever is running the event, not something a lobby of guests should each have.
-local HOST_ONLY = { lift = "hostlift" }
+local HOST_ONLY = { lift = "hostlift", cleaner = "hostcleaner" }
 
 local TOOLS = {
 	-- default OFF
@@ -105,6 +105,11 @@ local TOOLS = {
 		sm.uuid.new( "8f190ce2-3a59-423e-8483-a7aa67bd5bc0" ),
 	},
 	glowsticks = { sm.uuid.new( "9506abb9-e415-4229-a824-28a479cca788" ) },
+	-- Ours. See CleanerTool.lua: point at anything and it is deleted, including
+	-- the carryable props -- craftbots, gems, crates -- that the remove tool
+	-- picks up instead of erasing and which nothing else in the game can get rid
+	-- of.
+	cleaner = { sm.uuid.new( "bbbb0cc8-5dd0-46e1-9299-8080c3cc80db" ) },
 }
 
 -- Every setting is { key, kind, default, help, apply }. Adding one means adding
@@ -166,6 +171,10 @@ Settings.SCHEMA = {
 	-- well, the lift was being pulled out of everyone's hands including the
 	-- host's, every 2 ticks, by forceTool( nil ). The switch is still here for a
 	-- host who wants it later; it just is not the default any more.
+	{ key = "cleaner", kind = "bool", default = true,
+	  help = "allow the Server Works cleaner (deletes anything you point at)" },
+	{ key = "hostcleaner", kind = "bool", default = true,
+	  help = "only the host may use the cleaner -- leave this on" },
 	{ key = "hostlift", kind = "bool", default = false,
 	  help = "only the host may use the lift (it spawns whole creations)" },
 

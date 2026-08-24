@@ -422,6 +422,45 @@ def a_plot_is_one_welded_body_of_concrete_and_metal():
                 f"{'metal' if mat == METAL2 else 'concrete'} and should not be")
 
 
+def the_cleaner_is_wired_to_the_same_uuid_everywhere():
+    """The cleaner's uuid, its class and its gate all agree.
+
+    A tool is named in three places that cannot see each other -- the toolset
+    (which uuid exists and what class it runs), Settings.TOOLS (which uuid the
+    tool guard yanks) and HOST_ONLY (which setting gates it). A uuid that matches
+    in two of the three is a tool that either cannot be blocked or blocks
+    something else.
+    """
+    import re
+    toolset = io.open(SCRIPTS.parent / "Tools" / "Database" / "ToolSets"
+                      / "serverworks.toolset", encoding="utf-8").read()
+    settings = io.open(SCRIPTS / "Settings.lua", encoding="utf-8").read()
+
+    block = toolset[toolset.index('"CleanerTool"') - 400:toolset.index('"CleanerTool"') + 80]
+    uuids = re.findall(r'"uuid"\s*:\s*"([0-9a-f-]{36})"', block)
+    assert uuids, "the toolset has no uuid next to CleanerTool"
+    uuid = uuids[-1]
+
+    assert 'file": "$CONTENT_DATA/Scripts/CleanerTool.lua"' in toolset, (
+        "the toolset does not point at mod/Scripts/CleanerTool.lua")
+    assert (SCRIPTS / "CleanerTool.lua").is_file(), "CleanerTool.lua is missing"
+
+    assert uuid in settings, (
+        f"the toolset declares the cleaner as {uuid} and Settings.lua never "
+        "names it, so the tool guard cannot block it for guests")
+    assert 'cleaner = "hostcleaner"' in settings, (
+        "the cleaner is not in HOST_ONLY -- a delete-anything tool would be "
+        "handed to every guest in the lobby")
+    for key in ("cleaner", "hostcleaner"):
+        assert f'key = "{key}"' in settings, f"no {key} row in the settings schema"
+
+    # and it really is the F key it reads
+    tool = io.open(SCRIPTS / "CleanerTool.lua", encoding="utf-8").read()
+    assert "forceBuild" in tool, (
+        "the cleaner does not read forceBuild -- that is the F key, and the "
+        "third argument of client_onEquippedUpdate is the only place Lua sees it")
+
+
 def buffer_time_lets_you_polish_but_not_place_or_break():
     """The buffer phase resolves to a profile that adjusts, never builds.
 
@@ -1664,6 +1703,8 @@ def main():
           the_decking_is_safe_but_litter_on_it_is_not)
     check("plots: a plot is one welded body of concrete and metal",
           a_plot_is_one_welded_body_of_concrete_and_metal)
+    check("tools: the cleaner is wired to one uuid everywhere",
+          the_cleaner_is_wired_to_the_same_uuid_everywhere)
     check("protection: buffer time polishes but never places or breaks",
           buffer_time_lets_you_polish_but_not_place_or_break)
     check("plots: junk outside the city stays clearable", outside_the_city_is_sweepable)

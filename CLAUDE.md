@@ -489,6 +489,37 @@ Two checks in `dev/test_logic.py` walk that plumbing from both ends — every
 `Game.lua`. Both are string matching, but a name that appears on one side of the
 bridge and nowhere on the other is always a bug, and it was this one.
 
+### F is `ForceBuild`, and a TOOL is the only script that can see a key
+
+**MEASURED**, from the owner's own `User_<id>/keybinds.json`:
+`"ForceBuild": [ { "K": 70 } ]`, and 70 is F.
+
+That action reaches Lua in exactly one place — the **third argument of a tool's
+equipped update**:
+
+    client_onEquippedUpdate( self, primaryState, secondaryState, forceBuild )
+
+(`Survival/Scripts/game/tools/Bucket.lua:429`, `ClayRifle.lua:570`.) A Game
+script, a World script and a player script are handed **no key state at all**;
+`client_onAction` exists only on interactables that lock the player — seats,
+beds, kinematics. So if a feature needs a key press, it has to live in a tool.
+
+Combined with "a toolset can ADD but not OVERRIDE", that gives exactly one shape
+for a key-driven feature: **a new tool with a new uuid.** That is `CleanerTool` —
+point at anything, click to delete the block, hold **F** to delete the whole
+creation. It is the only thing in the mod that can remove a carryable prop,
+because those are *picked up* by the remove tool rather than erased and no
+permission flag reaches them; script-side `destroyShape()` ignores every flag.
+
+A tool script may not share the Game/World Lua environment, so anything it needs
+from `Settings` or `g_swPlots` is guarded and has a local fallback that fails
+safe — host-only if the settings are unreachable, "this is city floor" if the
+shape cannot be classified.
+
+Note also that a tool's network has `sendToServer` and `sendToClients`; no
+vanilla tool ever calls `sendToClient( player, ... )`. Replies go through
+`Game.sv_e_swReply`, the same bridge the World script uses.
+
 ### Chat commands are the admin surface, and they have a real bug
 
 `sm.game.bindChatCommand( "/name", { { type, label, optional, enumValues? } }, callback, help )`.
@@ -599,6 +630,7 @@ credit it with fixing the thing that actually degraded.
                                 is world-dependent and Game.lua has no world
 
     mod/Scripts/GuiProbe.lua    /guitest -- the button experiment, client only
+    mod/Scripts/CleanerTool.lua the only thing that can delete a carryable prop
 
     dev/check_all.py            all four checks below; --sync installs afterwards
     dev/check_lua.py            compiles every mod script through a real Lua parser

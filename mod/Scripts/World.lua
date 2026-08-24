@@ -136,6 +136,13 @@ function World.sv_broadcast( self, text )
 	sm.event.sendToGame( "sv_e_swBroadcast", { text = text } )
 end
 
+-- The cleaner deletes things on purpose, so it must not read as mass deletion
+-- to the grief alarm. It is a tool script and has no world of its own, so it
+-- asks for the quiet the same way everything else does.
+function World.sv_e_swQuietAlarm( self, params )
+	self:sv_quietAlarm( tonumber( params and params.seconds ) or 20 )
+end
+
 function World.sv_quietAlarm( self, seconds )
 	self.sw.alarmQuietUntil = sm.game.getCurrentTick() + seconds * TICKS_PER_SECOND
 end

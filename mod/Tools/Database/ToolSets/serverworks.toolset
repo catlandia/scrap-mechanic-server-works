@@ -53,6 +53,26 @@
 			"script": { "class": "Lift", "file": "$GAME_DATA/Scripts/game/Lift.lua" }
 		},
 
+		// THE CLEANER, and the answer to "I want to be able to DELETE them when
+		// pressing F while removing".
+		//
+		// F is `ForceBuild` -- MEASURED from the owner's own keybinds.json, where
+		// it is key 70 -- and that action reaches Lua in exactly ONE place: the
+		// third argument of a tool's client_onEquippedUpdate. No Game, World or
+		// player script is handed key state at all, so a tool is the only thing
+		// that can see F, and adding a tool is the only thing a Custom Game
+		// toolset can do. Those two facts together are the whole design.
+		//
+		// A brand new uuid, so this is an ADDITION and will actually resolve to
+		// our class -- see the note at the top of this file for why an override
+		// would not have.
+		{
+			"uuid": "bbbb0cc8-5dd0-46e1-9299-8080c3cc80db",
+			"previewRenderable": "$GAME_DATA/Character/Char_Tools/char_sledgehammer_preview.rend",
+			"previewRotation": [ 1, 0, 0, 0, 0, -1, 0, 1, 0 ],
+			"script": { "class": "CleanerTool", "file": "$CONTENT_DATA/Scripts/CleanerTool.lua" }
+		},
+
 		// The stale-mod canary. A uuid nothing else declares, so if it is in the
 		// creative menu then mod content updates are reaching the game. It is
 		// also the standing proof that adding a tool works.
