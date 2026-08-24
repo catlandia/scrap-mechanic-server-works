@@ -327,6 +327,42 @@ variants, with `sm.areaTrigger.filter.dynamicBody + staticBody`. Vanilla's Chall
 already ships an `obj_interactive_buildarea` part using exactly this
 (`BuilderWorld.server_onInteractableCreated`).
 
+### NEVER close a json GUI from inside its own callback
+
+**This one bug accounted for every "the buttons dont work" report in the
+project**, across three versions, and it is a single line of ordering:
+
+    function Game.cl_onMenuClick( self, widgetName, data )
+        self:cl_closeMenu()                                 -- destroys the widget
+        self.network:sendToServer( "sv_n_menuOpen", ... )   -- never runs
+
+`close()` destroys the widget whose `onClick` is **currently on the Lua stack**,
+and the engine tears the callback down with it. Everything after the close is
+dead code. There is no Lua error — the only trace it leaves is an engine assert:
+
+    ERROR: ASSERT: 'itrStackWalk != m_vecLastMethodStack.rend()' : LuaVM.cpp:716
+
+**Vanilla never does it.** `CreativePlayer.cl_e_unstuckYes` sends first and
+closes last (`Data/Scripts/game/CreativePlayer.lua:48`), and so does every other
+jsonGui in the base game.
+
+The correlation across our own six handlers is what proves this rather than
+merely suggests it. The three that sent before closing all worked — BUILD CITY
+built a city, the event panel started events, the settings panel applied presets,
+each visible in the logs. The three that closed first did nothing at all, every
+time. **The hub menu was one of them, and every host feature is reached through
+the hub** — which is why "I am the host why cant I access features" and "I click
+on city layout and it does nothing" were the same bug, eight versions apart.
+
+Ordering alone fixes it, but ordering is a rule somebody has to remember every
+time. So closes are **queued and drained on the next tick** (`cl_closeLater` /
+`cl_drainCloses`), which makes it structurally impossible: a widget cannot be
+destroyed while its own callback is running, because that callback has returned.
+A check asserts no `cl_on*` handler calls a closer directly.
+
+Corollary: **an `onClose` handler must only drop the handle**, never call
+`close()` again — that is the same bug from the other direction.
+
 ### A panel that closes on every click cannot be told from a broken one
 
 REPORTED: *"you should fix the buttons. since they sadly dont work. like I mean I

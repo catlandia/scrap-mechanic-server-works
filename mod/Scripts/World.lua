@@ -4,6 +4,7 @@ dofile( "$CONTENT_DATA/Scripts/Protection.lua" )
 dofile( "$CONTENT_DATA/Scripts/Plots.lua" )
 dofile( "$CONTENT_DATA/Scripts/Rules.lua" )
 dofile( "$CONTENT_DATA/Scripts/Snapshots.lua" )
+dofile( "$CONTENT_DATA/Scripts/PlotMarker.lua" )
 
 -- The World script, and the reason this file carries the weight of the mod.
 --
@@ -893,8 +894,34 @@ function World.sv_refreshMarker( self, player, ping )
 	local perma = Identity.Sv_PermaOf( player )
 	local index = perma and g_swPlots:sv_plotOf( perma )
 	local pos = index and g_swPlots:sv_plotWorldCentre( index ) or nil
-	sm.event.sendToGame( "sv_e_swMarker",
-		{ player = player, position = pos, ping = ping == true } )
+	-- Straight from the world to that one client, exactly the way vanilla sends a
+	-- beacon: CreativeBaseWorld.sv_e_createBeacon does
+	--     self.network:sendToClient( params.player, "cl_n_createBeacon", params )
+	-- and cl_n_createBeacon then talks to the beacon manager
+	-- (Data/Scripts/game/worlds/CreativeBaseWorld.lua:276-286).
+	--
+	-- It used to go out through the Game script, and that is why the marker has
+	-- never once appeared:
+	--
+	--   WARNING: compass marker unavailable: PlotMarker.lua:72:
+	--            Calling world dependent functions in a no world script!
+	--
+	-- compassSetIconWorldPosition needs a world to turn a position into a
+	-- bearing. Game.lua has none. Going via the player script did not help
+	-- either -- the same warning came back verbatim -- so the destination has to
+	-- be the world's own client, which is the one context that certainly has
+	-- one, and is where every vanilla caller of the compass lives.
+	self.network:sendToClient( player, "cl_n_swMarker",
+		{ position = pos, ping = ping == true } )
+end
+
+function World.cl_n_swMarker( self, data )
+	if type( data ) ~= "table" or data.position == nil then
+		PlotMarker.Cl_Hide()
+		return
+	end
+	PlotMarker.Cl_Show( data.position )
+	if data.ping then PlotMarker.Cl_Ping() end
 end
 
 function World.sv_refreshAllMarkers( self )

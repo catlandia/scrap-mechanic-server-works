@@ -843,6 +843,53 @@ def read(name):
     return io.open(SCRIPTS / name, encoding="utf-8").read()
 
 
+def no_gui_callback_closes_its_own_panel():
+    """A click handler must never call close() -- directly or via a helper.
+
+    THE bug behind three versions of "the buttons dont work", and it is one line
+    of ordering:
+
+        function Game.cl_onMenuClick( self, widgetName, data )
+            self:cl_closeMenu()                                 -- destroys
+            self.network:sendToServer( "sv_n_menuOpen", ... )   -- never runs
+
+    close() destroys the widget whose onClick is currently on the Lua stack and
+    the engine tears the callback down with it, so every statement after the
+    close is dead. The log signs it:
+
+        ERROR: ASSERT: 'itrStackWalk != m_vecLastMethodStack.rend()' : LuaVM.cpp:716
+
+    Vanilla always sends first and closes last (CreativePlayer.lua:48). We now do
+    better than remembering to: closes are QUEUED and drained on the next tick,
+    so a widget cannot be destroyed while its own callback is running.
+
+    This asserts the queue is the only route, because the ordering rule is the
+    kind that gets forgotten the next time a handler is added.
+    """
+    import re
+    game = read("Game.lua")
+    # A function body runs to the first "end" at column 0; every nested block in
+    # this file is indented with tabs, so that terminator is unambiguous.
+    bodies = re.findall(r"\nfunction Game\.(cl_on\w+)\([^\n]*\n(.*?)\nend\n",
+                        game, re.S)
+    assert bodies, "no cl_on* handlers found -- the parse is wrong, not the code"
+    offenders = []
+    for name, body in bodies:
+        for call in re.findall(r"cl_close\w+", body):
+            if call != "cl_closeLater":
+                offenders.append(f"{name} calls {call}")
+    assert not offenders, (
+        "a GUI callback closes a panel directly; everything after the close is "
+        "dead code. Use cl_closeLater. " + "; ".join(offenders))
+
+    assert "self:cl_drainCloses()" in game, (
+        "nothing drains the deferred close queue, so panels queued for closing "
+        "would stay open forever")
+    tick = game[game.index("function Game.client_onFixedUpdate"):]
+    assert "cl_drainCloses" in tick[:600], (
+        "cl_drainCloses is not called early in client_onFixedUpdate")
+
+
 def every_command_a_panel_sends_is_answered():
     import re
     game, world = read("Game.lua"), read("World.lua")
@@ -1414,6 +1461,8 @@ def main():
     check("plumbing: every command a panel sends is answered",
           every_command_a_panel_sends_is_answered)
     check("plumbing: every button reaches a branch", every_button_reaches_a_branch)
+    check("plumbing: no gui callback closes its own panel",
+          no_gui_callback_closes_its_own_panel)
 
     check("gui: the menu fits, for host and guest", the_menu_panel_fits)
     check("gui: every settings page fits and nothing is buried",

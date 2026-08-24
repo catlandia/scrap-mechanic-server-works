@@ -13,7 +13,6 @@ dofile( "$CONTENT_DATA/Scripts/EventHud.lua" )
 dofile( "$CONTENT_DATA/Scripts/EventGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/ConfirmGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/MyPlotGui.lua" )
-dofile( "$CONTENT_DATA/Scripts/PlotMarker.lua" )
 -- IndexWidgets and friends. BasePlayer pulls this in too, but relying on load
 -- order for a global is how you get a nil at the worst moment.
 dofile( "$SURVIVAL_DATA/Scripts/util.lua" )
@@ -184,14 +183,6 @@ function Game.sv_e_swReply( self, params )
 	if params.player and sm.exists( params.player ) then
 		self.network:sendToClient( params.player, "client_showMessage", params.text )
 	end
-end
-
--- The world knows where plots are; only the Game script has a network to reach
--- a client with. Same bridge sv_e_swReply uses.
-function Game.sv_e_swMarker( self, params )
-	if params.player == nil or not sm.exists( params.player ) then return end
-	self.network:sendToClient( params.player, "client_setPlotMarker",
-		{ position = params.position, ping = params.ping } )
 end
 
 -- /buildtime is an alias now, forwarded from the world because that is where the
@@ -520,34 +511,10 @@ function Game.client_showMessage( self, text )
 	sm.gui.chatMessage( text )
 end
 
--- The plot marker. The server says where it is; only this client is ever told,
--- so nobody else's compass shows it -- which is the behaviour the owner wanted
--- and, on the compass HUD, the only behaviour available.
---
--- MEASURED, and it is the same trap as sm.body.* :
---
---   WARNING: [ServerWorks] compass marker unavailable: PlotMarker.lua:72:
---            Calling world dependent functions in a no world script!
---
--- compassSetIconWorldPosition needs a world to turn a world position into a
--- bearing, and every vanilla caller of it is a world-attached script -- a
--- character, an interactable, a manager. This is the Game script, which has no
--- world, so the marker has never once appeared.
---
--- The hop to the player script is vanilla's own idiom for exactly this:
--- CreativeGame.client_onCreate:244 does sm.event.sendToPlayer( localPlayer,
--- "cl_e_unstuck" ) to reach CreativePlayer. Player.lua is attached to a
--- character in a world, so the call is legal there.
-function Game.client_setPlotMarker( self, data )
-	if self.cl == nil then self.cl = {} end
-	self.cl.plotMarker = data and data.position or nil
-	local ok, err = pcall( sm.event.sendToPlayer, sm.localPlayer.getPlayer(),
-		"cl_e_swPlotMarker", data or {} )
-	if not ok and not self.cl.markerFaulted then
-		self.cl.markerFaulted = true
-		sm.log.warning( "[ServerWorks] plot marker hop failed: " .. tostring( err ) )
-	end
-end
+-- The plot marker is NOT here. It went through this script for three versions
+-- and never once drew, because compassSetIconWorldPosition is world-dependent
+-- and a Game script has no world. It lives in World.lua now; see
+-- World.sv_refreshMarker.
 
 -- The blocked list is pushed to clients so the check can happen where the tool
 -- actually is. The server poll stays as a backstop, but a server round trip is
@@ -661,6 +628,11 @@ end
 
 function Game.client_onFixedUpdate( self, dt )
 	CreativeGame.client_onFixedUpdate( self, dt )
+
+	-- First, before anything: shut whatever a click asked to be shut. A panel is
+	-- never closed from inside its own callback -- see cl_closeLater for the
+	-- three versions of "the buttons dont work" that came out of doing so.
+	self:cl_drainCloses()
 
 	if self.cl and self.cl.event then
 		self:cl_updateEventHud()
@@ -915,12 +887,12 @@ end
 function Game.cl_onSettingsGuiClick( self, widgetName, data )
 	if type( data ) ~= "table" then return end
 	if data.action == "close" then
-		self:cl_closeSettingsGui()
+		self:cl_closeLater( "settings" )
 		return
 	end
 	if data.action == "back" then
-		self:cl_closeSettingsGui()
 		self.network:sendToServer( "sv_n_openMenu", {} )
+		self:cl_closeLater( "settings" )
 		return
 	end
 
@@ -955,7 +927,7 @@ function Game.cl_onSettingsGuiClick( self, widgetName, data )
 end
 
 function Game.cl_onSettingsGuiClose( self, widgetName )
-	self:cl_closeSettingsGui()
+	self:cl_forgetGui( "settingsGui" )
 end
 
 function Game.cl_closeSettingsGui( self )
@@ -967,6 +939,66 @@ function Game.cl_closeSettingsGui( self )
 	if gui and sm.exists( gui ) then
 		pcall( function() gui:close() end )
 	end
+end
+
+
+--[[ closing a panel is a NEXT TICK job ]]
+
+-- THE bug behind every "the buttons dont work" report since V26, and it is one
+-- line of ordering.
+--
+--   function Game.cl_onMenuClick( self, widgetName, data )
+--       self:cl_closeMenu()                                 -- <-- destroys
+--       self.network:sendToServer( "sv_n_menuOpen", ... )   -- <-- never runs
+--
+-- close() destroys the widget whose onClick is CURRENTLY ON THE LUA STACK, and
+-- the engine tears the callback down with it. Everything after the close is
+-- dead code. It leaves a fingerprint in the log:
+--
+--   ERROR: ASSERT: 'itrStackWalk != m_vecLastMethodStack.rend()' : LuaVM.cpp:716
+--
+-- Vanilla never does it. CreativePlayer.cl_e_unstuckYes sends FIRST and closes
+-- last (Data/Scripts/game/CreativePlayer.lua:48), and every jsonGui in the base
+-- game follows that order.
+--
+-- The correlation is exact, and it is what proves this rather than suggests it.
+-- Of our six click handlers, the three that sent before closing all worked --
+-- BUILD CITY built a city, the event panel started events, the settings panel
+-- applied presets, every one of them visible in the logs. The three that closed
+-- first did nothing at all, every time. The hub menu was one of them, which is
+-- why EVERY host feature looked broken: they are all reached through the hub.
+--
+-- Ordering alone would fix it, but ordering is a rule somebody has to remember
+-- every single time. Deferring the close by one tick removes the whole class:
+-- the widget cannot be destroyed while its own callback is running, because its
+-- own callback has already returned.
+function Game.cl_closeLater( self, which )
+	if self.cl == nil then self.cl = {} end
+	self.cl.closeSoon = self.cl.closeSoon or {}
+	self.cl.closeSoon[which] = true
+end
+
+local CLOSERS = {
+	menu = "cl_closeMenu", plots = "cl_closePlotsGui",
+	settings = "cl_closeSettingsGui", event = "cl_closeEventGui",
+	myplot = "cl_closeMyPlotGui", confirm = "cl_closeConfirm",
+}
+
+function Game.cl_drainCloses( self )
+	local queued = self.cl and self.cl.closeSoon
+	if queued == nil then return end
+	self.cl.closeSoon = nil
+	for which in pairs( queued ) do
+		local fn = CLOSERS[which]
+		if fn then self[fn]( self ) end
+	end
+end
+
+-- The engine telling us a panel has gone -- escape, or our own close(). It must
+-- only DROP THE HANDLE. Calling close() again from in here would be closing a
+-- GUI from inside its own callback, which is the bug this section is about.
+function Game.cl_forgetGui( self, field )
+	if self.cl then self.cl[field] = nil end
 end
 
 
@@ -993,9 +1025,10 @@ end
 -- button that comes straight back here.
 function Game.cl_onMenuClick( self, widgetName, data )
 	if type( data ) ~= "table" then return end
-	self:cl_closeMenu()
-	if data.action == "close" then return end
-	self.network:sendToServer( "sv_n_menuOpen", { what = data.action } )
+	if data.action ~= "close" then
+		self.network:sendToServer( "sv_n_menuOpen", { what = data.action } )
+	end
+	self:cl_closeLater( "menu" )
 end
 
 -- BACK, from any sub-panel.
@@ -1004,7 +1037,7 @@ function Game.sv_n_openMenu( self, data, player )
 end
 
 function Game.cl_onMenuClose( self, widgetName )
-	self:cl_closeMenu()
+	self:cl_forgetGui( "menuGui" )
 end
 
 function Game.cl_closeMenu( self )
@@ -1117,7 +1150,7 @@ function Game.cl_closeMyPlotGui( self )
 end
 
 function Game.cl_onMyPlotClose( self )
-	self:cl_closeMyPlotGui()
+	self:cl_forgetGui( "myPlotGui" )
 end
 
 -- Nothing here closes the panel except CLOSE and BACK.
@@ -1131,12 +1164,12 @@ end
 function Game.cl_onMyPlotClick( self, widgetName, data )
 	if type( data ) ~= "table" then return end
 	if data.action == "close" then
-		self:cl_closeMyPlotGui()
+		self:cl_closeLater( "myplot" )
 		return
 	end
 	if data.action == "back" then
-		self:cl_closeMyPlotGui()
 		self.network:sendToServer( "sv_n_openMenu", {} )
+		self:cl_closeLater( "myplot" )
 		return
 	end
 	self.network:sendToServer( "sv_n_myPlotAction", { action = data.action } )
@@ -1220,7 +1253,7 @@ function Game.cl_closeEventGui( self )
 end
 
 function Game.cl_onEventGuiClose( self )
-	self:cl_closeEventGui()
+	self:cl_forgetGui( "eventGui" )
 end
 
 function Game.cl_onEventGuiClick( self, widgetName, data )
@@ -1236,12 +1269,12 @@ function Game.cl_onEventGuiClick( self, widgetName, data )
 		return
 	end
 	if data.action == "close" then
-		self:cl_closeEventGui()
+		self:cl_closeLater( "event" )
 		return
 	end
 	if data.action == "back" then
-		self:cl_closeEventGui()
 		self.network:sendToServer( "sv_n_openMenu", {} )
+		self:cl_closeLater( "event" )
 		return
 	end
 	-- Stays open. Running an event means pressing several of these in a row --
@@ -1298,10 +1331,10 @@ function Game.client_openConfirm( self, state )
 	-- actions now, so without this the question would be drawn on top of the
 	-- panel that asked it and both would be taking clicks. `back` says which one
 	-- to bring back afterwards.
-	self:cl_closePlotsGui()
-	self:cl_closeEventGui()
-	self:cl_closeSettingsGui()
-	self:cl_closeMyPlotGui()
+	self:cl_closeLater( "plots" )
+	self:cl_closeLater( "event" )
+	self:cl_closeLater( "settings" )
+	self:cl_closeLater( "myplot" )
 	if self.cl.confirmGui == nil or not sm.exists( self.cl.confirmGui ) then
 		self.cl.confirmGui = sm.jsonGui.createGui( { isInteractive = true, needsCursor = true } )
 	end
@@ -1319,7 +1352,8 @@ function Game.cl_closeConfirm( self )
 end
 
 function Game.cl_onConfirmClose( self )
-	self:cl_closeConfirm()
+	self:cl_forgetGui( "confirmGui" )
+	if self.cl then self.cl.confirm = nil end
 end
 
 function Game.cl_onConfirmClick( self, widgetName, data )
@@ -1329,11 +1363,11 @@ function Game.cl_onConfirmClick( self, widgetName, data )
 	-- "no" cancels, and so does anything unrecognised: on a dialog that deletes a
 	-- city, the branch you fall into by accident has to be the safe one.
 	if data.action ~= "yes" then
-		self:cl_closeConfirm()
 		sm.gui.chatMessage( ( data.action == "no" )
 			and "Cancelled. Nothing was deleted."
 			or "Cancelled. Nothing was deleted (unrecognised button)." )
 		if back then self.network:sendToServer( "sv_n_openPanel", { panel = back } ) end
+		self:cl_closeLater( "confirm" )
 		return
 	end
 	if ( c.step or 1 ) < 2 then
@@ -1342,8 +1376,8 @@ function Game.cl_onConfirmClick( self, widgetName, data )
 		self.cl.confirmGui:render( ConfirmGui.Build( c ) )
 		return
 	end
-	self:cl_closeConfirm()
 	self.network:sendToServer( "sv_n_confirmed", { what = c.what } )
+	self:cl_closeLater( "confirm" )
 end
 
 function Game.sv_n_confirmed( self, data, player )
@@ -1392,12 +1426,12 @@ function Game.cl_onPlotsGuiClick( self, widgetName, data )
 		return
 	end
 	if data.action == "close" then
-		self:cl_closePlotsGui()
+		self:cl_closeLater( "plots" )
 		return
 	end
 	if data.action == "back" then
-		self:cl_closePlotsGui()
 		self.network:sendToServer( "sv_n_openMenu", {} )
+		self:cl_closeLater( "plots" )
 		return
 	end
 	-- build and clear are the server's business. The panel STAYS OPEN; the
@@ -1406,7 +1440,7 @@ function Game.cl_onPlotsGuiClick( self, widgetName, data )
 end
 
 function Game.cl_onPlotsGuiClose( self, widgetName )
-	self:cl_closePlotsGui()
+	self:cl_forgetGui( "plotsGui" )
 end
 
 function Game.cl_closePlotsGui( self )

@@ -10,6 +10,61 @@ was most of them.
 
 ---
 
+## V30 — the actual reason no button has ever worked
+
+V29 said one button was dead. That was true and it was not the story.
+
+**Closing a json GUI from inside its own click callback kills the rest of the
+callback.** `close()` destroys the widget whose `onClick` is on the Lua stack and
+the engine tears the callback down with it, so every statement after the close is
+dead code. No Lua error is raised. The only trace is an engine assert that has
+been sitting in the logs for weeks:
+
+    ERROR: ASSERT: 'itrStackWalk != m_vecLastMethodStack.rend()' : LuaVM.cpp:716
+
+The hub menu did exactly that:
+
+    self:cl_closeMenu()                                 -- destroys
+    self.network:sendToServer( "sv_n_menuOpen", ... )   -- never runs
+
+So the menu closed and the request was never sent. **Every host feature is
+reached through the hub**, which is why "I am the host why cant I access
+features" (V26) and "I click on city layout in menu and it does nothing" (now)
+are the same defect, and why V29's panel-stays-open work made no visible
+difference: the panels were never opening in the first place.
+
+The correlation across the six click handlers is what proves it. The three that
+sent before closing all worked, and the logs show them working — BUILD CITY built
+a city, the event panel ran phases, the settings panel applied a preset. The
+three that closed first did nothing, every time. Vanilla always sends first and
+closes last (`CreativePlayer.lua:48`).
+
+Fixed structurally rather than by reordering: **a close is queued and drained on
+the next tick.** A widget cannot be destroyed while its own callback is running
+if the close happens after that callback returns. `cl_closeLater` /
+`cl_drainCloses`, and an `onClose` handler now only drops the handle instead of
+closing again — which was the same bug from the other side.
+
+`dev/test_logic.py` asserts no `cl_on*` handler calls a closer directly. Removing
+the fix makes the check fail, which is the only way to know a check works.
+
+### The compass marker, third attempt and this time from the right place
+
+V29 moved it from the Game script to the player script. The warning came back
+word for word:
+
+    WARNING: compass marker unavailable: PlotMarker.lua:72:
+             Calling world dependent functions in a no world script!
+
+A player script has no world either. It runs from **World.lua** now, sent
+straight to one client the way vanilla sends a beacon —
+`self.network:sendToClient( player, "cl_n_createBeacon", params )` at
+`CreativeBaseWorld.lua:278`. That is the pattern for "a marker only one player
+sees", it was there all along, and every vanilla caller of the compass lives in a
+world-attached script.
+
+---
+
 ## V29 — the buttons answer back, and the city becomes one platform
 
 Three things reported, all three real, and the log named two of them outright.
