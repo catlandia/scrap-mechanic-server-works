@@ -56,6 +56,28 @@ local function pressed( state )
 	return state == sm.tool.interactState.start
 end
 
+-- NO vanilla tool calls sm.gui.chatMessage -- not one, in the whole base game --
+-- so whether it is reachable from a tool's client environment is unproven. It is
+-- only ever used here for "you missed", which is worth nothing if it costs an
+-- error, hence the pcall. Everything that matters is said by the server through
+-- Game.sv_e_swReply, which is proven.
+local function say( text )
+	pcall( sm.gui.chatMessage, text )
+end
+
+-- The parent draws the swing animations and reads clientPublicData.perks while
+-- one is playing. Our tool never starts a swing so that line should never run,
+-- but a tool that throws once per frame is exactly the 1.79 GB log in CLAUDE.md,
+-- so it is guarded and gives up after the first failure rather than per frame.
+function CleanerTool.client_onUpdate( self, dt )
+	if self.swAnimationsFaulted then return end
+	local ok, err = pcall( Sledgehammer.client_onUpdate, self, dt )
+	if not ok then
+		self.swAnimationsFaulted = true
+		sm.log.warning( "[ServerWorks] cleaner animations disabled: " .. tostring( err ) )
+	end
+end
+
 function CleanerTool.client_onEquippedUpdate( self, primaryState, secondaryState, forceBuild )
 	if not pressed( primaryState ) and not pressed( secondaryState ) then
 		-- Swallow both buttons whatever happens, so the inherited sledgehammer
@@ -67,7 +89,7 @@ function CleanerTool.client_onEquippedUpdate( self, primaryState, secondaryState
 	local direction = sm.localPlayer.getDirection()
 	local hit, result = sm.localPlayer.getRaycast( CleanerTool.RANGE, from, direction )
 	if not hit or result == nil then
-		sm.gui.chatMessage( "Nothing within " .. CleanerTool.RANGE .. " m." )
+		say( "Nothing within " .. CleanerTool.RANGE .. " m." )
 		return true, true
 	end
 
@@ -91,7 +113,7 @@ function CleanerTool.client_onEquippedUpdate( self, primaryState, secondaryState
 		end
 
 	else
-		sm.gui.chatMessage( "Cannot delete that (" .. tostring( result.type ) .. ")." )
+		say( "Cannot delete that (" .. tostring( result.type ) .. ")." )
 	end
 
 	return true, true
@@ -134,7 +156,18 @@ local function isCity( shape )
 end
 
 function CleanerTool.sv_n_swDelete( self, params, player )
-	if type( params ) ~= "table" or player == nil then return end
+	if type( params ) ~= "table" then return end
+
+	-- Most tool server callbacks are handed the player as a third argument
+	-- (CarryTool, ClayRifle, ClayTool and Cornade all declare it) but some are
+	-- written ( self, params ) and it is not worth betting the host check on
+	-- which. self.tool:getOwner() is the owner of THIS tool and is what vanilla
+	-- reaches for server-side (CarryTool.lua:376).
+	if player == nil then
+		local ok, owner = pcall( function() return self.tool:getOwner() end )
+		player = ok and owner or nil
+	end
+	if player == nil then return end
 
 	-- Host only, checked HERE and not just by the tool guard. The guard pulls the
 	-- tool out of a guest's hands within a couple of ticks, which is fast but is
@@ -198,8 +231,15 @@ function CleanerTool.sv_n_swDelete( self, params, player )
 		spared > 0 and " -- left the plot floor alone" or "" ) )
 	sm.log.info( string.format( "[ServerWorks] cleaner: %d removed, %d spared", removed, spared ) )
 
-	-- Our own cleanup must not read as mass deletion to the grief alarm.
-	local ok, world = pcall( function() return body:getWorld() end )
+	-- Our own cleanup must not read as mass deletion to the grief alarm --
+	-- deleting a big creation with F would otherwise trip it and arm a lockdown
+	-- in the middle of an event.
+	--
+	-- Through the CHARACTER, not body:getWorld(). character:getWorld() is what
+	-- vanilla uses (CreativePlayer.lua:19, CreativeGame.lua:259) and no base-game
+	-- script ever calls getWorld on a body, so its existence is a guess and this
+	-- one is not.
+	local ok, world = pcall( function() return player:getCharacter():getWorld() end )
 	if ok and world and sm.exists( world ) then
 		pcall( sm.event.sendToWorld, world, "sv_e_swQuietAlarm", { seconds = 20 } )
 	end

@@ -68,8 +68,16 @@
 		// would not have.
 		{
 			"uuid": "bbbb0cc8-5dd0-46e1-9299-8080c3cc80db",
+			// Renderable and rotation both copied from the CREATIVE sledgehammer's
+			// own entry (Data/Tools/ToolSets/tools.json, uuid ed185725) rather
+			// than from the lift, because the rotation belongs to the renderable
+			// -- the lift's matrix would draw this one on its side in the menu.
+			//
+			// The held models come from the class, not from here:
+			// Sledgehammer:418 and :426 call setTpRenderables / setFpRenderables
+			// themselves, and we inherit both.
 			"previewRenderable": "$GAME_DATA/Character/Char_Tools/char_sledgehammer_preview.rend",
-			"previewRotation": [ 1, 0, 0, 0, 0, -1, 0, 1, 0 ],
+			"previewRotation": [ -1, 0, 0, 0, 0, 1, 0, 1, 0 ],
 			"script": { "class": "CleanerTool", "file": "$CONTENT_DATA/Scripts/CleanerTool.lua" }
 		},
 

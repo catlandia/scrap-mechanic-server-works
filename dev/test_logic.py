@@ -436,14 +436,23 @@ def the_cleaner_is_wired_to_the_same_uuid_everywhere():
                       / "serverworks.toolset", encoding="utf-8").read()
     settings = io.open(SCRIPTS / "Settings.lua", encoding="utf-8").read()
 
-    block = toolset[toolset.index('"CleanerTool"') - 400:toolset.index('"CleanerTool"') + 80]
-    uuids = re.findall(r'"uuid"\s*:\s*"([0-9a-f-]{36})"', block)
-    assert uuids, "the toolset has no uuid next to CleanerTool"
-    uuid = uuids[-1]
+    # Parse it, do not scan near a string. The first version of this check looked
+    # in a 400-character window around the class name and broke the moment a
+    # comment was added above it -- a check that depends on how the file is
+    # commented is a check that will lie.
+    import json
+    stripped = re.sub(r"//[^" + chr(10) + r"]*", "", toolset)
+    entries = json.loads(stripped)["toolList"]
+    ours = [e for e in entries if e.get("script", {}).get("class") == "CleanerTool"]
+    assert len(ours) == 1, f"expected one CleanerTool entry, found {len(ours)}"
+    entry = ours[0]
+    uuid = entry["uuid"]
 
-    assert 'file": "$CONTENT_DATA/Scripts/CleanerTool.lua"' in toolset, (
-        "the toolset does not point at mod/Scripts/CleanerTool.lua")
+    assert entry["script"]["file"] == "$CONTENT_DATA/Scripts/CleanerTool.lua", (
+        f"the toolset points at {entry['script']['file']}, not our script")
     assert (SCRIPTS / "CleanerTool.lua").is_file(), "CleanerTool.lua is missing"
+    assert "previewRenderable" in entry, (
+        "no previewRenderable -- the tool would have nothing to draw in the menu")
 
     assert uuid in settings, (
         f"the toolset declares the cleaner as {uuid} and Settings.lua never "

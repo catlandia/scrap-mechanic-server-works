@@ -10,6 +10,48 @@ was most of them.
 
 ---
 
+## V37 — the theory pass over the cleaner
+
+*"because I cant test right now. just on theory. make sure it works."*
+
+So every call the cleaner makes was checked against the base game, and four of
+them did not survive it.
+
+| what | verdict | what changed |
+|---|---|---|
+| `sm.gui.chatMessage` from a tool | **no vanilla tool calls it, ever** | wrapped; anything that matters is said by the server through `Game.sv_e_swReply` instead |
+| `body:getWorld()` | **never called on a body in the base game** | goes through `player:getCharacter():getWorld()`, which vanilla uses in three places |
+| `sv_n_*( self, params, player )` | some tools declare the player, some are `( self, params )` | falls back to `self.tool:getOwner()`, the server-side idiom from `CarryTool.lua:376`. Without it the host check would have compared against nil and refused every delete |
+| `previewRotation` | copied from the lift | copied from the creative sledgehammer instead, since the rotation belongs to the renderable and ours is the sledgehammer's |
+
+And what *did* survive, with the vanilla line behind it:
+
+- **shapes and harvestables cross the network in tool params** —
+  `Fertilizer.lua:246` sends `{ targetSoil = <Harvestable or Shape> }` to its own
+  server half and checks it with `sm.exists`. That is the exact pattern the
+  cleaner uses.
+- `result:getBody()` — `StickyWheel.lua:517`, `Vault.lua:178`
+- `result:getHarvestable()` — `CarryTool.lua:862`, `Fertilizer.lua:225`
+- `sm.localPlayer.getRaycast( range, start, direction )` — `Sledgehammer.lua:362`
+- `return true, true` from an equipped update — `CarryTool.lua:936`
+- `sm.tool.interactState.start` — used throughout
+- the toolset entry shape — identical to the lift's, which is the scripted-tool
+  case (the *creative* sledgehammer has no script at all; it is
+  `"sledgehammer": {}`, engine-side)
+
+`Sledgehammer.client_onUpdate` is also now wrapped. It reads
+`clientPublicData.perks` while a swing animation plays — our tool never swings,
+so it should never reach that line, but a tool that throws once per frame is
+exactly the 1.79 GB log this project already has one of. It gives up after the
+first failure instead.
+
+The wiring check was rewritten too: it parsed a 400-character window around the
+class name, and adding a comment above the uuid broke it. It parses the toolset
+as JSON now. A check that depends on how a file is commented is a check that will
+lie.
+
+---
+
 ## V36 — the cleaner: point at it, press F, it is gone
 
 *"look. the problem is I cant remove them. remove like delete then. I want to be

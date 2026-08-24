@@ -237,7 +237,7 @@ Settings.SCHEMA = {
 	-- Not shown as a toggle; /lockdown and /unlock write it. Kept in settings so
 	-- the World can read the mode back on load without touching Game storage.
 	{ key = "protection", kind = "string", default = "open", hidden = true,
-	  help = "current protection mode: open, locked or display" },
+	  help = "current protection mode: open, polish, display, sweep or locked" },
 
 	{ key = "alarmdrop", kind = "number", default = 250,
 	  help = "blocks that must vanish at once to trip the grief alarm" },
