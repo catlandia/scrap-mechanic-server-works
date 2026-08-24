@@ -137,8 +137,20 @@ function Game.server_onCreate( self )
 	g_swEvent:sv_onCreate( Event.Sv_LoadFile() )
 	self.sv.nextEventPush = 0
 	if g_swEvent:sv_running() then
-		sm.log.info( string.format( "[ServerWorks] event resumed: %s, %s left",
-			g_swEvent.phase, Event.Clock( g_swEvent:sv_remaining() ) ) )
+		-- Say what the world is going to be like, not just which phase it is in.
+		-- A resumed `buffer` or `ended` means the remove tool draws no red
+		-- preview and nothing can be placed, and nobody connects that to a clock
+		-- they did not know was still running: "still broken red colour".
+		local phase = g_swEvent.phase
+		local shut = ( Event.PROTECTION[phase] ~= "open" )
+		sm.log.info( string.format(
+			"[ServerWorks] event resumed: %s, %s left -- building is %s",
+			phase, Event.Clock( g_swEvent:sv_remaining() ),
+			shut and "SHUT" or "open" ) )
+		if shut then
+			sm.log.info( "[ServerWorks]   nothing can be placed or removed until "
+				.. "the clock reaches build, or /event stop" )
+		end
 	end
 end
 
@@ -491,6 +503,22 @@ function Game.server_onPlayerJoined( self, player, newPlayer )
 		event = g_swEvent and g_swEvent.phase or "off",
 	} )
 	self:sv_pushEvent( player )
+
+	-- The single most confusing state this mod can be in: a clock nobody knew
+	-- was running has shut building, so the remove tool draws no red preview and
+	-- blocks will not place. Say it on the way in rather than leaving them to
+	-- work it out.
+	if g_swEvent and g_swEvent:sv_running()
+		and Event.PROTECTION[g_swEvent.phase] ~= "open" then
+		self.network:sendToClient( player, "client_showMessage", string.format(
+			"%s -- building is closed. %s left.",
+			Event.LABELS[g_swEvent.phase] or g_swEvent.phase,
+			Event.Clock( g_swEvent:sv_remaining() ) ) )
+		if player == sm.player.getHostPlayer() then
+			self.network:sendToClient( player, "client_showMessage",
+				"  /menu -> EVENT CLOCK -> STOP THE EVENT gives you the controls back." )
+		end
+	end
 
 	-- If they already own a plot from a previous session, put it back on their
 	-- compass straight away. Coming back to an event and having to remember

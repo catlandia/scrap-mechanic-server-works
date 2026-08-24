@@ -10,6 +10,43 @@ was most of them.
 
 ---
 
+## V48 — a dead event was resurrecting itself on every load
+
+*"still broken red colour"* — and it was never the remove tool. It was the event
+clock, and the log said so in two lines nobody had reason to connect:
+
+    [ServerWorks] event resumed: build, 00:00 left
+    [ServerWorks] event buffer -> protection polish
+
+`Event.sv_advance` set each new deadline from **`now`** instead of from the
+**previous deadline**. So an event that had expired hours earlier resumed, saw
+that build was over, and started a **fresh five-minute buffer counted from the
+moment the world loaded**.
+
+Buffer is the `polish` profile: no placing, no breaking. So *every single load*
+dropped the world into a window where the remove tool drew no red preview and
+nothing could be built — and when that window expired, the next load opened
+another one.
+
+Deadlines are absolute epoch seconds by design; scheduling from `now` threw that
+away. They now come from the previous deadline, and `sv_advance` loops until it
+lands somewhere the clock has not already passed — so a stale event goes straight
+to `ended` in one step instead of walking through phases that finished while the
+game was shut, announcing each one.
+
+### And it now says so out loud
+
+The state was knowable and nobody could reasonably have known it, which is a
+design failure of its own. On load:
+
+    event resumed: buffer, 04:12 left -- building is SHUT
+      nothing can be placed or removed until the clock reaches build, or /event stop
+
+And anyone joining into a shut world is told directly, with the host also told
+where the off switch is.
+
+---
+
 ## V47 — the alarm was wrong in both directions, and banning is load-bearing
 
 ### 16x16 is the number everything hangs off

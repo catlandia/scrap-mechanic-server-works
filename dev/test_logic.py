@@ -1542,6 +1542,57 @@ def a_zero_minute_prep_starts_building_at_once():
     assert E.sv_buildAllowed(ev) is True
 
 
+def a_dead_event_does_not_resurrect_itself_on_every_load():
+    """An event that expired while the game was shut lands on `ended`, once.
+
+    MEASURED from the log at load:
+
+        event resumed: build, 00:00 left
+        event buffer -> protection polish
+
+    sv_advance set the next deadline from `now` instead of from the previous
+    deadline, so an event that had been over for hours resumed, saw build was
+    finished, and started a FRESH five minute buffer counted from the moment the
+    world loaded. Buffer is the polish profile -- no placing, no breaking -- so
+    every load dropped the world into a window where the remove tool showed no
+    red preview and nothing could be built.
+
+    Reported as "still broken red colour". It was the event clock.
+    """
+    lua = fresh("Event.lua")
+    E = lua.globals().Event
+    ev = lua.eval("Event()")
+    E.sv_onCreate(ev, None)
+
+    T0 = 1000000.0
+    E.sv_start(ev, 2, 5, T0, 5)          # 2 prep, 5 build, 5 buffer = 12 minutes
+    assert str(ev["phase"]) == "prep"
+
+    # come back a whole day later
+    later = T0 + 24 * 60 * 60
+    landed = E.sv_advance(ev, later)
+    assert str(ev["phase"]) == "ended", (
+        f"a day-old event resumed into {ev['phase']!r} -- it should be over. "
+        "If it lands in buffer it starts a fresh polish window on every load, "
+        "and nothing can be built or removed until it expires again.")
+    assert str(landed) == "ended", f"sv_advance reported {landed!r}"
+    assert ev["deadline"] is None, "an ended event still holds a deadline"
+
+    # and it must not do it again next load
+    again = E.sv_advance(ev, later + 60)
+    assert again is None, "an ended event advanced a second time"
+
+    # the ordinary case still works: each phase runs its own length, in order
+    ev2 = lua.eval("Event()")
+    E.sv_onCreate(ev2, None)
+    E.sv_start(ev2, 2, 5, T0, 5)
+    assert str(E.sv_advance(ev2, T0 + 2 * 60)) == "build", "prep did not end on time"
+    assert str(E.sv_advance(ev2, T0 + 7 * 60)) == "buffer", (
+        "build should end 7 minutes in -- 2 prep plus 5 build -- and the buffer "
+        "must be measured from THAT moment, not from when the tick happened")
+    assert str(E.sv_advance(ev2, T0 + 12 * 60)) == "ended", "buffer did not end on time"
+
+
 def the_clock_survives_a_restart():
     lua, E, ev = event_lua()
     T = 2_000_000
@@ -2442,6 +2493,8 @@ def main():
     check("event: prep then build then ended", an_event_runs_prep_then_build_then_ends)
     check("event: zero prep starts building at once", a_zero_minute_prep_starts_building_at_once)
     check("event: the clock survives a restart", the_clock_survives_a_restart)
+    check("event: a dead event does not resurrect itself on every load",
+          a_dead_event_does_not_resurrect_itself_on_every_load)
     check("event: pausing stops the clock", pausing_stops_the_clock)
     check("event: time can be added and taken away", time_can_be_added_and_taken_away)
     check("event: the five minute handover is exact", the_five_minute_handover_is_exact)

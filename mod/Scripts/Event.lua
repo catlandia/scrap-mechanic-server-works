@@ -236,26 +236,53 @@ end
 -- do on each transition -- opening building, locking the world, starting a
 -- snapshot -- and doing two of those in one tick because the server was frozen
 -- for a while would be worse than taking two ticks over it.
+-- Advance as far as the clock says, not one phase per call.
+--
+-- THE NEXT DEADLINE COMES FROM THE LAST ONE, never from `now`. That is the whole
+-- fix, and getting it wrong had a symptom nobody would connect to a clock:
+--
+-- MEASURED, from the log at load:
+--     event resumed: build, 00:00 left
+--     event buffer -> protection polish
+--
+-- An event that had expired hours earlier resumed, saw build was over, and
+-- started a FRESH FIVE MINUTE BUFFER counted from the moment the world loaded.
+-- Buffer is the `polish` profile -- no placing, no breaking -- so every single
+-- load dropped the world into a window where the remove tool showed no red
+-- preview and nothing could be built. Reported as "still broken red colour",
+-- and it was the event clock the whole time.
+--
+-- Deadlines are absolute epoch seconds by design (see the note at the top of
+-- this file). Scheduling the next one from `now` threw that away and let a dead
+-- event resurrect itself on every load, forever.
+--
+-- The loop matters too: a stale event has to land where it actually belongs in
+-- one go, rather than passing through -- and announcing -- phases that finished
+-- while the game was shut.
 function Event.sv_advance( self, now )
 	if not self:sv_running() or self:sv_paused() then return nil end
-	if self.deadline == nil or ( now or clockNow() ) < self.deadline then return nil end
+	now = now or clockNow()
+	if self.deadline == nil or now < self.deadline then return nil end
 
-	if self.phase == "prep" then
-		self.phase = "build"
-		self.deadline = ( now or clockNow() ) + self.buildMinutes * 60
-		self.announced = {}
-		return "build"
+	local landed = nil
+	-- Four phases at most, so this cannot spin.
+	for _ = 1, 4 do
+		local from = self.deadline
+		if self.phase == "prep" then
+			self.phase = "build"
+			self.deadline = from + self.buildMinutes * 60
+			self.announced = {}
+		elseif self.phase == "build" and self.bufferMinutes > 0 then
+			self.phase = "buffer"
+			self.deadline = from + self.bufferMinutes * 60
+		else
+			self.phase = "ended"
+			self.deadline = nil
+		end
+		landed = self.phase
+		if self.deadline == nil or now < self.deadline then break end
 	end
-
-	if self.phase == "build" and self.bufferMinutes > 0 then
-		self.phase = "buffer"
-		self.deadline = ( now or clockNow() ) + self.bufferMinutes * 60
-		return "buffer"
-	end
-
-	self.phase = "ended"
-	self.deadline = nil
-	return "ended"
+	return landed
 end
 
 -- Which "N minutes left" call is due, once each. Returns the number or nil.
