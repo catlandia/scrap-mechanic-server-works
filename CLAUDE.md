@@ -944,6 +944,16 @@ to be wrong:
 
 Every one of those is guarded with `pcall` and logs once rather than per tick.
 
+## Where to start reading
+
+**[`docs/NEXT.md`](docs/NEXT.md) is the handover** — what is done, what has never
+been run in a real event, what the next step is, and which decisions are waiting
+on the owner. Start there.
+
+The next step is the **per-tile part limit**: `Rules.lua` already enforces the
+2026-08-22 rules board, including rule 10 -- ten bearings, pistons and
+suspensions **combined** per plot -- and none of it has been exercised in game.
+
 ## Build order
 
 0. ~~Measure before writing mod code.~~ Done, from existing logs — see above. It changed

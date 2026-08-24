@@ -8,6 +8,12 @@ Companions: [`../CLAUDE.md`](../CLAUDE.md) for engine facts with citations,
 [`../REVIEW.md`](../REVIEW.md) for verified-versus-assumed,
 [`CHANGELOG.md`](CHANGELOG.md) for what each version fixed.
 
+
+> **2026-08-24.** This remains the plan of record for *why*. For *what happens
+> next* — what is built, what has never been run in a real event, and the
+> per-tile part limit that is the next step — see
+> [`NEXT.md`](NEXT.md), which is the handover.
+
 ---
 
 ## 1. What this is
