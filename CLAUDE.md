@@ -334,20 +334,24 @@ that turned out not to be the whole story. `docs/BUTTONS.md` is the checklist,
 with the vanilla file and line behind every rule, and it separates what is
 **confirmed** from what is **not yet known**. Read it before touching a panel.
 
-Two things about our GUIs that **no vanilla GUI does**, and neither is settled:
+**SETTLED, 2026-08-24, in game — the buttons work.** A Game script *does*
+receive jsonGui clicks, and a widget tree built in Lua is fine. Both of the
+things that looked suspicious about our arrangement were innocent.
 
-1. **Our callbacks live on the Game script.** Every `onClick` in the base game
-   belongs to a player script, an interactable or a character — never a Game
-   script. A Game script is already special (it has no world), so "it also does
-   not get GUI callbacks" is the kind of thing this engine does silently.
-2. **Our widget trees are built in Lua.** Every vanilla jsonGui is
-   `sm.json.open()`ed from a `.gui` file. Nothing in the base game hands
-   `render()` a table it built itself.
+Four separate bugs were stacked on top of each other, each one alone enough to
+make every button look dead, each one hiding the next:
 
-`/guitest` settles both: four runs, four combinations of owner and tree, and the
-panel rewrites itself to say CLICK RECEIVED when a press lands. The real `/menu`
-path is traced as `gui 1/4` .. `gui 4/4`; the last line printed is where it
-stops.
+1. `UpgradeButton` is a progress bar and drew no caption *(V26)*
+2. three fonts were glyph-limited or did not exist *(V29)*
+3. the hub closed its GUI **inside the click callback**, killing the rest of it
+   *(V30)*
+4. each panel made **its own** interactive GUI, and a json GUI has no
+   `destroy()` *(V32)*
+
+The tell that cracked it was a screenshot: the entries that failed were exactly
+the ones that opened a **second panel**; the ones that worked answered in
+**chat**. `/guitest` stays in the mod — five tests, client-only — as the fastest
+way to re-establish ground truth after a game update.
 
 ### NEVER close a json GUI from inside its own callback
 

@@ -3,10 +3,11 @@
 Everything below is checked against the installed game, with the file and line
 it came from. Three versions have been spent on "the buttons dont work" and each
 fix was a real bug that turned out not to be the whole story, so this file
-separates **confirmed** from **not yet known**, and says how the unknown parts
-get settled.
+is the checklist to work through before touching a panel.
 
-Run `/guitest` in game — five times — to settle them. See the end of this file.
+**They work.** Settled in game on 2026-08-24 — see *SETTLED* below for what was
+actually wrong. `/guitest` is still in the mod for re-checking after a game
+update.
 
 ---
 
@@ -248,21 +249,38 @@ question worth answering is: **when the panel is up, do you get a mouse cursor?*
 
 ---
 
-## NOT YET KNOWN — and this is what `/guitest` settles
+## SETTLED — 2026-08-24, in game
 
-Two things about our GUIs that **no vanilla GUI does**:
+Both of the open questions are answered, and the answer to both is **yes, it
+works**:
 
-1. **Our callbacks live on the Game script.** Every `onClick` in the base game
-   belongs to a player script, an interactable or a character. Not one belongs to
-   a Game script. A Game script is already special — it has no world — so "it
-   also does not receive GUI callbacks" is exactly the sort of thing this engine
-   does without saying so.
+- **A Game script DOES receive jsonGui clicks.** It was never the owner.
+- **A widget tree built in Lua is fine.** It was never the tree.
 
-2. **Our widget trees are built in Lua.** Every vanilla jsonGui is
-   `sm.json.open()`ed from a `.gui` file and then indexed. Nothing in the base
-   game hands `render()` a table it built itself.
+What was actually wrong was four separate things, each of which alone was enough
+to make every button look dead, and each of which hid the next:
 
-### How to settle it
+1. `UpgradeButton` drew no caption, so two host entries looked like broken
+   widgets rather than buttons. *(V26)*
+2. Three fonts were glyph-limited or did not exist, so captions lost letters and
+   the HUD logged a traceback every second. *(V29)*
+3. The hub menu closed its own GUI **inside the click callback**, which kills the
+   rest of the callback — so the request was never sent. Every host feature is
+   reached through the hub. *(V30)*
+4. Each panel made **its own** interactive GUI. A json GUI has no `destroy()`, so
+   opening a second panel meant two live interactive GUIs on one script, and the
+   second one never appeared. *(V32)*
+
+The tell that finally cracked it was a screenshot: the entries that failed were
+exactly the ones that opened a **second panel**, and the ones that worked were
+the ones that answered in **chat**. Not the host check — the menu hides host
+entries from guests, so a visible button means that check already passed.
+
+`/guitest` stays in the mod. It is five tests of owner × API × tree shape, it is
+client-only, and it is the fastest way to re-establish the ground truth after a
+game update.
+
+### How to settle it### How to settle it
 
 Type `/guitest` in game. A small panel appears saying which test it is. Press
 both buttons on it. If the panel rewrites itself to say **CLICK RECEIVED**, that

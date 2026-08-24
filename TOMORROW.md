@@ -1,74 +1,54 @@
 # Next session
 
-V32 is installed. **Restart Scrap Mechanic** — scripts are read at world load, so
-a running game will not pick it up.
+**The buttons work.** Confirmed in game 2026-08-24. Four bugs stacked on top of
+each other, each hiding the next — the whole story is in `docs/BUTTONS.md` under
+*SETTLED*, and `/guitest` stays in the mod for re-checking after a game update.
 
-## Try the three host buttons first
+That unblocks everything built in V29-V32, none of which has ever been seen.
+In rough order of what matters:
 
-Your screenshot named the bug. EVENT CLOCK, CITY LAYOUT and SERVER SETTINGS are
-the only three entries that open **a second panel**; the ones above them answer
-in chat, and those had been working. Being host was never the problem — the menu
-hides host entries from guests, so a visible button means that check passed.
+## 1. Does building work when prep ends?
 
-A json GUI has no `destroy()`: `close()` hides it and the object stays. The mod
-made one per panel, so opening a second panel meant two live interactive GUIs on
-one script, which nothing in the base game ever does. They all share one now.
+Still the single most important thing to confirm, and it has never been verified
+in game. `/menu` -> EVENT CLOCK -> set prep to 2 minutes -> START. When the prep
+clock runs out, try to place a block.
 
-`/menu` → CITY LAYOUT should open the city panel. Then BACK, then SERVER
-SETTINGS, then EVENT CLOCK.
+- **prep** should close building and change nothing else — seats and buttons
+  still work
+- **build** opens it
+- the last 5 minutes of build get the warehouse alarm
+- **buffer** (optional) closes building again without locking anything
+- **ending** locks every build and takes a full world snapshot
 
-## If they still do nothing, run /guitest — five times
+## 2. Rebuild the city and look at it
 
-Type `/guitest`, press both buttons on the panel that appears, then `/guitest`
-again for the next test. If the panel rewrites itself to say **CLICK RECEIVED**,
-that arrangement works.
+`/menu` -> CITY LAYOUT -> BUILD CITY. There is a continuous slab under the whole
+city now, so it should read as one raised platform two blocks thick with a proper
+edge all round — not a hundred loose tiles. That was the "concrete doesnt stick
+to the borders" report.
 
-| test | what it is |
-|---|---|
-| 1 | Game script, jsonGui, tree built in Lua — what the mod ships |
-| 2 | Game script, jsonGui, tree from vanilla's own `.gui` file |
-| 3 | Player script, jsonGui, tree built in Lua |
-| 4 | Player script, jsonGui, tree from vanilla's own `.gui` file |
-| 5 | Game script, **createGuiFromLayout** — the other GUI api |
+## 3. The panels stay open now
 
-Test 5 is new and it matters: there are two GUI systems, and vanilla's Game
-script uses the *other* one for its creative CLEAR dialog
-(`CreativeGame.lua:283`). That proves a Game script can own a working button; it
-does not prove `sm.jsonGui` can.
+Press PAUSE on the event panel: it should stay put with "paused" written under
+the title. Same for every control. BACK returns to the hub. Only CLOSE closes.
 
-Tell me which tests said CLICK RECEIVED and that decides the fix.
+## 4. CLEAR CITY asks twice
 
-## The menu path is traced
+`/menu` -> CITY LAYOUT -> CLEAR CITY. The first ask lists what is actually on the
+city, counted live. On the second the buttons swap sides so a reflex double-click
+lands on CANCEL. Cancelling puts you back on the city panel.
 
-One click on `/menu` writes four lines to `Logs/game-*.log`. The last one printed
-is where it stops:
+## 5. FIND MY PLOT
 
-    [ServerWorks] gui 1/4 menu click: widget=B6 data=table
-    [ServerWorks] gui 2/4 server got menu open: what=city host=true
-    [ServerWorks] gui 3/4 sending the city panel
-    [ServerWorks] gui 4/4 client rendering the city panel
+Claim a plot, walk away, `/menu` -> MY PLOT -> FIND MY PLOT. A marker should
+appear on the compass. It has never worked before — it was being driven from a
+script with no world, twice.
 
-All four printing means the panel is being built and rendered, and the problem is
-that you cannot see it.
+## Housekeeping
 
-## What you have to do for a panel to open
-
-Written up in `docs/BUTTONS.md`, but the one that matters: **when a panel is up,
-do you get a mouse cursor?** If not, your clicks are going to the world and no
-amount of fixing the panel will help. Also: not seated, nothing else holding the
-mouse (Tab inventory, handbook, pause menu, the lift's blueprint window), and the
-game restarted since the last sync.
-
-## Still to verify from V29 — none of it has been seen yet
-
-- **The city as one platform.** Rebuild it: `/menu` → CITY LAYOUT → BUILD CITY.
-  There is a continuous slab under the whole city now, so it should read as one
-  raised platform two blocks thick rather than a hundred loose tiles.
-- **Panels stay open.** Press PAUSE on the event panel; it should stay put with
-  "paused" written under the title.
-- **CLEAR CITY asks twice** and the first ask lists what is on the city.
-- **Building works when prep ends.** Still the single most important thing to
-  confirm, and still never confirmed in game.
+`/menu` still writes four `gui 1/4`..`gui 4/4` trace lines per click. Harmless
+(four lines per *click*, not per tick) and useful while the other panels get
+exercised for the first time. Say the word and they come out.
 
 ## Still unknown
 
