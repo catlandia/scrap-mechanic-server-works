@@ -631,6 +631,20 @@ function Crowd.sv_teamCount( self )
 	return n
 end
 
+-- How many bots have used up their block allowance and gone quiet.
+--
+-- REPORTED as "well they arent exactly building anymore", which was correct and
+-- invisible: 95 bots x 40 blocks is 3800, and once they are all spent the crowd
+-- looks identical to a crowd that has broken. Said out loud now, with the cap
+-- beside it, so the difference is one glance at /crowd.
+function Crowd.sv_finishedCount( self )
+	local n = 0
+	for _, bot in ipairs( self.bots ) do
+		if #bot.blocks >= Crowd.MAX_BLOCKS then n = n + 1 end
+	end
+	return n
+end
+
 function Crowd.sv_blockCount( self )
 	local n = 0
 	for _, bot in ipairs( self.bots ) do n = n + #bot.blocks end
@@ -668,6 +682,8 @@ function Crowd.sv_status( self )
 		teams = self:sv_teamCount(),
 		claim = self.claim,
 		blocks = self:sv_blockCount(),
+		done = self:sv_finishedCount(),
+		cap = Crowd.MAX_BLOCKS,
 		failed = self.failed,
 	}
 end

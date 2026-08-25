@@ -1040,6 +1040,11 @@ function World.sv_crowdCommand( self, args, reply )
 		-- same measurement, and this is the only place that is visible.
 		if s.count > 0 then
 			reply( string.format( "  %d of them are on a team with a neighbour", s.teams ) )
+			if s.done > 0 then
+				reply( string.format(
+					"  %d of %d have built their full %d blocks and stopped",
+					s.done, s.count, s.cap ) )
+			end
 			local parts = {}
 			for _, style in ipairs( Crowd.STYLES ) do
 				if s.styles[style] then

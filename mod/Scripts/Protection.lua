@@ -516,7 +516,12 @@ function Protection.sv_onFixedUpdate( self )
 	end
 
 	if self.cursor > n then
+		-- The body list SHRANK under a pass that was half done -- a cell
+		-- unloading, a creation removed. Whatever this pass had counted is a
+		-- fragment of a world that no longer exists, and adding it to the next
+		-- pass would publish a census larger than the world. Void it.
 		self.cursor = 1
+		self.cycleShapes = 0
 	end
 
 	local last = math.min( self.cursor + Protection.BODIES_PER_PATROL - 1, n )
@@ -548,8 +553,39 @@ function Protection.sv_onFixedUpdate( self )
 
 	if self.cursor > n then
 		-- Full cycle complete: publish the census and start counting again.
+		--
+		-- THE CURSOR GOES BACK TO 1 HERE, NOT AT THE TOP OF THE NEXT TICK, AND
+		-- THAT ONE LINE IS A FALSE GRIEF ALARM.
+		--
+		-- MEASURED, 2026-08-26, with 95 crowd bots building on 95 plots:
+		--
+		--     GRIEF ALARM: 2101 shapes lost in 20s
+		--     GRIEF ALARM: 2618 shapes lost in 20s
+		--     GRIEF ALARM: 3151 shapes lost in 20s
+		--     GRIEF ALARM: 4334 shapes lost in 20s
+		--
+		-- Nothing was deleted. The world was GROWING the whole time.
+		--
+		-- The old code left the cursor at n+1 and relied on the guard at the top
+		-- of the next tick to wrap it. That guard is `cursor > n` -- so if the
+		-- world had grown even by one body in the meantime, n+1 was no longer
+		-- past the end, the wrap did not happen, and the pass resumed from n+1.
+		-- It then counted only the handful of bodies added since, hit the end,
+		-- and published THAT as the whole-world census.
+		--
+		-- So on any growing world the census alternated between the true total
+		-- and a tiny number, and the alarm -- which compares the current census
+		-- against the peak within its window -- read the tiny one as the entire
+		-- world vanishing. It then arms /lockdown on its own, which is the part
+		-- that makes this worth a long comment: a real event, where twenty
+		-- people are adding blocks as fast as they can, is exactly the condition
+		-- that triggers it.
+		--
+		-- A census is a full pass over the CURRENT list. It has to begin at the
+		-- beginning, whatever the list does next.
 		self.census = self.cycleShapes
 		self.cycleShapes = 0
+		self.cursor = 1
 	end
 end
 

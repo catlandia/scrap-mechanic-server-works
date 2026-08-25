@@ -4811,6 +4811,162 @@ def a_bot_only_ever_builds_on_its_own_plot():
             assert z >= P.DECK_Z + 1, f"a block was placed at z={z}, inside the deck"
 
 
+def a_growing_world_never_reports_a_shrinking_census():
+    """The false grief alarm the crowd found, and the reason /crowd exists.
+
+    MEASURED in game with 95 bots building on 95 plots:
+
+        GRIEF ALARM: 2101 shapes lost in 20s
+        GRIEF ALARM: 4334 shapes lost in 20s
+
+    Nothing was deleted. The world was growing the whole time.
+
+    The patrol walks the body list a slice at a time and publishes a census when
+    it reaches the end. It used to leave the cursor at n+1 and rely on the wrap
+    at the top of the next tick -- but that guard is `cursor > n`, so once the
+    world had grown by even one body the wrap never happened, the pass resumed
+    near the end, and it published the shapes of those last few bodies as the
+    whole-world total.
+
+    The alarm compares the census against the peak in its window, so the small
+    one read as the entire world vanishing -- and the alarm ARMS /lockdown. A
+    real event with twenty people building fast is exactly that condition.
+
+    Driven here against the real Protection, one tick at a time, with the world
+    growing the way a crowd grows it.
+    """
+    lua = fresh("Settings.lua", "Protection.lua")
+    lua.execute("""
+        function isGhostBody( body ) return false end
+        swTestBodies = {}
+        function swAddBodies( howMany, shapesEach )
+            for _ = 1, howMany do
+                -- The eight permission flags the patrol reads and writes. Real
+                -- enough that applyProfile does its true work: the census is
+                -- what is under test, but it is counted inside the same loop.
+                local b = { shapes = shapesEach, f = {} }
+                function b:getShapeCount() return self.shapes end
+                function b:isGhost() return false end
+                local names = { "Buildable", "Erasable", "Connectable",
+                    "Paintable", "Liftable", "Usable", "Destructable",
+                    "ConvertibleToDynamic" }
+                for _, nm in ipairs( names ) do
+                    b["set" .. nm] = function( self, v ) self.f[nm] = v end
+                    b["is" .. nm] = function( self ) return self.f[nm] end
+                end
+                swTestBodies[#swTestBodies + 1] = b
+            end
+        end
+    """)
+    g = lua.globals()
+    prot = g.Protection()
+    prot.sv_onCreate(prot, "open")
+    # No resolver and no ground test: the census is what is under test, and
+    # profileFor falls back to the mode's own profile without them.
+    lua.execute("swAddBodies( 400, 1 )")
+
+    def run(ticks):
+        seen = []
+        for _ in range(ticks):
+            prot.sv_onFixedUpdate(prot)
+            c = prot.sv_census(prot)
+            if c is not None:
+                seen.append(int(c))
+        return seen
+
+    run(20)                                   # let the first full pass land
+    baseline = int(prot.sv_census(prot))
+    assert baseline == 400, f"first census is {baseline}, expected 400"
+
+    # Now grow it the way a crowd does: a couple of bodies every tick, for long
+    # enough to cross several full passes.
+    #
+    # Only DISTINCT successive values matter. The census holds its last value
+    # between passes, so reading it every tick would count the same number over
+    # and over and hide the shape of the sequence.
+    published = []
+    for _ in range(400):
+        lua.execute("swAddBodies( 2, 1 )")
+        prot.sv_onFixedUpdate(prot)
+        c = prot.sv_census(prot)
+        if c is not None and (not published or int(c) != published[-1]):
+            published.append(int(c))
+
+    total = int(lua.eval("#swTestBodies"))
+    assert len(published) >= 4, (
+        f"only {len(published)} censuses were published over 400 ticks -- "
+        f"the patrol is not completing passes")
+
+    # THE INVARIANT: on a world that only ever grew, one census may never come
+    # back dramatically smaller than the one before it. That is exactly the
+    # full/tiny alternation the bug produced, and exactly what the alarm reads
+    # as mass deletion.
+    for prev, now in zip(published, published[1:]):
+        assert now >= prev * 0.75, (
+            f"census fell from {prev} to {now} on a world that only grew "
+            f"(sequence {published[:8]}, now {total} bodies) -- the patrol "
+            f"published a partial pass, and the grief alarm calls that "
+            f"{prev - now} shapes deleted")
+
+    assert max(published) <= total, (
+        f"census {max(published)} exceeds the {total} bodies that exist")
+    assert published[-1] >= total * 0.75, (
+        f"final census {published[-1]} of {total} bodies")
+
+
+def a_shrinking_world_never_reports_more_than_exists():
+    """The other direction: a cell unloading mid-pass.
+
+    The partial count of a world that no longer exists must not be carried into
+    the next pass, or the census comes out LARGER than the world -- which sets
+    the alarm's peak too high and makes the next honest reading look like a loss.
+    """
+    lua = fresh("Settings.lua", "Protection.lua")
+    lua.execute("""
+        function isGhostBody( body ) return false end
+        swTestBodies = {}
+        function swAddBodies( howMany, shapesEach )
+            for _ = 1, howMany do
+                -- The eight permission flags the patrol reads and writes. Real
+                -- enough that applyProfile does its true work: the census is
+                -- what is under test, but it is counted inside the same loop.
+                local b = { shapes = shapesEach, f = {} }
+                function b:getShapeCount() return self.shapes end
+                function b:isGhost() return false end
+                local names = { "Buildable", "Erasable", "Connectable",
+                    "Paintable", "Liftable", "Usable", "Destructable",
+                    "ConvertibleToDynamic" }
+                for _, nm in ipairs( names ) do
+                    b["set" .. nm] = function( self, v ) self.f[nm] = v end
+                    b["is" .. nm] = function( self ) return self.f[nm] end
+                end
+                swTestBodies[#swTestBodies + 1] = b
+            end
+        end
+        function swDropTo( n )
+            while #swTestBodies > n do
+                table.remove( swTestBodies )
+            end
+        end
+    """)
+    g = lua.globals()
+    prot = g.Protection()
+    prot.sv_onCreate(prot, "open")
+    lua.execute("swAddBodies( 1000, 1 )")
+
+    for _ in range(4):                        # part way through a pass
+        prot.sv_onFixedUpdate(prot)
+    lua.execute("swDropTo( 200 )")            # a cell unloads
+
+    for _ in range(40):
+        prot.sv_onFixedUpdate(prot)
+        c = prot.sv_census(prot)
+        if c is not None:
+            assert int(c) <= 200, (
+                f"census says {int(c)} shapes in a world of 200 bodies -- a "
+                f"voided pass was carried into the next one")
+
+
 def a_crowd_spreads_over_the_whole_city():
     """'theyre evolving! just side ways...'
 
@@ -5386,6 +5542,10 @@ def main():
 
     check("crowd: a bot only ever builds on its own plot",
           a_bot_only_ever_builds_on_its_own_plot)
+    check("alarm: a growing world never reports a shrinking census",
+          a_growing_world_never_reports_a_shrinking_census)
+    check("alarm: a shrinking world never reports more than exists",
+          a_shrinking_world_never_reports_more_than_exists)
     check("crowd: a crowd spreads over the whole city",
           a_crowd_spreads_over_the_whole_city)
     check("crowd: bots own their plots through the real system",
