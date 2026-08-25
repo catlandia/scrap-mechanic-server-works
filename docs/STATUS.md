@@ -268,6 +268,33 @@ value anybody has looked at.
 
 ## D. Measured, and still true
 
+### The load curve, 2026-08-26 -- the first clean one
+
+`/bench` from 0 to 128 bots in tens, building on their own plots, 96-plot city:
+
+| bots | fps | min | tick/s | shapes | bodies |
+|---|---|---|---|---|---|
+| 0 | 60.0 | 60.0 | **40.0** | 676 | 195 |
+| 40 | 59.8 | 59.3 | **40.1** | 898 | 417 |
+| 70 | 57.6 | 56.8 | **40.0** | 1,276 | 796 |
+| 80 | 51.9 | 48.7 | **40.0** | 1,446 | 966 |
+| 100 | 42.1 | 40.1 | **40.1** | 1,844 | 1,366 |
+| 128 | 31.9 | 30.5 | **40.0** | 2,580 | 2,102 |
+
+**The tick rate never moved**, at any size, from 195 bodies to 2,102. The frame
+rate is flat to ~70 bots and then falls away; the knee is 70-80.
+
+Three things this does NOT say:
+
+- **128 bots is not 128 players.** No client connections, so the per-client
+  network budget stays at zero however far it goes.
+- **It confounds crowd size with content**, because build mode grows the world as
+  the crowd grows. `/crowd mode churn` plus the same bench separates them, and
+  has not been run.
+- **The host is rendering AND simulating.** A guest carries only half of it.
+
+
+
 Two facts from `dev/session_stats.py` over the owner's own client logs. These
 are the only *numbers* this project has, and **neither was measured on a world
 running Server Works.**

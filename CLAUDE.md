@@ -1401,6 +1401,80 @@ it is plausibly a dead dev stub. `-use_null_driver` is the interesting partner: 
 renderer-less client would be cheap to run several of. Two minutes to find out;
 nobody has spent them.
 
+### 128 BUILDERS, 2,102 BODIES, AND THE TICK RATE NEVER MOVED
+
+**MEASURED, 2026-08-26**, `/bench` walking the crowd from 0 to 128 in tens,
+holding each size still, on a 96-plot city with the bots building on their own
+plots the whole time. Fourteen stages, read out of `Bench.json` by
+`dev/bench_report.py`:
+
+    bots     fps     min   tick/s    shapes   bodies
+       0    60.0    60.0     40.0       676      195
+      40    59.8    59.3     40.1       898      417
+      70    57.6    56.8     40.0     1,276      796
+      80    51.9    48.7     40.0     1,446      966
+     100    42.1    40.1     40.1     1,844    1,366
+     128    31.9    30.5     40.0     2,580    2,102
+
+**The tick rate never moved.** Not once, at any size, from 195 bodies to 2,102.
+40.0 to 40.2 Hz the whole way, against a healthy 40. That is the fourth time this
+project has landed on the same finding and by far the strongest version of it:
+**the simulation is not where the headroom goes.**
+
+Frame rate is flat to about 70 bots and then falls away -- 57.6, 51.9, 42.3 --
+which puts the knee somewhere around 70-80. That is the client, on one machine
+that is also hosting.
+
+**What this run does NOT separate.** Build mode grows the world as the crowd
+grows, so stage 12 has more bots AND more content than stage 4, and the fps
+curve is both together. To pull them apart, run the same bench in
+`/crowd mode churn`, where the world never grows: the difference between the two
+curves is what a CHARACTER costs against what its BUILD costs. Not yet done.
+
+And it is still 128 bots, not 128 players -- no client connections, so the
+per-client network budget stays at zero however far this goes. See
+[`docs/CROWD.md`](docs/CROWD.md).
+
+### The costume system was the load, and 30 fps at 95 bots was a mirage
+
+Worth keeping because the wrong number looked like a good one for two days.
+
+An earlier run reported **95 bots at 30 fps** and was written up here as evidence
+the crowd was cheap. It was not: the appearance code was throwing on every bot,
+so all 95 fell back to the characterset's own outfit and shared one renderable
+set. When the appearance was fixed, the same harness gave **8 fps at twenty
+bots** -- reported as *"fps is 8 when even on the event with a lot of builds and
+REAL players the fps was higer"*, which is the right comparison and the right
+conclusion.
+
+    0 bots   60.0 fps    233 bodies      10 bots  15.0 fps    256 bodies
+
+Twenty-three extra bodies do not cost forty-five frames.
+
+**A fixed renderable list on a characterset entry is loaded once and shared by
+every character that uses it. A list built per character with
+`overrideRenderableList` is not shareable at all**, and twenty of them is twenty
+sets of meshes and textures the renderer cannot batch.
+
+Vanilla says so twice, and both were checkable from the start:
+
+- `overrideRenderableList` has **exactly one caller in the whole game**, for one
+  quest NPC (`GenericBuilderQuestCharacter`).
+- vanilla's ten different-looking mechanics are **ten characterset ENTRIES**,
+  each with a fixed list (`npc_mechanics.json`).
+
+So the variety belongs in the characterset. `dev/gen_characterset.py` generates
+eleven entries from vanilla's own in-game mechanics plus the classic mechanic
+`default.json` dresses the PLAYER in; `Crowd.BOT_UUIDS` spawns one per look. That
+took 20 bots from 8 fps to 128 bots at 32.
+
+Two causes were removed by the same change and this data cannot separate them:
+the unbatchable per-character lists, and the fact that those lists were drawing
+on assets that ship in the files but are not obtainable in game -- *"this
+cosmetic isnt even in the game... it is in the files yes. but not accesible"* --
+which are plausibly not optimised for a crowd either. Both are gone; which
+mattered more is not established.
+
 ### The biggest city this mod can lay out does not dent the tick rate
 
 **MEASURED, 2026-08-25**, from `dev/session_stats.py` over
