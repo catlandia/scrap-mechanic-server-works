@@ -512,7 +512,42 @@ end
 --
 -- The style only chooses the CELL. Height, material and colour stay random
 -- underneath it, so no two bots of the same style build the same thing either.
-Crowd.STYLES = { "scatter", "tower", "wall", "platform" }
+-- BLOCKS ARE THE WRONG QUANTITY, AND THIS PROJECT ALREADY KNEW IT.
+--
+-- REPORTED, about the 95-bot run: "those are just blocks. that is just a lot of
+-- data. because of the variaty. and bots arent as loading as real players."
+--
+-- Correct, and CLAUDE.md says the same thing in its own words: "Budget joints
+-- and interactables, not blocks. A 500-block static sculpture is nearly free; a
+-- 50-block machine with 20 bearings is not. Any limit that counts blocks is
+-- measuring the wrong quantity."
+--
+-- So a crowd that only stacks blocks measures shape count, draw batches and
+-- texture variety -- real costs, but the cheap ones -- and produces ZERO of the
+-- thing the engine actually struggles with. Ninety-five bots holding 38 Hz says
+-- nothing about twenty people building machines.
+--
+-- The `machine` style fixes that. Each placement is a two-body creation joined
+-- by a real bearing: two shapes, one joint, one interactable. That is the
+-- expensive shape, and it is also the only thing that exercises Rules' rule 10
+-- (ten bearings, pistons and suspensions combined per plot), which has never
+-- been run in game.
+--
+-- The blueprint format for a jointed creation was taken from one of the owner's
+-- own saved creations rather than guessed -- Blueprints/65048240, the simplest
+-- one on this machine with two bodies and one joint. The shape of it:
+--
+--   * every child that takes part carries a back-reference, joints = { { id } }
+--   * the joint's childA / childB are indices into the FLATTENED child list
+--     across all bodies, not into one body
+--   * posA and posB are both the joint's own position, not the two parts'
+--
+-- 4a1b886b is jnt_bearing, confirmed in
+-- Data/Objects/Database/ShapeSets/interactive.shapeset.
+Crowd.BEARING = "4a1b886b-913e-4aad-b5b6-6e41b0db23a6"
+Crowd.BEARING_COLOUR = "df7f01"
+
+Crowd.STYLES = { "scatter", "tower", "wall", "platform", "machine" }
 
 -- Where this bot's next block goes, in blocks. Returns nil if the style has
 -- nowhere left to put one.
@@ -576,8 +611,11 @@ function Crowd.sv_placeBlock( self, bot, importBlueprint )
 	if bx == nil then return false end
 	local key = bx .. "," .. by
 
+	-- A machine is three block levels tall: base, bearing, arm.
+	local tall = ( bot.style == "machine" ) and 3 or 1
+
 	local stack = bot.height[key] or 0
-	if stack >= Crowd.MAX_STACK then return false end
+	if stack + tall > Crowd.MAX_STACK then return false end
 
 	local bz = Plots.DECK_Z + 1 + stack
 
@@ -592,13 +630,70 @@ function Crowd.sv_placeBlock( self, bot, importBlueprint )
 	local colour = Palette.Hex( hue )
 	if uuid == nil or colour == nil then return false end
 
-	local bp = Plots.Blueprint{ Plots.Child( uuid, colour, bx, by, bz, 1, 1, 1 ) }
+	local bp
+	if bot.style == "machine" then
+		bp = self:sv_machineBlueprint( bx, by, bz, uuid, colour )
+	else
+		bp = Plots.Blueprint{ Plots.Child( uuid, colour, bx, by, bz, 1, 1, 1 ) }
+	end
+
 	local bodies = importBlueprint( bp )
+
+	-- A jointed import is the one thing here with no vanilla precedent for the
+	-- exact blueprint we are writing, so it is allowed to fail and fall back to
+	-- a plain block rather than leaving a machine-style bot silently idle. Said
+	-- once, because ninety-five bots failing the same way is one fact.
+	if not ( bodies and bodies[1] ) and bot.style == "machine" then
+		if not self.machineWarned then
+			self.machineWarned = true
+			sm.log.warning( "[ServerWorks] crowd: jointed creation refused, "
+				.. "machine bots fall back to plain blocks" )
+		end
+		bp = Plots.Blueprint{ Plots.Child( uuid, colour, bx, by, bz, 1, 1, 1 ) }
+		bodies = importBlueprint( bp )
+		tall = 1
+	end
+
 	if not ( bodies and bodies[1] ) then return false end
 
-	bot.height[key] = stack + 1
-	bot.blocks[#bot.blocks + 1] = bodies[1]
+	bot.height[key] = stack + tall
+	-- Every body, not just the first: a machine is TWO, and destroyCreation on
+	-- one is enough to remove both -- but only if we still hold a handle to
+	-- something that exists.
+	for _, body in ipairs( bodies ) do
+		bot.blocks[#bot.blocks + 1] = body
+	end
 	return true
+end
+
+-- Two blocks and a real bearing between them: two shapes, one joint, one
+-- interactable. See the note by Crowd.BEARING for where this format came from
+-- and why blocks alone were measuring the wrong thing.
+function Crowd.sv_machineBlueprint( self, bx, by, bz, uuid, colour )
+	local base = Plots.Child( uuid, colour, bx, by, bz, 1, 1, 1 )
+	local arm = Plots.Child( uuid, colour, bx, by, bz + 2, 1, 1, 1 )
+
+	-- The back-reference every participating child carries in a real blueprint.
+	base.joints = { { id = 1 } }
+	arm.joints = { { id = 1 } }
+
+	return {
+		version = 4,
+		-- Two BODIES. A bearing joins bodies, not children of one body -- which
+		-- is the same fact as "one body's childs array IS the weld group".
+		bodies = { { childs = { base } }, { childs = { arm } } },
+		joints = { {
+			-- Indices into the flattened child list across all bodies: 0 is the
+			-- base, 1 is the arm. A is the moving half, as in the reference.
+			childA = 1, childB = 0,
+			color = Crowd.BEARING_COLOUR,
+			id = 1,
+			posA = { x = bx, y = by, z = bz + 1 },
+			posB = { x = bx, y = by, z = bz + 1 },
+			shapeId = Crowd.BEARING,
+			xaxisA = 1, xaxisB = 1, zaxisA = 3, zaxisB = 3,
+		} },
+	}
 end
 
 -- Everything this bot built. Called on despawn, on /crowd off, and by churn

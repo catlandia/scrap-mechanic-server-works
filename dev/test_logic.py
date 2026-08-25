@@ -5108,7 +5108,11 @@ def every_build_style_builds_something_different():
     Each style is checked against the property that defines it, not against a
     fixed layout -- the cells inside it stay random.
     """
-    lua, crowd, plots = _crowd(bots=4)
+    # One bot per style, whatever the list grows to -- a style added without a
+    # bot to exercise it would silently go unchecked.
+    lua, crowd, plots = _crowd(bots=0)
+    g = lua.globals()
+    lua, crowd, plots = _crowd(bots=len(g.Crowd.STYLES))
     g = lua.globals()
     by_style = {}
     for i in range(len(crowd.bots)):

@@ -75,14 +75,42 @@
 -- wrong or not at all, and nothing in the log says so.
 --
 --
--- WHERE THE LIST CAME FROM
+-- WHERE THE LIST CAME FROM, AND WHY IT IS NOT EVERYTHING ON DISK
 --
--- Enumerated off the install, not from memory:
--- Survival/Character/Char_Male/{Outfit,Head,Hair,Facialfeatures,Body}. Note the
--- directory really is called Char_Male and the FEMALE garments live inside it
--- too -- there is no Char_Female tree. The male/female split is in the file
--- NAME (char_male_*, char_female_*, char_shared_*), which is why this table is
--- keyed by sex rather than by folder.
+-- REPORTED, twice, with screenshots: "this cosmetic isnt even in the game... it
+-- is in the files yes. but not accesible", and "when I said every clothing skin
+-- colour and etc I meant every aviable to players and not dev".
+--
+-- The first version enumerated every .rend under
+-- Survival/Character/Char_Male/Outfit and dressed bots out of all of it. Those
+-- files exist, and dev/check_uuids.py proved every path resolved -- but existing
+-- on disk is not the same as being obtainable, and several are neither in the
+-- customisation menu nor sized for an ordinary mechanic. A bot turned up wearing
+-- a backpack big enough to hide its whole torso, which read as a broken model
+-- and was really an unreachable asset drawn correctly.
+--
+-- So the GARMENT pools are now restricted to what vanilla itself puts on
+-- characters that exist in the game: the ten NPC mechanics in
+-- Survival/Character/CharacterSets/npc_mechanics.json. Every jacket, glove,
+-- trouser, shoe, backpack and hat below is worn by somebody you can walk up to.
+-- That drops the jetpack, dekotora, farmhand and scrapper backpacks and the
+-- scrapper and farmer outfits.
+--
+-- The FACE pools -- head, hair, facial hair -- are taken in full, and that is a
+-- deliberate difference. CharacterCustomizationGui.cpp names nine categories in
+-- the executable's string table, and FACE, HAIR and HAIR_FACIAL are three of
+-- them: every numbered variant on disk is one of the options a player scrolls
+-- through in the customisation menu. Restricting those to the five vanilla
+-- happens to have used would throw away most of the variety for no reason.
+--
+-- Regenerate after a game update with the script in
+-- dev/gen_wardrobe.py -- it reads npc_mechanics.json and rebuilds the
+-- table below rather than anyone hand-typing ninety paths.
+--
+-- Note the directory really is called Char_Male and the FEMALE garments live
+-- inside it too -- there is no Char_Female tree. The male/female split is in the
+-- file NAME (char_male_*, char_female_*, char_shared_*), which is why this table
+-- is keyed by sex rather than by folder.
 --
 -- The recipe is vanilla's, copied off npc_mechanics.json's own entries. A
 -- mechanic there is:
@@ -173,6 +201,10 @@ local O = "$SURVIVAL_DATA/Character/Char_Male/Outfit/"
 local H = "$SURVIVAL_DATA/Character/Char_Male/Head/"
 local R = "$SURVIVAL_DATA/Character/Char_Male/Hair/"
 local F = "$SURVIVAL_DATA/Character/Char_Male/Facialfeatures/"
+-- The BARE version of a slot -- char_male_body_gloves is bare hands. Vanilla's
+-- own mechanics wear these (mechanicmale2 has bare hands), so they belong in the
+-- pools beside the garments rather than being a special case.
+local B = "$SURVIVAL_DATA/Character/Char_Male/Body/"
 
 -- Slots are listed in the order vanilla lists them. The order does not matter to
 -- the engine -- overrideRenderableList takes a set -- but keeping it makes a
@@ -185,28 +217,26 @@ W.OPTIONAL = { facial = true, backpack = true, hat = true }
 W.PIECES = {
 	head = {
 		male = {
+			H .. "Male/char_male_head010/char_male_head010.rend",
+			H .. "Male/char_male_head011/char_male_head011.rend",
 			H .. "Male/char_male_head02/char_male_head02.rend",
 			H .. "Male/char_male_head04/char_male_head04.rend",
 			H .. "Male/char_male_head05/char_male_head05.rend",
 			H .. "Male/char_male_head06/char_male_head06.rend",
 			H .. "Male/char_male_head09/char_male_head09.rend",
-			H .. "Male/char_male_head010/char_male_head010.rend",
-			H .. "Male/char_male_head011/char_male_head011.rend",
 		},
 		female = {
+			H .. "Female/Female_head010/char_female_head010.rend",
+			H .. "Female/Female_head011/char_female_head011.rend",
 			H .. "Female/Female_head02/char_female_head02.rend",
 			H .. "Female/Female_head03/char_female_head03.rend",
 			H .. "Female/Female_head04/char_female_head04.rend",
 			H .. "Female/Female_head07/char_female_head07.rend",
 			H .. "Female/Female_head08/char_female_head08.rend",
 			H .. "Female/Female_head09/char_female_head09.rend",
-			H .. "Female/Female_head010/char_female_head010.rend",
-			H .. "Female/Female_head011/char_female_head011.rend",
 		},
 	},
 
-	-- Vanilla puts female hair on male heads (mechanicmale1 wears
-	-- char_female_hair_07), so the two lists are pooled rather than split.
 	hair = {
 		male = {
 			R .. "Male/char_male_hair_02/char_male_hair_02.rend",
@@ -223,12 +253,13 @@ W.PIECES = {
 			R .. "Female/char_female_hair_04/char_female_hair_04.rend",
 			R .. "Female/char_female_hair_05/char_female_hair_05.rend",
 			R .. "Female/char_female_hair_07/char_female_hair_07.rend",
+			R .. "Male/char_male_hair_02/char_male_hair_02.rend",
+			R .. "Male/char_male_hair_03/char_male_hair_03.rend",
+			R .. "Male/char_male_hair_04/char_male_hair_04.rend",
+			R .. "Male/char_male_hair_05/char_male_hair_05.rend",
 		},
 	},
 
-	-- Facial hair ships in a male set only. A female bot never gets this slot,
-	-- which is why it is optional rather than empty-listed: an empty list would
-	-- read as "the file went missing".
 	facial = {
 		male = {
 			F .. "char_male_facialhair_03/char_male_facialhair_03.rend",
@@ -248,26 +279,21 @@ W.PIECES = {
 	jacket = {
 		male = {
 			O .. "Jacket/Outfit_default_jacket/char_male_outfit_default_jacket.rend",
-			O .. "Jacket/Outfit_farmer_jacket/char_male_outfit_farmer_jacket.rend",
-			O .. "Jacket/Outfit_scrapper_jacket/char_male_outfit_scrapper_jacket.rend",
 		},
 		female = {
 			O .. "Jacket/Outfit_default_jacket/char_female_outfit_default_jacket.rend",
 			O .. "Jacket/Outfit_defaultdamaged_jacket/char_female_outfit_defaultdamaged_jacket.rend",
-			O .. "Jacket/Outfit_farmer_jacket/char_female_outfit_farmer_jacket.rend",
 		},
 	},
 
 	gloves = {
 		male = {
+			B .. "Male/char_male_body_gloves.rend",
 			O .. "Gloves/Outfit_default_gloves/char_shared_outfit_default_gloves.rend",
-			O .. "Gloves/Outfit_farmer_gloves/char_shared_outfit_farmer_gloves.rend",
-			O .. "Gloves/Outfit_scrapper_gloves/char_male_outfit_scrapper_gloves.rend",
 		},
 		female = {
+			B .. "Female/char_female_body_gloves.rend",
 			O .. "Gloves/Outfit_default_gloves/char_shared_outfit_default_gloves.rend",
-			O .. "Gloves/Outfit_farmer_gloves/char_shared_outfit_farmer_gloves.rend",
-			O .. "Gloves/Outfit_farmhand_gloves/char_female_outfit_farmhand_gloves.rend",
 		},
 	},
 
@@ -275,13 +301,10 @@ W.PIECES = {
 		male = {
 			O .. "Pants/Outfit_default_pants/char_male_outfit_default_pants.rend",
 			O .. "Pants/Outfit_defaultdamaged_pants/char_male_outfit_defaultdamaged_pants.rend",
-			O .. "Pants/Outfit_farmer_pants/char_male_outfit_farmer_pants.rend",
-			O .. "Pants/Outfit_scrapper_pants/char_male_outfit_scrapper_pants.rend",
 		},
 		female = {
 			O .. "Pants/Outfit_default_pants/char_female_outfit_default_pants.rend",
 			O .. "Pants/Outfit_defaultdamaged_pants/char_female_outfit_defaultdamaged_pants.rend",
-			O .. "Pants/Outfit_farmer_pants/char_female_outfit_farmer_pants.rend",
 		},
 	},
 
@@ -289,49 +312,39 @@ W.PIECES = {
 		male = {
 			O .. "Shoes/Outfit_default_shoes/char_male_outfit_default_shoes.rend",
 			O .. "Shoes/Outfit_defaultdamaged_shoes/char_male_outfit_defaultdamaged_shoes.rend",
-			O .. "Shoes/Outfit_engineer_shoes/char_male_outfit_engineer_shoes.rend",
 			O .. "Shoes/Outfit_farmer_shoes/char_male_outfit_farmer_shoes.rend",
-			O .. "Shoes/Outfit_scrapper_shoes/char_shared_outfit_scrapper_shoes.rend",
 		},
 		female = {
 			O .. "Shoes/Outfit_default_shoes/char_female_outfit_default_shoes.rend",
 			O .. "Shoes/Outfit_defaultdamaged_shoes/char_female_outfit_defaultdamaged_shoes.rend",
-			O .. "Shoes/Outfit_engineer_shoes/char_female_outfit_engineer_shoes.rend",
 			O .. "Shoes/Outfit_farmer_shoes/char_female_outfit_farmer_shoes.rend",
-			O .. "Shoes/Outfit_scrapper_shoes/char_shared_outfit_scrapper_shoes.rend",
 		},
 	},
 
-	-- Every backpack is char_shared_, so both sexes get the same eight.
 	backpack = {
 		male = {
 			O .. "Backpack/Outfit_default_backpack/char_shared_outfit_default_backpack.rend",
 			O .. "Backpack/Outfit_defaultdamaged_backpack/char_shared_outfit_defaultdamaged_backpack.rend",
-			O .. "Backpack/Outfit_dekotora_backpack/char_shared_outfit_dekotora_backpack.rend",
-			O .. "Backpack/Outfit_farmer_backpack/char_shared_outfit_farmer_backpack.rend",
-			O .. "Backpack/Outfit_farmhand_backpack/char_shared_outfit_farmhand_backpack.rend",
-			O .. "Backpack/Outfit_jetpack_backpack/char_shared_outfit_jetpack_backpack.rend",
-			O .. "Backpack/Outfit_lumberjack_backpack/char_shared_outfit_lumberjack_backpack.rend",
-			O .. "Backpack/Outfit_scrapper_backpack/char_shared_outfit_scrapper_backpack.rend",
+		},
+		female = {
+			O .. "Backpack/Outfit_default_backpack/char_shared_outfit_default_backpack.rend",
+			O .. "Backpack/Outfit_defaultdamaged_backpack/char_shared_outfit_defaultdamaged_backpack.rend",
 		},
 	},
 
 	hat = {
 		male = {
 			O .. "Hat/Outfit_demolition_hat/char_shared_outfit_demolition_hat.rend",
-			O .. "Hat/Outfit_farmer_hat/char_male_outfit_farmer_hat.rend",
 			O .. "Hat/Outfit_golf_hat/char_male_outfit_golf_hat.rend",
 			O .. "Hat/Outfit_lumberjack_hat/char_male_outfit_lumberjack_hat.rend",
-			O .. "Hat/Outfit_scrapper_hat/char_male_outfit_scrapper_hat.rend",
 		},
 		female = {
 			O .. "Hat/Outfit_demolition_hat/char_shared_outfit_demolition_hat.rend",
-			O .. "Hat/Outfit_farmer_hat/char_female_outfit_farmer_hat.rend",
 		},
 	},
+
 }
 
-W.PIECES.backpack.female = W.PIECES.backpack.male
 
 -- How often an optional slot is filled, out of 100.
 local CHANCE = { facial = 55, backpack = 70, hat = 35 }

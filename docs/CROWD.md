@@ -197,6 +197,25 @@ human it tints the whole model and is not a skin channel.
 Beards were already randomised — ten of them, male, at 55%. They never appeared
 because the whole appearance system was failing; see the note below.
 
+**Only what a player can actually get.** The first version enumerated every
+`.rend` under the outfit tree and dressed bots out of all of it. Every path
+resolved — and a bot still turned up wearing a backpack big enough to hide its
+whole torso, because *existing on disk is not the same as being obtainable*.
+Reported as *"this cosmetic isnt even in the game... it is in the files yes. but
+not accesible"*.
+
+So the **garment** pools are now restricted to what vanilla itself puts on
+characters that exist in the game — the ten NPC mechanics in
+`npc_mechanics.json`. Every jacket, glove, trouser, shoe, backpack and hat is
+worn by somebody you can walk up to. That drops the jetpack, dekotora, farmhand
+and scrapper backpacks and the scrapper and farmer outfits.
+
+The **face** pools — head, hair, facial hair — are taken in full, deliberately.
+`CharacterCustomizationGui.cpp` names nine categories in the executable, and
+FACE, HAIR and HAIR_FACIAL are three of them: every numbered variant on disk is
+an option a player scrolls through. `dev/gen_wardrobe.py` rebuilds the table
+from the install rather than anyone hand-typing eighty paths.
+
 The real lever for variety is a second **art set**. `Data/Character/Char_Classic`
 is the original mechanic: seven renderables that replace the whole body at once
 (head, chest, hands, feet, legs, hair, backpack — no jacket, pants or shoes,
