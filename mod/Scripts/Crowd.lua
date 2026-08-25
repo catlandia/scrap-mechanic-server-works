@@ -73,7 +73,16 @@ function Crowd.sv_onCreate( self, plots )
 	-- exists for; "the bots build stuff on their plot and only on it on random"
 	-- is. Standing still is the special case, so it is the one you ask for.
 	self.mode = "build"
-	self.claim = false
+	-- CLAIM BY DEFAULT, for the same reason build is the default.
+	--
+	-- "make so that they count as players. they claim their plots via the
+	-- system. and stuff like that too. so its more realistic test."
+	--
+	-- A bot that owns nothing skips the whole half of this mod that matters:
+	-- sv_authorised, the team walk, the per-plot part budget, and the
+	-- empty-but-claimed lock. Those run per body per patrol slice, so a crowd
+	-- that does not own anything is measuring the cheap path.
+	self.claim = true
 	self.spawned = 0
 	self.failed = 0
 
@@ -112,6 +121,42 @@ end
 -- without this the status line would say "claim ON" over a city where nothing
 -- was claimed -- which is exactly the kind of quietly-wrong readout that makes a
 -- measurement worthless.
+-- HOW MANY teamed pairs to try to form, as a share of the crowd. Teams are the
+-- most expensive thing in the plot system -- sv_authorised walks the team group
+-- for every body on every patrol slice -- so a crowd with none of them measures
+-- the cheap path, and a crowd where everybody is on one giant team measures a
+-- case a real event never produces.
+Crowd.TEAM_SHARE = 35
+
+-- Pair up neighbouring bots through the REAL request path, twice: bot A asks,
+-- bot B accepts. Going straight to self.teams would set the same table and skip
+-- sv_adjacent, sv_whyNotNeighbours and sv_dirtyTeams -- which is exactly the
+-- code a realistic test is supposed to exercise.
+function Crowd.sv_formTeams( self )
+	local formed = 0
+	local want = math.floor( #self.bots * Crowd.TEAM_SHARE / 100 )
+	if want <= 0 then return 0 end
+
+	for i = 1, #self.bots do
+		if formed >= want then break end
+		local a = self.bots[i]
+		for j = i + 1, #self.bots do
+			local b = self.bots[j]
+			if a.plot and b.plot and self.plots:sv_adjacent( a.plot, b.plot ) then
+				local ok = pcall( function()
+					self.plots:sv_request( a.perma, b.perma )
+					self.plots:sv_request( b.perma, a.perma )
+				end )
+				if ok and self.plots:sv_teamed( a.plot, b.plot ) then
+					formed = formed + 1
+				end
+				break
+			end
+		end
+	end
+	return formed
+end
+
 function Crowd.sv_applyClaims( self )
 	local claimed = 0
 	for _, bot in ipairs( self.bots ) do
@@ -237,7 +282,17 @@ function Crowd.sv_set( self, n, opts )
 	end
 
 	self.spawned = #self.bots
+	if self.claim then self:sv_formTeams() end
+	self:sv_announce()
 	return self.spawned, self.failed
+end
+
+-- The roster and /players live in the Game script, which has the network; the
+-- crowd lives here, which has the plots. Pushed on change rather than polled.
+function Crowd.sv_announce( self )
+	pcall( function()
+		sm.event.sendToGame( "sv_e_swCrowdCount", { count = #self.bots } )
+	end )
 end
 
 function Crowd.sv_despawnOne( self, i )
@@ -265,6 +320,7 @@ function Crowd.sv_clear( self )
 	-- the flag may have been turned off between spawning and clearing.
 	self:sv_releaseClaims()
 	self.spawned = 0
+	self:sv_announce()
 	return had
 end
 
@@ -530,6 +586,20 @@ function Crowd.sv_dropBlocks( self, bot )
 	bot.height = {}
 end
 
+-- How many of the crowd's plots are on a team with another. Reported because
+-- two runs with the same bot count and a different team shape are not the same
+-- measurement -- sv_authorised costs more the bigger a team is.
+function Crowd.sv_teamCount( self )
+	local n = 0
+	for _, bot in ipairs( self.bots ) do
+		if bot.plot and self.plots.teams[bot.plot]
+			and next( self.plots.teams[bot.plot] ) ~= nil then
+			n = n + 1
+		end
+	end
+	return n
+end
+
 function Crowd.sv_blockCount( self )
 	local n = 0
 	for _, bot in ipairs( self.bots ) do n = n + #bot.blocks end
@@ -564,6 +634,7 @@ function Crowd.sv_status( self )
 		count = #self.bots,
 		mode = self.mode,
 		styles = styles,
+		teams = self:sv_teamCount(),
 		claim = self.claim,
 		blocks = self:sv_blockCount(),
 		failed = self.failed,

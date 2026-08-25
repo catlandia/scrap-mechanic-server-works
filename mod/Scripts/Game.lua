@@ -461,8 +461,24 @@ end
 --
 -- Cheap: two array lengths and one loop over the ban list, once a second, and
 -- only sent when it changes.
+-- The crowd lives in the World script (it needs plots and bodies), and this
+-- lives in Game (it needs the network). The world pushes its size across
+-- whenever it changes; nothing polls.
+function Game.sv_e_swCrowdCount( self, params )
+	local n = tonumber( params and params.count ) or 0
+	if n == self.sv.crowdCount then return end
+	self.sv.crowdCount = n
+	pcall( function() self:sv_pushRoster() end )
+end
+
 function Game.sv_rosterCounts( self )
-	local online = #sm.player.getAllPlayers()
+	-- BOTS COUNT. They claim plots and stand on them through the same system a
+	-- person does, so anything that scales with "how many people are here" has
+	-- to see them or the test measures a server nobody is on. The count is kept
+	-- separate as well as added, so the HUD can say which is which -- a host
+	-- must never read the online number and think that many people turned up.
+	local bots = self.sv.crowdCount or 0
+	local online = #sm.player.getAllPlayers() + bots
 	local records = Identity.players and Identity.players.records or {}
 	local banned = 0
 	for _, entry in ipairs( Identity.bans and Identity.bans.bans or {} ) do
@@ -473,12 +489,16 @@ function Game.sv_rosterCounts( self )
 			banned = banned + 1
 		end
 	end
-	return online, math.max( 0, #records - banned )
+	-- Bots are residents too while they are standing: a resident is somebody the
+	-- server knows and still welcomes, and for the length of a test that is what
+	-- they are. They are NOT written to Players.json -- see Identity -- so the
+	-- real resident count is exactly what it was the moment they are cleared.
+	return online, math.max( 0, #records - banned ) + bots, bots
 end
 
 function Game.sv_pushRoster( self, player )
-	local online, residents = self:sv_rosterCounts()
-	local state = { online = online, residents = residents }
+	local online, residents, bots = self:sv_rosterCounts()
+	local state = { online = online, residents = residents, bots = bots }
 	if player then
 		self.network:sendToClient( player, "client_setRoster", state )
 		return
@@ -487,7 +507,8 @@ function Game.sv_pushRoster( self, player )
 	-- an identical payload once a second would be a redraw once a second for
 	-- every client, forever, for a number that changes a handful of times a day.
 	if self.sv.roster and self.sv.roster.online == online
-		and self.sv.roster.residents == residents then
+		and self.sv.roster.residents == residents
+		and self.sv.roster.bots == bots then
 		return
 	end
 	self.sv.roster = state
@@ -2722,11 +2743,19 @@ function Game.sv_n_adminCommand( self, params, player )
 		-- lobby and there is no other way to find out.
 		local players = sm.player.getAllPlayers()
 		local hostPlayer = sm.player.getHostPlayer()
-		reply( string.format( "%d player(s) here:", #players ) )
+		local bots = self.sv.crowdCount or 0
+		reply( string.format( "%d player(s) here%s:", #players,
+			bots > 0 and string.format( " and %d crowd bot(s)", bots ) or "" ) )
 		for _, p in ipairs( players ) do
 			reply( string.format( "  id %-3d %-10s %s%s", p.id,
 				Identity.Sv_PermaOf( p ) or "?", p.name,
 				p == hostPlayer and "   <- HOST" or "" ) )
+		end
+		if bots > 0 then
+			-- Named, not just counted. A bot holds a plot and shows on the
+			-- roster, so "who owns plot 14" has to have an answer, and the
+			-- answer must be obviously not a person.
+			reply( string.format( "  + %d bot(s) under crowdbot: -- /crowd off removes them", bots ) )
 		end
 		if hostPlayer == nil then
 			reply( "  no host player -- host-only commands will refuse everyone" )

@@ -4784,6 +4784,95 @@ def a_bot_only_ever_builds_on_its_own_plot():
             assert z >= P.DECK_Z + 1, f"a block was placed at z={z}, inside the deck"
 
 
+def bots_own_their_plots_through_the_real_system():
+    """'make so that they count as players. they claim their plots via the
+    system.'
+
+    The point is not cosmetic. A bot that owns nothing skips the half of this mod
+    that costs anything -- sv_authorised, the team walk, the per-plot part budget,
+    the empty-but-claimed lock -- all of which run per body per patrol slice. A
+    crowd that owns nothing measures the cheap path and reports a healthy server.
+    """
+    lua, crowd, plots = _crowd(bots=8)
+
+    assert crowd.claim is True, "claiming is off by default -- bots own nothing"
+
+    claimed = crowd.sv_applyClaims(crowd)
+    assert claimed == len(crowd.bots), (
+        f"only {claimed} of {len(crowd.bots)} bots claimed a plot")
+
+    # Owned through Plots, by the bot's own perma, one plot each -- the same
+    # invariant a person is held to.
+    owners = dict(plots.owners)
+    for i in range(len(crowd.bots)):
+        bot = crowd.bots[i + 1]
+        assert owners.get(bot["plot"]) == bot["perma"], (
+            f"plot {bot['plot']} is owned by {owners.get(bot['plot'])!r}, "
+            f"not by {bot['perma']!r}")
+        assert plots.sv_plotOf(plots, bot["perma"]) == bot["plot"]
+
+    # And a bot must never take a plot off a person.
+    plots.owners[crowd.bots[1]["plot"]] = None
+    plots.sv_claim(plots, crowd.bots[1]["plot"], "a-real-person")
+    crowd.sv_applyClaims(crowd)
+    assert dict(plots.owners).get(crowd.bots[1]["plot"]) == "a-real-person", (
+        "a bot took a plot that a real player owned")
+
+
+def a_cleared_crowd_leaves_no_claims_behind():
+    """Claims persist to Plots.json. A crashed test must not leave plots owned
+    by a perma nobody can ever log in as -- the plot would be unclaimable and
+    locked to everyone, forever, with no way to find out why."""
+    lua, crowd, plots = _crowd(bots=6)
+    crowd.sv_applyClaims(crowd)
+    assert len(dict(plots.owners)) == 6
+
+    # A real owner in the middle of it, who must survive the sweep.
+    free = [i for i in crowd.sv_plotIndices(crowd).values()
+            if dict(plots.owners).get(i) is None]
+    plots.sv_claim(plots, free[0], "a-real-person")
+
+    crowd.sv_releaseClaims(crowd)
+    left = dict(plots.owners)
+    assert left == {free[0]: "a-real-person"}, (
+        f"sweep left {left} -- it must remove every crowdbot: and nothing else")
+
+
+def teamed_bots_are_teamed_through_the_request_path():
+    """Teams are the most expensive thing in the plot system: sv_authorised
+    walks the team group for every body on every patrol slice. A crowd with no
+    teams measures the cheap path.
+
+    Formed by two real sv_request calls -- ask, then accept -- not by writing
+    self.teams directly, which would skip sv_adjacent and sv_dirtyTeams and
+    could produce a team across a road that the real game cannot make.
+    """
+    lua, crowd, plots = _crowd(bots=12)
+    crowd.sv_applyClaims(crowd)
+
+    formed = crowd.sv_formTeams(crowd)
+    assert formed > 0, "no teams were formed at all"
+    assert crowd.sv_teamCount(crowd) > 0, "teams formed but the count says none"
+
+    # Every team must be one the real rules allow: adjacent, and sharing a
+    # filler seam. A team across a road is not something a player could make.
+    teams = plots.teams
+    for a in list(teams.keys()):
+        for b in list(dict(teams[a]).keys()):
+            assert plots.sv_adjacent(plots, a, b), (
+                f"plots {a} and {b} are teamed but are not neighbours -- "
+                f"the team was written directly instead of requested")
+            assert plots.sv_teamed(plots, a, b), "team is not symmetric"
+
+    # And releasing a bot's plot must take its team links with it, or the
+    # neighbour keeps a link to a plot nobody owns.
+    gone = crowd.bots[1]["plot"]
+    crowd.sv_releaseClaims(crowd)
+    for a in list(plots.teams.keys()):
+        assert gone not in dict(plots.teams[a]), (
+            f"plot {a} still links to {gone} after its owner was released")
+
+
 def every_build_style_builds_something_different():
     """'so like a lot of random bots. make random stuff.'
 
@@ -5231,6 +5320,12 @@ def main():
 
     check("crowd: a bot only ever builds on its own plot",
           a_bot_only_ever_builds_on_its_own_plot)
+    check("crowd: bots own their plots through the real system",
+          bots_own_their_plots_through_the_real_system)
+    check("crowd: a cleared crowd leaves no claims behind",
+          a_cleared_crowd_leaves_no_claims_behind)
+    check("crowd: teams are formed through the request path",
+          teamed_bots_are_teamed_through_the_request_path)
     check("crowd: every build style builds something different",
           every_build_style_builds_something_different)
     check("crowd: bots build up, inside the height cap",

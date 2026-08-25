@@ -1317,6 +1317,14 @@ blocks. They are real characters at real positions, handed to
 `Plots.sv_updateOccupancy` as real occupants, so the per-player Lua does its true
 work against true geometry rather than against a fabricated player list.
 
+By default a bot also **claims a plot** through `Plots.sv_claim` and may **team
+up with a neighbour** through two real `sv_request` calls, and it **counts on the
+roster and in `/players`**. That is not cosmetic: `sv_authorised`, the team walk
+and the per-plot part budget all run per body per patrol slice, so a crowd that
+owns nothing measures the cheap path and reports a healthy server. Bot permas are
+prefixed `crowdbot:`, swept at world create and on `/crowd off`, never written to
+`Players.json`, and a bot never takes a plot off a person.
+
 What that covers: physics per capsule, character replication, body churn, and
 every per-player code path in this mod. What it **cannot** cover, ever: a real
 client connection with its own network budget, and a second machine's rendering.

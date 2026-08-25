@@ -1039,6 +1039,7 @@ function World.sv_crowdCommand( self, args, reply )
 		-- runs with the same block count but a different style mix are not the
 		-- same measurement, and this is the only place that is visible.
 		if s.count > 0 then
+			reply( string.format( "  %d of them are on a team with a neighbour", s.teams ) )
 			local parts = {}
 			for _, style in ipairs( Crowd.STYLES ) do
 				if s.styles[style] then
@@ -1062,6 +1063,7 @@ function World.sv_crowdCommand( self, args, reply )
 		reply( "  /crowd mode churn   place one and take it away -- world never grows" )
 		reply( "  /crowd mode off     just stand there" )
 		reply( "  /crowd claim on|off have them claim the plot they stand on" )
+		reply( "  /crowd team         pair neighbouring bots up, as a lobby does" )
 		return
 	end
 
@@ -1086,6 +1088,13 @@ function World.sv_crowdCommand( self, args, reply )
 				g_swCrowd:sv_dropBlocks( bot )
 			end
 		end
+		status()
+		return
+	end
+
+	if a == "team" then
+		local n = g_swCrowd:sv_formTeams()
+		reply( string.format( "%d team%s formed", n, n == 1 and "" or "s" ) )
 		status()
 		return
 	end

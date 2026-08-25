@@ -20,9 +20,10 @@ where; where it is unmeasured it says that instead.
 |---|---|---|
 | a human capsule stepped by the physics every tick | **yes** | `Crowd.lua` — a real character, real mass, real collision hull |
 | a character replicated to every client every tick | **yes** | same — a unit is a networked object |
-| bodies appearing and disappearing while people build | **yes** | `/crowd churn on` |
+| bodies appearing while people build | **yes** | bots build on their own plot, by default |
 | our own per-player Lua: occupancy, resolver, holds, budgets | **yes** | bots are handed to `Plots.sv_updateOccupancy` as real occupants |
-| plot ownership, teams, authorisation | **yes** | `/crowd claim on` |
+| plot ownership, teams, authorisation | **yes** | bots claim and team through the real calls, by default |
+| the online / resident counts | **yes** | counted, and labelled as bots so nobody is misled |
 | **a real client connection with its own network budget** | **NO** | needs one guest |
 | **a second machine's render load** | **NO** | not fakeable at all |
 
@@ -108,6 +109,42 @@ Two deliberate limits on that:
   anyone else's.
 - **Bot claims are prefixed `crowdbot:`** and swept at world create, so a session
   that crashes mid-test cannot leave plots owned by a perma nobody can log in as.
+
+### Bots count as players, and that is the point
+
+> "make so that they count as players. they claim their plots via the system.
+> and stuff like that too. so its more realistic test."
+
+A bot that owns nothing skips the half of this mod that costs anything —
+`sv_authorised`, the team walk, the per-plot part budget, the empty-but-claimed
+lock — and all of those run *per body per patrol slice*. A crowd that owns
+nothing measures the cheap path and reports a healthy server.
+
+So by default a bot:
+
+- **claims a plot** through `Plots.sv_claim`, the same call a person's
+  `/plot claim` makes, one plot each;
+- **may team up with a neighbour** through two real `sv_request` calls — ask,
+  then accept — so the team has to pass `sv_adjacent` and share a filler seam
+  exactly as a player's would. About a third of the crowd is teamed
+  (`/crowd team` forms more);
+- **counts on the roster and in `/players`**, so anything scaling with "how many
+  people are here" sees them.
+
+Three guard rails, because this writes to real, persisted state:
+
+- **A bot never takes a plot off a person.** The claim is allowed to fail and is
+  simply skipped.
+- **Bot permas are prefixed `crowdbot:`** and swept at world create and on
+  `/crowd off`. A crashed test cannot leave a plot owned by a perma nobody can
+  ever log in as — which would be unclaimable, locked to everyone, with no way to
+  find out why.
+- **Bots are never written to `Players.json`.** The real resident count is
+  exactly what it was the moment they are cleared.
+
+And the roster HUD **says** how many of the online count are bots. A host
+glancing at that corner must never read "21" and think twenty-one people turned
+up.
 
 **A bot only ever builds inside its own pad** — the plot rectangle inset by the
 metal ring. A bot building on a road, on the ring, or on a neighbour would be the
@@ -242,7 +279,8 @@ the global sequence is untouched.
 /crowd mode build         stack blocks on their own plot and LEAVE them
 /crowd mode churn         place one, take it away — the world never grows
 /crowd mode off           just stand there
-/crowd claim on|off       have them claim the plot they stand on
+/crowd claim on|off       have them claim the plot they stand on (on by default)
+/crowd team               pair neighbouring bots up, as a lobby does
 ```
 
 ### The two work modes answer two different questions

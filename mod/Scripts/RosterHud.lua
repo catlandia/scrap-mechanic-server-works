@@ -72,13 +72,21 @@ local function text( name, caption, x, y, w, h, font, colour, align )
 		TextAlign = align or "Left", x = x, y = y, width = w, height = h }
 end
 
--- state is { online = n, residents = n }, straight from Game.client_setRoster.
+-- state is { online = n, residents = n, bots = n }, straight from
+-- Game.client_setRoster.
+--
+-- BOTS ARE COUNTED AND SAID SO. /crowd bots claim plots and stand on them
+-- through the same system a person does, which is the point -- the per-player
+-- code paths have to do real work or the test measures nothing. But a host
+-- glancing at this corner must never read "21" and think twenty-one people
+-- turned up, so the bot share is shown separately and only while there is one.
 -- screenW/screenH are arguments rather than read here so dev/test_logic.py can
 -- check the layout at every resolution the game ships skins for.
 function RosterHud.Build( state, screenW, screenH )
 	state = state or {}
 	local online = tonumber( state.online ) or 0
 	local residents = tonumber( state.residents ) or 0
+	local bots = tonumber( state.bots ) or 0
 
 	local x, y = RosterHud.TopLeft( screenW or 1920, screenH or 1080 )
 	local root = widget{ Name = "RosterHud", Type = "Widget", Skin = "PanelEmpty",
@@ -91,8 +99,13 @@ function RosterHud.Build( state, screenW, screenH )
 	-- rather than as two unrelated boxes.
 	kids[#kids + 1] = fill( "RosterBar", 0, 0, 4, RosterHud.H, ACCENT, 1 )
 
-	kids[#kids + 1] = text( "OnlineLabel", "ONLINE", 16, 7, 90, 16,
-		"SM_LabelTiny", DIM, "Left" )
+	-- SM_LabelTiny is tier 1 -- full character set, no hollow boxes, no font
+	-- fallback traceback per redraw. See the font note in CLAUDE.md before
+	-- putting any other name here.
+	kids[#kids + 1] = text( "OnlineLabel",
+		bots > 0 and ( "ONLINE  " .. bots .. " BOT" .. ( bots == 1 and "" or "S" ) )
+			or "ONLINE",
+		16, 7, 120, 16, "SM_LabelTiny", DIM, "Left" )
 	kids[#kids + 1] = text( "OnlineValue", tostring( online ),
 		RosterHud.W - 76, 2, 60, 24, "SM_HeaderSmall", LABEL, "Right" )
 
