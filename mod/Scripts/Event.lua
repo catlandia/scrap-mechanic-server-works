@@ -377,3 +377,14 @@ function Event.sv_clientState( self, now )
 		panic = self:sv_panicking( now ),
 	}
 end
+
+
+-- A clock from a previous world means nothing here, and `ended` is the phase
+-- that locks everything -- so inheriting it is what made a new world unusable.
+function Event.Sv_ResetFile()
+	local fresh = Event()
+	fresh:sv_onCreate( nil )
+	fresh:sv_stop()
+	Event.Sv_SaveFile( fresh )
+	return fresh
+end

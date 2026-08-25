@@ -94,7 +94,43 @@ def main():
         copied += 1
         print(f"  copy  {rel}")
 
-    print(f"\n{copied} copied, {same} unchanged, {skipped} preserved")
+    # PRUNE. A script deleted from the repo used to stay in the Mods folder
+    # forever, and the engine compiles every .lua it finds there -- so a file
+    # that no longer exists in this project was still being loaded by the game.
+    # That is the same class of bug as the stale Cache: "the fixes did not
+    # apply", with nothing in the log to say why.
+    #
+    # It bit exactly once, and visibly: Scripts/Wardrobe.lua was folded into
+    # BotCharacter.lua because a character script cannot dofile mod content, and
+    # the orphan sat in the installed mod afterwards.
+    #
+    # Only files under directories the repo also has, and never anything the
+    # GAME writes -- Cache/, Snapshots/ and the live json alongside them are the
+    # running world's, not build output.
+    keep_dirs = {"Cache", "Snapshots", "Logs"}
+    game_written = {".json"}
+    pruned = 0
+    for f in sorted(dest.rglob("*")):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(dest)
+        if rel.parts[0] in keep_dirs or rel.name in PRESERVE:
+            continue
+        if (SRC / rel).exists():
+            continue
+        # A json at the root of the mod is state the game wrote (Settings.json,
+        # Plots.json, Players.json, Event.json, Bench.json). Never ours to
+        # delete, even though the repo has no copy.
+        if len(rel.parts) == 1 and f.suffix.lower() in game_written:
+            continue
+        f.unlink()
+        pruned += 1
+        print(f"  prune {rel}  (deleted from the repo)")
+
+    print(f"\n{copied} copied, {same} unchanged, {skipped} preserved, {pruned} pruned")
+    if pruned:
+        print("a pruned script may still have a compiled copy in Cache/ --")
+        print("re-run with --clean-cache if the game still behaves as if it were there")
     print("Restart Scrap Mechanic, then: Play > Custom Game > " + mod_name())
 
 

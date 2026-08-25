@@ -10,6 +10,78 @@ was most of them.
 
 ---
 
+## V54 -- the mod list turns out to be the trust boundary, not the code
+
+The city style picker also landed in this version and is described in
+[`STATUS.md`](STATUS.md) under "New in V54". This entry covers the security work
+only.
+
+### A mod loaded beside us can do more than our own code can stop
+
+Prompted by a real one. **T mod** (Workshop `3438987478`, Blocks and Parts) ships
+a deliberate host-takeover backdoor, and the author documents it in a comment at
+`BASE.lua:487`: a client holding a companion mod's `codes.json` sends the
+factorisation of a hardcoded ~2048-bit semiprime, the server multiplies and
+checks it, and a match grants operator -- ~90 commands including `ban`, `kick`,
+`clear`, `op` (which can **deop the host**) and a bundled Lua-in-Lua interpreter.
+
+The crypto is sound, so it is a key one person holds rather than a hole anyone
+walks through. That turned out not to be the point.
+
+### It cost 4.6 Hz without anyone attacking anything
+
+MEASURED, `Logs/game-20260825-143811.log` -- T mod enabled in a **Server Works**
+world, two players, 27 minutes:
+
+    log size   95.6 MB    (a clean Server Works session the same day: 126 KB)
+    tick/s     min 4.6    (healthy = 40)
+    frame/s    min 4.4
+
+760x the log volume. 6,341 of the 6,342 `__mul` errors carry T mod's content id.
+A missing font in its console spammed MyGUI per render; `sv_force_field_tick`
+produced a non-finite number and dumped a player-state table every tick. Against
+this project's own ledger -- 19 players, 0 of 86 windows below target -- **one
+player plus one co-loaded mod beat nineteen players building.**
+
+### So `allow_add_mods` is a security setting, and it is now false
+
+Two things were measured first, because they bound the whole problem:
+
+- **A guest cannot bring their own mods.** Joined a world while subscribed to 101
+  Blocks-and-Parts mods; the world loaded one, the host's.
+- **An installed mod that is not ticked executes nothing.** 12,766 lines with it
+  enabled, 0 without, same machine, same day.
+
+So the only door is the host ticking the box at world creation -- and with
+`allow_add_mods: false` that box is not there to tick. Cost: no extra building
+parts. Reverting is one word.
+
+### Two host gates that were missing, and a check that found one of them
+
+Audited all 14 `sv_n_*` handlers. The design was already right nearly everywhere
+-- authority comes from the engine-supplied sender and, where it matters, the
+player's actual world position. `/plot claim` cannot be told to claim plot 47;
+you have to stand there.
+
+Two exceptions, both the same class -- a modified client opening a host UI on its
+own screen. Neither could **change** anything, because every action handler
+behind them tests the sender; what leaked was reading.
+
+- `Game.sv_n_openPanel` -- city, event and settings panels
+- `NotLift.sv_n_swOpenImport` -- the blueprint browser
+
+Then two checks in `dev/test_logic.py` so it cannot regress: every `sv_n_*` must
+test `getHostPlayer()` or be named in `GUEST_REACHABLE` with a reason, and none
+may read an identity out of its payload -- named after T mod's `opCheck`, which
+ops `data[3]`, a player id the *client* supplies.
+
+**The first check caught `sv_n_swOpenImport` on its first run**, after a hand
+audit had already passed over it and wrongly called it gated. 108 -> 110 checks.
+
+The whole argument is in [`MODS-AND-TRUST.md`](MODS-AND-TRUST.md).
+
+---
+
 ## V53 -- a rule that forbade its own remedy, a faster audit, and the city gets a look
 
 ### "I cant break the block if I hit the limit"

@@ -4,15 +4,10 @@
 		"upperCaseTitle": "NUGDUPS",
 		"description": "A Spud Gun, backwards. This item exists for one reason: if you can see it in the creative menu, mod content updates are reaching the game. If it is missing, they are not."
 	},
-	"5cc12f03-275e-4c8e-b013-79fc0f913e1b": {
-		"title": "Lift",
-		"upperCaseTitle": "LIFT",
-		"description": "The creative lift. Build on it to make creations that are not fixed to the ground, raise and lower them, and flip one back upright. This is the lift that opens the creations menu, which the survival lift does not."
-	},
-	"4c893da9-484d-495b-a013-87beed81c148": {
-		"title": "Import Lift",
-		"upperCaseTitle": "IMPORT LIFT",
-		"description": "An ordinary lift running the creative lift's script, so E opens the creations menu. Added under its own uuid rather than replacing anything, because a Custom Game toolset can add a tool but never override one."
+	"7b3d5c91-4a2e-4f88-9c17-2e6d0b5a13ff": {
+		"title": "NOTlift",
+		"upperCaseTitle": "NOTLIFT",
+		"description": "Click to open your saved creations and place one on the plot you are standing on. This is how you import a build on this server -- pressing E on a lift does not open anything, because that menu belongs to creative content this game does not load. NOTlift is not a lift and never touches one. HOST ONLY: it spawns a whole creation out of nothing, which is more than any other tool here can do. It still refuses while building is closed, and still obeys the part limit."
 	},
 	"bbbb0cc8-5dd0-46e1-9299-8080c3cc80db": {
 		"title": "Cleaner",

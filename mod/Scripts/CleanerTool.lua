@@ -69,6 +69,36 @@ end
 -- one is playing. Our tool never starts a swing so that line should never run,
 -- but a tool that throws once per frame is exactly the 1.79 GB log in CLAUDE.md,
 -- so it is guarded and gives up after the first failure rather than per frame.
+-- RED IN THE HAND, TOO.
+--
+-- "add a red X on top of the remover model. like its icon. so I can see its the
+-- cleaner and not just hammer."
+--
+-- The icon in the menu is the crossed-out sledgehammer (see Gui/IconMap.xml).
+-- The HELD model cannot be crossed out the same way -- that would need a new
+-- mesh, which is 3D content rather than a script change -- but it can be
+-- coloured, and a red hammer is unmistakable next to the ordinary grey one.
+--
+-- setTpColor / setFpColor are the same pair Bucket.lua:268 and CarryTool.lua:564
+-- use, and the isLocal() guard around the first-person half is theirs too: the
+-- third-person model is what everyone else sees, the first-person one only
+-- exists on the holder's own client.
+CleanerTool.HAND_COLOUR = sm.color.new( 0.84, 0.11, 0.11 )
+
+function CleanerTool.client_onEquip( self, animate )
+	local ok = pcall( Sledgehammer.client_onEquip, self, animate )
+	if not ok then
+		sm.log.warning( "[ServerWorks] cleaner equip animation failed" )
+	end
+	-- After the parent, which is what sets the renderables the colour applies to.
+	pcall( function()
+		self.tool:setTpColor( CleanerTool.HAND_COLOUR )
+		if self.tool:isLocal() then
+			self.tool:setFpColor( CleanerTool.HAND_COLOUR )
+		end
+	end )
+end
+
 function CleanerTool.client_onUpdate( self, dt )
 	if self.swAnimationsFaulted then return end
 	local ok, err = pcall( Sledgehammer.client_onUpdate, self, dt )
@@ -117,6 +147,30 @@ function CleanerTool.client_onEquippedUpdate( self, primaryState, secondaryState
 		local harvestable = result:getHarvestable()
 		if harvestable and sm.exists( harvestable ) then
 			self.network:sendToServer( "sv_n_swDelete", { harvestable = harvestable } )
+		end
+
+	elseif result.type == "lift" then
+		-- A LIFT IS A THING YOU CAN POINT AT, and this tool deletes what it is
+		-- pointed at, so it deletes lifts.
+		--
+		-- REPORTED: "the lift cant be removed and there are two", then "make sure
+		-- it works just with the items and without commands". A chat command
+		-- cleared them, but a host holding a delete tool should not have to type.
+		--
+		-- Vanilla proves the shape: a raycast reports type == "lift" and
+		-- result:getLiftData() hands back the lift plus the shape on top of it
+		-- (Vacuum.lua:210). A Lift userdata has destroy() -- see
+		-- BuilderGuidePlatform.lua:64 -- which is the ONLY way to be rid of one
+		-- made by sm.lift.createNonPlayerLift, because that kind belongs to no
+		-- player and no lift tool will pick it up.
+		--
+		-- Destroying a lift RELEASES what is standing on it: the creation
+		-- converts to dynamic and settles. That is the point, not a side effect.
+		local okData, lift = pcall( function() return result:getLiftData() end )
+		if okData and lift and sm.exists( lift ) then
+			self.network:sendToServer( "sv_n_swDelete", { lift = lift } )
+		else
+			say( "That lift cannot be read." )
 		end
 
 	else
@@ -208,7 +262,18 @@ function CleanerTool.sv_n_swDelete( self, params, player )
 		return
 	end
 
-	if params.harvestable then
+	if params.lift then
+		-- Not gated by the protection profiles, and it cannot be: a lift is not
+		-- a body, so setErasable never applied to it. The host gate above is the
+		-- whole of the permission check, which is the same deal the rest of this
+		-- tool runs on.
+		if sm.exists( params.lift ) then
+			local ok = pcall( function() params.lift:destroy() end )
+			reply( player, ok and "Lift removed -- whatever was on it is loose now."
+				or "That lift refused to go." )
+		end
+
+	elseif params.harvestable then
 		if sm.exists( params.harvestable ) then
 			local ok = pcall( function() params.harvestable:destroy() end )
 			reply( player, ok and "Deleted." or "That one refused to go." )
@@ -229,7 +294,25 @@ function CleanerTool.sv_n_swDelete( self, params, player )
 
 	local removed, spared = 0, 0
 	if params.whole and body and sm.exists( body ) then
-		local got, shapes = pcall( function() return body:getShapes() end )
+		-- THE WHOLE CREATION MEANS EVERY BODY IN IT, NOT ONE WELD GROUP.
+		--
+		-- REPORTED: "the cleaner even with F wont delete the whole thing", about
+		-- a creation of 72 blocks and 20 BEARINGS.
+		--
+		-- That is the tell. A bearing joins two SEPARATE bodies -- only a shared
+		-- `childs` array is a weld (see the reference creation in CLAUDE.md) --
+		-- so a build with 20 bearings is around 21 bodies. body:getShapes()
+		-- returns the shapes of ONE of them, so F deleted exactly the chunk
+		-- under the crosshair and left the other twenty standing. It looked like
+		-- the delete had failed; it had done a twenty-first of the job.
+		--
+		-- getCreationShapes() is every shape in the creation, across joints.
+		-- Falls back to the single body if it is unavailable, because deleting
+		-- one body is still better than deleting nothing.
+		local got, shapes = pcall( function() return body:getCreationShapes() end )
+		if not got or shapes == nil then
+			got, shapes = pcall( function() return body:getShapes() end )
+		end
 		if got and shapes then
 			for _, s in ipairs( shapes ) do
 				if sm.exists( s ) then

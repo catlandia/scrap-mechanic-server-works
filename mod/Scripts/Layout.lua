@@ -339,16 +339,61 @@ function Layout.deckPieces( grid )
 		return P ~= nil and x < P.x + P.w and x + w > P.x
 	end
 
+	-- WHERE A SEAM CROSSES A ROAD, THE ROAD WINS.
+	--
+	-- REPORTED: "the road is crosed by frame that it shoudlnt be", then "still
+	-- line on one of the axis".
+	--
+	-- Both are this. Every non-plot COLUMN was emitted as one full-height strip,
+	-- while horizontal seams were only emitted across plot COLUMNS -- so a
+	-- one-block seam between two plots ran the entire height of the city,
+	-- straight through the middle of every horizontal road, and did it wearing
+	-- its own `filler` kind. A thin line drawn across each road, on one axis
+	-- only, because the reverse case never happens.
+	--
+	-- It was never a drawing artefact: deckPieces is what the BUILDER imports,
+	-- so the city really is built with a seam of the wrong material through each
+	-- road. The partition was intact the whole time, which is why
+	-- dev/test_layout.py never complained -- the ground was covered exactly once,
+	-- just by the wrong piece.
+	--
+	-- So a non-road strip is broken at every road row and the crossing is handed
+	-- to the road. Area is unchanged; only which piece owns it changes.
+	local roadRows = {}
+	for _, rs in ipairs( rows ) do
+		if rs.kind == "road" then roadRows[#roadRows + 1] = rs end
+	end
+
+	local function vrun( x, w, kind, y0, y1 )
+		if y1 <= y0 then return end
+		if kind == "road" then
+			piece( x, y0, w, y1 - y0, kind )     -- already a road; nothing to yield
+			return
+		end
+		local at = y0
+		for _, rs in ipairs( roadRows ) do
+			local r0, r1 = rs.start, rs.start + rs.size
+			if r1 > y0 and r0 < y1 then
+				local c0 = math.max( r0, y0 )
+				local c1 = math.min( r1, y1 )
+				piece( x, at, w, c0 - at, kind )
+				piece( x, c0, w, c1 - c0, "road" )
+				at = c1
+			end
+		end
+		piece( x, at, w, y1 - at, kind )
+	end
+
 	-- A vertical strip, split around the plaza when it runs through it. That
 	-- split is the whole reason the plaza can be a block of cells rather than a
 	-- band: the seams that would have crossed it stop at its edge instead.
 	local function vstrip( x, w, kind )
 		if not crossesX( x, w ) then
-			piece( x, grid.y0, w, grid.height, kind )
+			vrun( x, w, kind, grid.y0, grid.y1 )
 			return
 		end
-		piece( x, grid.y0, w, P.y - grid.y0, kind )
-		piece( x, P.y + P.h, w, grid.y1 - ( P.y + P.h ), kind )
+		vrun( x, w, kind, grid.y0, P.y )
+		vrun( x, w, kind, P.y + P.h, grid.y1 )
 	end
 
 	if P then

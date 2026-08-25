@@ -23,56 +23,45 @@
 {
 	"toolList": [
 
-		// THE CREATIVE LIFT, and the answer to "I cant press E on the lift".
+		// NO LIFTS ARE ADDED HERE ANY MORE.
 		//
-		// There are TWO lifts, and they are different ITEMS -- not one uuid that
-		// two pieces of content fight over:
+		// Two were, and both are gone:
 		//
-		//   5cc12f03  the creative lift, class Lift. Declared by
-		//             Data/Tools/ToolSets/tools.json and named
-		//             tool_lift_creative at
-		//             ChallengeData/Scripts/game/challenge_tools.lua:2
-		//   8f190ce2  the survival lift, class SurvivalLift. Declared by
-		//             Survival/Tools/ToolSets/tools.json:44
+		//   5cc12f03  the creative lift. Added because baseGameContent "Survival"
+		//             never loads the creative tool index, so it was not in the
+		//             game. It worked -- the log printed Created Tool ... (Lift) --
+		//             but survival content already provides 8f190ce2, and the two
+		//             are the same tool for every purpose that survives here:
+		//             SurvivalLift is class( Lift ) with one live method and the
+		//             rest of the file commented out, so it inherits all the
+		//             carrying and raising. Adding ours put a second, identical
+		//             lift in the menu.
+		//   4c893da9  the Import Lift, added on the theory that the E-on-lift
+		//             creations menu was blocked by something about the tool. It
+		//             was not: that menu is engine-side and keyed on loaded
+		//             content, and no lift in this game opens it. Importing is
+		//             NOTlift's job now and this had nothing left to do.
 		//
-		// baseGameContent "Survival" loads Survival/Tools/toolsets.json, which
-		// lists the survival index and never the creative one -- so this game
-		// had only the survival lift, and the log confirms that is the one that
-		// was in the player's hands.
-		//
-		// The blueprint import menu that E opens is engine-side: GarageImportGui
-		// driving Data/Gui/Layouts/Lift/Lift_Import.layout. No Lua subclass was
-		// ever going to bring that back, which is why V19 and V22 both failed to.
-		//
-		// This entry is an ADDITION -- nothing in survival content declares
-		// 5cc12f03 -- so it is the case that provably works.
-		{
-			"uuid": "5cc12f03-275e-4c8e-b013-79fc0f913e1b",
-			"previewRenderable": "$GAME_DATA/Character/Char_Tools/char_lift_preview.rend",
-			"previewRotation": [ 1, 0, 0, 0, 0, -1, 0, 1, 0 ],
-			"script": { "class": "Lift", "file": "$GAME_DATA/Scripts/game/Lift.lua" }
-		},
+		// The survival lift stays because it is base content and cannot be removed.
+		// It is host-gated by `hostlift`; see Settings.lua.
 
-		// THE IMPORT LIFT.
+		// NOTLIFT -- the creations importer, and the answer to "I cant press E on
+		// the lift to import stuff".
 		//
-		// "if the lift doesnt work. make a new lift called import lift that is
-		// just regular lift just with the functions of the creative lift."
+		// "NOTlift will be clasified as ANYTHING but a lift" -- taken literally. The
+		// class is a Sledgehammer subclass, it calls no lift binding at all, and it
+		// is a uuid nothing else in the game declares, so it is an ADDITION and it
+		// resolves to our class. See NotLift.lua for why the real lift cannot do
+		// this and why the engine's own browser is borrowed instead.
 		//
-		// That is exactly what this is: a uuid nothing else in the game declares,
-		// pointed at the creative Lift class, and given its own name in
-		// mod/Gui/Language/English/inventoryDescriptions.json so it cannot be
-		// confused with either of the two lifts already in the menu.
-		//
-		// The point is that it is an ADDITION. Nothing else owns this uuid, so
-		// nothing can win the first-declaration race against it -- which is the one
-		// case this file can rely on. 5cc12f03 below is also an addition and also
-		// runs class Lift, so if the creative lift is broken this will be too; what
-		// this buys is a lift you can find and name with certainty.
+		// Preview renderable is the LIFT's, on purpose: whatever the class is called,
+		// what this does for a player is "the lift menu", and a tool that does not
+		// look like the thing it does is a tool nobody finds.
 		{
-			"uuid": "4c893da9-484d-495b-a013-87beed81c148",
+			"uuid": "7b3d5c91-4a2e-4f88-9c17-2e6d0b5a13ff",
 			"previewRenderable": "$GAME_DATA/Character/Char_Tools/char_lift_preview.rend",
 			"previewRotation": [ 1, 0, 0, 0, 0, -1, 0, 1, 0 ],
-			"script": { "class": "Lift", "file": "$GAME_DATA/Scripts/game/Lift.lua" }
+			"script": { "class": "NotLift", "file": "$CONTENT_DATA/Scripts/NotLift.lua" }
 		},
 
 		// THE CLEANER, and the answer to "I want to be able to DELETE them when

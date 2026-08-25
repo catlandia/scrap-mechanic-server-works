@@ -101,16 +101,46 @@ function PlotsGui.AddMap( kids, cfg, x, y, size )
 	kids[#kids + 1] = text( "MapTitle", "TOP DOWN", x, y - 30, size, 18,
 		"SM_LabelTiny", DIM, "Left" )
 
+	-- SNAP BOTH EDGES, NEVER THE SIZE.
+	--
+	-- REPORTED: "the road is crosed by frame that it shoudlnt be."
+	--
+	-- The old version floored the position and the size INDEPENDENTLY, which is
+	-- the classic way to make a tiled diagram stop tiling: a piece ending at
+	-- 149.7 was drawn to 149 while its neighbour starting at 149.7 was drawn from
+	-- 149, so some seams gained a pixel and some lost one. MEASURED at
+	-- scale 3.65: a filler covering px 149..152 against a plot starting at 153,
+	-- a one pixel hole in a partition that Layout guarantees has no holes at all.
+	--
+	-- Rounding the two EDGES instead means adjacent pieces resolve to the same
+	-- boundary pixel by construction, whatever the scale. The layout was never
+	-- wrong -- dev/test_layout.py proves it is an exact partition, and no deck
+	-- piece overlaps the plaza -- so any seam artefact was the drawing.
 	local function cell( name, cx, cy, cw, ch, colour, alpha )
 		if cw * scale < 1 or ch * scale < 1 then return end
-		kids[#kids + 1] = fill( name,
-			math.floor( ox + cx * scale ), math.floor( oy + cy * scale ),
-			math.max( 1, math.floor( cw * scale ) ), math.max( 1, math.floor( ch * scale ) ),
-			colour, alpha )
+		local px0 = math.floor( ox + cx * scale + 0.5 )
+		local py0 = math.floor( oy + cy * scale + 0.5 )
+		local px1 = math.floor( ox + ( cx + cw ) * scale + 0.5 )
+		local py1 = math.floor( oy + ( cy + ch ) * scale + 0.5 )
+		kids[#kids + 1] = fill( name, px0, py0,
+			math.max( 1, px1 - px0 ), math.max( 1, py1 - py0 ), colour, alpha )
 	end
 
+	-- THE PLAZA IS NOT A CLAIMED PLOT, SO IT MUST NOT BE THE SAME ORANGE.
+	--
+	-- REPORTED: "see? they are offset."
+	--
+	-- It was drawn in ACCENT orange, which the key underneath calls "taken" -- so
+	-- the spawn plaza read as somebody's plot. And a plaza is deliberately BIGGER
+	-- than a plot: with plazacells 2 it is 41 blocks across against a plot's 20,
+	-- because it swallows the seam between the cells it covers. MEASURED: 74 px
+	-- wide next to a 36 px plot, centred on the map.
+	--
+	-- So it looked like a claimed tile of the wrong size, sitting off the grid.
+	-- It is none of those things; it was just wearing the wrong colour. Blue,
+	-- and named in the key.
 	local SHADE = {
-		plaza = "1 0.74 0.35 1",
+		plaza = "0.35 0.56 0.86 1",
 		road = "0.30 0.31 0.34 1",
 		filler = "0.42 0.40 0.38 1",
 	}
@@ -149,7 +179,7 @@ function PlotsGui.AddMap( kids, cfg, x, y, size )
 	end
 
 	kids[#kids + 1] = text( "MapKey",
-		"bright green = yours    dark green = your team    orange = taken    grey = free",
+		"bright green = yours    dark green = your team    orange = taken    grey = free    blue = spawn plaza",
 		x, y + size + 14, size, 18, "SM_TextTiny", DIM, "Left" )
 end
 
@@ -224,6 +254,11 @@ function PlotsGui.Build( cfg )
 	-- /purge walkways, which takes every body that is not standing on a plot --
 	-- a rule that cannot tell a dropped craftbot from a car somebody parked. The
 	-- cleaner tool is the replacement and it is aimed, one thing at a time.
+	-- What the city is MADE of lives next to what it is SHAPED like, because
+	-- they are the same decision and this is the panel a host is on when they
+	-- make it. It opens StyleGui; BACK there returns here.
+	kids[#kids + 1] = button( "Style", "CITY STYLE", PAD + 548, fy, 150, 34,
+		"SecondaryButton", { action = "style" } )
 	kids[#kids + 1] = button( "Back", "BACK", PAD + 304, fy, 110, 34,
 		"SecondaryButton", { action = "back" } )
 	kids[#kids + 1] = button( "Close", "CLOSE", PAD + 426, fy, 110, 34,

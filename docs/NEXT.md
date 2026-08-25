@@ -190,6 +190,14 @@ absent, the ghost guard is not recognising ghosts and that is where to look.
   list is the stronger tool** for a public event: `/set allowlist on`.
 - **The grief alarm** — 20-second window, threshold 400, and it **no longer locks
   by itself** (V50). One 16×16 delete is 256 shapes and must stay quiet.
+- **`allow_add_mods: false`** (V54) — the world has never been created with it
+  off. Check only that it still creates and still lists; it changes the
+  world-creation screen, which nothing in `dev/` can see.
+- **Two host gates** (V54) — `Game.sv_n_openPanel` and
+  `NotLift.sv_n_swOpenImport`. **Cannot be tested solo.** Proving a guest is
+  refused needs a second client, and the install has no dedicated server to
+  stand in for one. Low priority: the server is invite-only and the surface
+  audits clean. See [`MODS-AND-TRUST.md`](MODS-AND-TRUST.md).
 
 ---
 
@@ -210,6 +218,11 @@ absent, the ghost guard is not recognising ghosts and that is where to look.
    warehouse, neon. They are guesses at taste and cost nothing to change.
 6. **`/purge here <radius>`** is the same guess-and-delete shape as the sweep
    that was removed on request. Say the word and it goes too.
+7. **`allow_add_mods` is now `false`** (V54), which is what shuts the only door a
+   mod like T mod has into an event. The cost is that players get no building
+   parts beyond base content. If an event wants a specific parts mod, this is the
+   word to change — but the mod list is the trust boundary, so decide it per
+   event rather than leaving it open.
 
 ---
 

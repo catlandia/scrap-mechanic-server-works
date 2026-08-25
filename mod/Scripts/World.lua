@@ -6,6 +6,8 @@ dofile( "$CONTENT_DATA/Scripts/Plots.lua" )
 dofile( "$CONTENT_DATA/Scripts/Rules.lua" )
 dofile( "$CONTENT_DATA/Scripts/Snapshots.lua" )
 dofile( "$CONTENT_DATA/Scripts/PlotMarker.lua" )
+dofile( "$CONTENT_DATA/Scripts/Crowd.lua" )
+dofile( "$CONTENT_DATA/Scripts/Bench.lua" )
 
 -- The World script, and the reason this file carries the weight of the mod.
 --
@@ -87,6 +89,7 @@ function World.server_onCreate( self )
 		nextAutoSnapshot = nil,
 		patrolFaulted = false,
 		rulesFaulted = false,
+		crowdFaulted = false,
 		cityJob = nil,
 	}
 
@@ -96,6 +99,17 @@ function World.server_onCreate( self )
 	local savedPlots = Plots.Sv_LoadFile()
 	g_swPlots = Plots()
 	g_swPlots:sv_onCreate( savedPlots )
+
+	-- The crowd is deliberately NOT restored from anything. Bots are live units
+	-- and a saved handle to one is a dead handle; a session always starts empty
+	-- and the host asks for a crowd when they want one. sv_onCreate does sweep
+	-- plot claims left behind by a session that crashed mid-test.
+	g_swCrowd = Crowd()
+	g_swCrowd:sv_onCreate( g_swPlots )
+
+	g_swBench = Bench()
+	g_swBench:sv_onCreate( g_swCrowd )
+	g_swBench:sv_load()
 
 	g_swProtection = Protection()
 	g_swProtection:sv_onCreate( Settings.Get( "protection" ) )
@@ -244,6 +258,9 @@ function World.server_onFixedUpdate( self )
 	-- A fault here must never take the world down mid-event: the world stays in
 	-- whatever state it is already in and /unlock still works.
 	local ok, err = pcall( function()
+		-- Set BEFORE the occupancy pass, which is the only reader: bots are
+		-- presence, and presence is what that pass is for.
+		g_swPlots:sv_setCrowd( g_swCrowd:sv_occupants() )
 		g_swPlots:sv_updateOccupancy( function( player )
 			return Identity.Sv_PermaOf( player )
 		end, tick )
@@ -255,6 +272,28 @@ function World.server_onFixedUpdate( self )
 		g_swProtection.patrolEnabled = false
 	end
 
+	-- Its own pcall, not the patrol's. A test harness must never be able to
+	-- switch off protection, and protection faulting must not leave a crowd
+	-- standing that nothing is able to clear.
+	if not self.sw.crowdFaulted then
+		local crowdOk, crowdErr = pcall( function()
+			g_swCrowd:sv_onFixedUpdate( tick, function( bp )
+				return ( self:sv_importBlueprint( bp ) )
+			end )
+		end )
+		if not crowdOk then
+			self.sw.crowdFaulted = true
+			sm.log.warning( "[ServerWorks] crowd disabled after error: " .. tostring( crowdErr ) )
+			pcall( function() g_swCrowd:sv_clear() end )
+			pcall( function() g_swBench:sv_stop( nil, "abandoned: the crowd faulted" ) end )
+		end
+		-- The bench only advances when the host client reports; this is purely
+		-- the watchdog that ends a run nobody is reporting to.
+		pcall( function() g_swBench:sv_onFixedUpdate( tick ) end )
+	end
+
+	self:sv_traceStep( tick )
+	self:sv_releaseImportedLift( tick )
 	self:sv_stepSnapshots()
 	pcall( function() self:sv_stepCity() end )
 	self:sv_checkRules( tick )
@@ -565,30 +604,105 @@ function World.sv_e_swCommand( self, params )
 		self:sv_reply( player, text )
 	end
 
+	-- THE WORLD SHUTS WITH TWO SWITCHES AND /unlock ONLY EVER FLIPPED ONE.
+	--
+	-- MEASURED against this mod's own resolver, driven from dev/test_logic.py
+	-- with the live Settings.json off the installed mod:
+	--
+	--   protection locked, buildopen false   ->  locked   liftable false
+	--   protection open,   buildopen false   ->  locked   liftable false   <- /unlock
+	--   protection open,   buildopen true    ->  open     liftable true
+	--
+	-- The middle row is what /unlock produced. `buildopen == false` fires in the
+	-- resolver before the zone verdict, so every plot came back on the LOCKED
+	-- profile with liftable and convertibleToDynamic false -- and vanilla's
+	-- Lift.lua:127 needs targetBody:isLiftable() to hover, select or carry
+	-- anything at all. The command whose help text is "reopen building" reopened
+	-- nothing, announced "Building reopened", and left the lift dead.
+	--
+	-- Both flags are PERSISTED and the end of an event writes both
+	-- (Event.PROTECTION.ended = "locked", sv_applyEventPhase -> buildopen false).
+	-- So a single test event that ran to `ended` locked every later session, on
+	-- every restart, with the one command named for the job unable to undo it.
+	-- "A rule must never forbid its own remedy" -- CLAUDE.md, and this is the
+	-- same shape as the part-limit bug.
 	if cmd == "/lockdown" or cmd == "/unlock" then
-		local mode = "open"
-		if cmd == "/lockdown" then
-			mode = ( args[2] == "display" ) and "display" or "locked"
-		end
-		local ok, detail = g_swProtection:sv_setMode( mode )
-		if ok then
-			Settings.Sv_SetQuiet( "protection", mode )
-			-- A locked world means locked: hazards go off regardless of what the
-			-- settings panel says, and stay off until the world is reopened.
-			if mode ~= "open" then
-				for _, key in ipairs( { "claygun", "firelauncher", "cornades", "extinguisher" } ) do
-					Settings.Sv_SetQuiet( key, false )
-				end
-				sm.event.sendToGame( "sv_e_swToolsChanged", {} )
-			end
-			sm.log.info( string.format( "[ServerWorks] protection -> %s (%s)", mode, detail ) )
-			self:sv_broadcast(
-				mode == "locked" and ( "BUILDS LOCKED (strict) -- " .. detail )
-				or mode == "display" and ( "BUILDS LOCKED, seats and buttons still work -- " .. detail )
-				or ( "Building reopened -- " .. detail ) )
+		-- Not while the CLOCK owns building. prep, buffer and ended each carry
+		-- their own protection mode, so the next sv_applyEventPhase would put
+		-- this straight back. Saying so beats half-doing it.
+		local clockOwnsIt = ( cmd == "/unlock" )
+			and g_swEvent ~= nil and g_swEvent:sv_running()
+
+		if clockOwnsIt then
+			reply( string.format(
+				"The event clock owns building right now (%s).", tostring( g_swEvent.phase ) ) )
+			reply( "  /event stop to take it back, or wait for build time." )
 		else
-			reply( "Failed: " .. tostring( detail ) )
+			local mode = "open"
+			if cmd == "/lockdown" then
+				mode = ( args[2] == "display" ) and "display" or "locked"
+			end
+			local ok, detail = g_swProtection:sv_setMode( mode )
+			if ok then
+				Settings.Sv_SetQuiet( "protection", mode )
+				-- A locked world means locked: hazards go off regardless of what the
+				-- settings panel says, and stay off until the world is reopened.
+				if mode ~= "open" then
+					for _, key in ipairs( { "claygun", "firelauncher", "cornades", "extinguisher" } ) do
+						Settings.Sv_SetQuiet( key, false )
+					end
+					sm.event.sendToGame( "sv_e_swToolsChanged", {} )
+				end
+				-- The other half. Game owns buildopen and the event clock, so it does
+				-- this bit; see Game.sv_e_swOpenBuilding.
+				if mode == "open" then
+					sm.event.sendToGame( "sv_e_swOpenBuilding", {} )
+				end
+				sm.log.info( string.format( "[ServerWorks] protection -> %s (%s)", mode, detail ) )
+				self:sv_broadcast(
+					mode == "locked" and ( "BUILDS LOCKED (strict) -- " .. detail )
+					or mode == "display" and ( "BUILDS LOCKED, seats and buttons still work -- " .. detail )
+					or ( "Building reopened -- " .. detail ) )
+			else
+				reply( "Failed: " .. tostring( detail ) )
+			end
 		end
+
+	elseif cmd == "/nolift" then
+		-- CLEAR EVERY LIFT IN THE WORLD, and the escape hatch for a lift nobody
+		-- can pick up.
+		--
+		-- REPORTED: "the lift cant be removed and there are two". A lift made by
+		-- sm.lift.createNonPlayerLift belongs to no player, so no lift tool will
+		-- take it. Nothing in the mod creates one any more, but two are already
+		-- standing in this world and there had to be a way out.
+		--
+		-- The way out is the handle: a Lift userdata has :destroy()
+		-- (BuilderGuidePlatform.lua:64), and body:getLift() recovers one from a
+		-- body that is standing on it. So walking the bodies finds every lift
+		-- that has anything on it, whoever owns it.
+		--
+		-- Destroying a lift RELEASES what is on it -- the creation converts to
+		-- dynamic and drops. That is not a side effect, it is the point: it is
+		-- the same thing removing a lift by hand does.
+		pcall( sm.player.removeLift, player )
+		local destroyed, seen = 0, {}
+		local okAll, bodies = pcall( sm.body.getAllBodies )
+		for _, body in ipairs( okAll and bodies or {} ) do
+			local okOn, onLift = pcall( function() return body:isOnLift() end )
+			if okOn and onLift then
+				local okGet, lift = pcall( function() return body:getLift() end )
+				if okGet and lift and sm.exists( lift ) and not seen[tostring( lift )] then
+					seen[tostring( lift )] = true
+					if pcall( function() lift:destroy() end ) then
+						destroyed = destroyed + 1
+					end
+				end
+			end
+		end
+		reply( string.format( "cleared %d lift%s -- anything on them is loose now",
+			destroyed, destroyed == 1 and "" or "s" ) )
+		sm.log.info( string.format( "[ServerWorks] /nolift destroyed %d lifts", destroyed ) )
 
 	elseif cmd == "/protection" then
 		reply( g_swProtection:sv_status() )
@@ -676,10 +790,33 @@ function World.sv_e_swCommand( self, params )
 				local body = result:getBody()
 				local shape = result:getShape()
 				if n and n > 0 then
-					-- a radius was given: take the whole body
-					for _, s in ipairs( body:getShapes() ) do s:destroyShape() end
-					removed = 1
-					reply( string.format( "removed the whole creation (%d shapes)", body:getShapeCount() ) )
+					-- THE WHOLE CREATION, ACROSS JOINTS. Same bug the cleaner's F
+					-- key had: body:getShapes() is one WELD GROUP, and a bearing
+					-- joins two separate bodies -- so this said "removed the whole
+					-- creation" while removing the single body under the
+					-- crosshair. A build with 20 bearings is about 21 bodies.
+					--
+					-- The per-shape city guard matters more here than it did
+					-- before: getCreationShapes reaches further, and a build
+					-- bolted to a plot slab now brings the slab into range.
+					local got, shapes = pcall( function() return body:getCreationShapes() end )
+					if not got or shapes == nil then
+						got, shapes = pcall( function() return body:getShapes() end )
+					end
+					local spared = 0
+					for _, sh in ipairs( got and shapes or {} ) do
+						if sm.exists( sh ) then
+							if g_swPlots and g_swPlots:sv_isCityShape( sh ) then
+								spared = spared + 1
+							else
+								sh:destroyShape()
+								removed = removed + 1
+							end
+						end
+					end
+					reply( string.format( "removed the whole creation (%d shapes%s)",
+						removed, spared > 0
+							and string.format( ", %d city shapes left alone", spared ) or "" ) )
 				elseif shape and sm.exists( shape ) then
 					shape:destroyShape()
 					removed = 1
@@ -860,6 +997,12 @@ function World.sv_e_swCommand( self, params )
 		-- every sv_toWorld string in Game.lua against this dispatch.
 		self:sv_cityCensus( player )
 
+	elseif cmd == "/crowd" then
+		self:sv_crowdCommand( args or {}, reply )
+
+	elseif cmd == "/bench" then
+		self:sv_benchCommand( args or {}, reply )
+
 	elseif cmd == "/marker" then
 		-- Not a chat command; sent by Game when a player joins.
 		self:sv_refreshMarker( player, false )
@@ -877,6 +1020,192 @@ function World.sv_e_swCommand( self, params )
 				{ player = player, panel = "city", status = status } )
 		end
 	end
+end
+
+--[[ the crowd ]]
+
+-- /crowd -- stand in a lobby full of builders so the server has something to
+-- measure when there is nobody to invite. See Crowd.lua for what this does and
+-- does not stand in for; the one line worth repeating here is that it cannot
+-- reach the engine's per-client network budget, because that is only ever
+-- computed for a REMOTE client. One guest measures that; no number of bots does.
+function World.sv_crowdCommand( self, args, reply )
+	local function status()
+		local s = g_swCrowd:sv_status()
+		reply( string.format( "CROWD  %d bot%s   mode %s   claim %s   blocks standing %d",
+			s.count, s.count == 1 and "" or "s",
+			s.mode, s.claim and "ON" or "off", s.blocks ) )
+		-- What the crowd is actually building, not just how much of it. Two
+		-- runs with the same block count but a different style mix are not the
+		-- same measurement, and this is the only place that is visible.
+		if s.count > 0 then
+			local parts = {}
+			for _, style in ipairs( Crowd.STYLES ) do
+				if s.styles[style] then
+					parts[#parts + 1] = string.format( "%s %d", style, s.styles[style] )
+				end
+			end
+			reply( "  building: " .. table.concat( parts, "   " ) )
+		end
+		if s.failed > 0 then
+			reply( string.format( "  %d failed to spawn -- see the log", s.failed ) )
+		end
+	end
+
+	local a = args[2]
+
+	if a == nil then
+		status()
+		reply( "  /crowd <n>          put n bots on the city, one per plot" )
+		reply( "  /crowd off          take them all away" )
+		reply( "  /crowd mode build   stack blocks on their own plot and LEAVE them" )
+		reply( "  /crowd mode churn   place one and take it away -- world never grows" )
+		reply( "  /crowd mode off     just stand there" )
+		reply( "  /crowd claim on|off have them claim the plot they stand on" )
+		return
+	end
+
+	if a == "off" then
+		local had = g_swCrowd:sv_clear()
+		reply( string.format( "crowd cleared -- %d bot%s removed",
+			had, had == 1 and "" or "s" ) )
+		sm.log.info( string.format( "[ServerWorks] crowd cleared: %d removed", had ) )
+		return
+	end
+
+	if a == "mode" then
+		if not g_swCrowd:sv_setMode( args[3] ) then
+			reply( "/crowd mode build | churn | off" )
+			return
+		end
+		if args[3] == "off" then
+			-- Leaving the blocks standing on "mode off" would be a trap: the
+			-- status line would read "0 blocks" the moment anything cleared and
+			-- the city would keep whatever a test built. Off means off.
+			for _, bot in ipairs( g_swCrowd.bots ) do
+				g_swCrowd:sv_dropBlocks( bot )
+			end
+		end
+		status()
+		return
+	end
+
+	if a == "claim" then
+		local on = ( args[3] == "on" )
+		if args[3] ~= "on" and args[3] ~= "off" then
+			reply( "say on or off" )
+			return
+		end
+		g_swCrowd.claim = on
+		if on then
+			-- The bots may already be standing. Without this the status line
+			-- would read "claim ON" over a city where nothing was claimed.
+			local n = g_swCrowd:sv_applyClaims()
+			reply( string.format( "%d plot%s claimed", n, n == 1 and "" or "s" ) )
+		else
+			-- Turning it off has to hand the plots back, or they stay owned by a
+			-- perma nobody can ever log in as.
+			local n = g_swCrowd:sv_releaseClaims()
+			reply( string.format( "%d plot%s released", n, n == 1 and "" or "s" ) )
+		end
+		status()
+		return
+	end
+
+	local n = tonumber( a )
+	if n == nil then
+		reply( "/crowd <n>, or off, or churn/claim on|off" )
+		return
+	end
+	if n > Crowd.MAX then
+		reply( string.format( "%d is more than the %d cap -- see Crowd.MAX", n, Crowd.MAX ) )
+		return
+	end
+
+	-- The city has to exist first. A bot spawned over empty terrain falls, and a
+	-- crowd of falling bots is a rigid-body test, not a building-event one.
+	if not g_swPlots.enabled or #g_swCrowd:sv_plotIndices() == 0 then
+		reply( "no plots to stand on -- build the city first (/plots on, then BUILD CITY)" )
+		return
+	end
+
+	local got, failed = g_swCrowd:sv_set( n )
+	reply( string.format( "crowd is now %d, mode %s", got, g_swCrowd.mode ) )
+	if g_swCrowd.mode == "build" then
+		reply( string.format( "  they will build on their own plots, up to %d blocks each.",
+			Crowd.MAX_BLOCKS ) )
+		reply( "  /crowd off takes the bots AND everything they built." )
+	else
+		reply( "  they are only standing -- /crowd mode build to make them build." )
+	end
+	if failed > 0 then
+		reply( string.format( "  %d failed -- is the character set loaded? see the log", failed ) )
+	end
+	-- Written to the log as well as to chat, because this is the line that dates
+	-- a measurement: dev/session_stats.py reports tick rate per minute, and the
+	-- minute the crowd changed size is the one that has to be read against it.
+	sm.log.info( string.format( "[ServerWorks] crowd set to %d (%d failed, mode %s, claim %s)",
+		got, failed, tostring( g_swCrowd.mode ), tostring( g_swCrowd.claim ) ) )
+end
+
+-- One client's second of frames, forwarded by Game (a world script has no
+-- network of its own). The sender was resolved there, on the server, from the
+-- engine's own third argument -- nothing in `params` is an identity claim.
+function World.sv_e_swBenchSample( self, params )
+	if params == nil then return end
+	pcall( function()
+		g_swBench:sv_sample( params.name, params.isHost == true,
+			params.frames, params.secs, params.tick )
+	end )
+end
+
+-- /bench -- walk the crowd up in steps and write down what happens.
+--
+-- The measuring is all in Bench.lua; this is the door. See the header there for
+-- why the host's client is the stopwatch and why a guest is sampled for frame
+-- rate only.
+function World.sv_benchCommand( self, args, reply )
+	local a = args[2]
+
+	if a == nil or a == "status" then
+		reply( g_swBench:sv_status() )
+		reply( "  /bench start [step] [secs]   default +" .. Bench.STEP
+			.. " bots every " .. ( Bench.WINDOW + Bench.SETTLE ) .. "s" )
+		reply( "  /bench stop                  abandon it and clear the crowd" )
+		reply( "  /bench results               the table from the last run" )
+		return
+	end
+
+	if a == "results" then
+		for _, line in ipairs( g_swBench:sv_lines() ) do reply( line ) end
+		return
+	end
+
+	if a == "stop" then
+		g_swBench:sv_stop( reply )
+		return
+	end
+
+	if a ~= "start" then
+		reply( "/bench start | stop | results | status" )
+		return
+	end
+
+	if not g_swPlots.enabled or #g_swCrowd:sv_plotIndices() == 0 then
+		reply( "no plots to stand on -- build the city first (/plots on, then BUILD CITY)" )
+		return
+	end
+
+	-- A bench measures the city under a crowd, so a clock running underneath it
+	-- would be changing protection modes mid-run and moving the thing being
+	-- measured. Refused rather than silently allowed.
+	if g_swEvent ~= nil and g_swEvent:sv_running() then
+		reply( "an event clock is running -- /event stop first, or the phases will" )
+		reply( "change protection half way through the run and spoil the rows" )
+		return
+	end
+
+	g_swBench:sv_start( tonumber( args[3] ), tonumber( args[4] ), nil, reply )
 end
 
 --[[ the my-plot panel ]]
@@ -1157,6 +1486,595 @@ function World.sv_home( self, player, reply )
 	self:sv_refreshMarker( player, true )
 	reply( ok and string.format( "sent you to plot %d -- marked on your compass", index )
 		or "teleport failed, but your plot is marked on your compass" )
+end
+
+
+--[[ NOTLIFT -- the lift trace ]]
+
+-- A TIMELINE, NOT A SNAPSHOT.
+--
+-- ASKED FOR AS: "instead of just question next time. make a detailed log about
+-- the lift that works real time so you can get info why tis wrong."
+--
+-- Right, and it is the lesson of the last five rounds. Every measurement so far
+-- was taken at ONE instant, chosen by me, and every one of them was taken at the
+-- wrong instant:
+--
+--   isOnLift() straight after placeLift   false, because placement is deferred
+--                                         through RequestManager. Branching on
+--                                         that made a second, unremovable lift.
+--   isDynamic() straight after import     false, six ways, but that says nothing
+--                                         about what happens a second later.
+--   "lift=true"                           only ever meant "no Lua error".
+--
+-- A creation goes through at least four states -- imported, placed on a lift,
+-- released, settled -- and the interesting thing is which TRANSITION fails. One
+-- sample can never show that.
+--
+-- So this samples every tick for TRACE_SECONDS and prints a line whenever
+-- anything changes, plus a heartbeat so a stuck state is visible too. It logs
+-- what the BODY says (its own flags), what the RESOLVER would give it, and
+-- where it is -- because "the patrol pinned it again" and "the engine never
+-- converted it" look identical from the outside and need telling apart.
+--
+-- Bounded on purpose. Log spam is the largest performance bug this project has
+-- measured (1.79 GB in one session), so: one body, one line per change, a
+-- heartbeat no faster than once a second, and a hard stop.
+World.TRACE_SECONDS = 25
+World.TRACE_HEARTBEAT = 40      -- ticks; one line a second at most while idle
+
+function World.sv_traceStart( self, root, player, label )
+	if root == nil then return end
+	local tick = sm.game.getCurrentTick()
+	self.sw.trace = {
+		root = root, player = player, label = label,
+		started = tick, untilTick = tick + World.TRACE_SECONDS * 40,
+		nextBeat = tick, last = nil,
+	}
+	sm.log.info( string.format(
+		"[ServerWorks] lift-trace START %s -- every change for %ds",
+		tostring( label ), World.TRACE_SECONDS ) )
+end
+
+-- Everything worth knowing about one body, in one line.
+function World.sv_traceLine( self, body )
+	local function ask( fn, default )
+		local ok, value = pcall( fn )
+		if not ok then return default end
+		return value
+	end
+
+	local static  = ask( function() return body:isStatic() end, "?" )
+	local dynamic = ask( function() return body:isDynamic() end, "?" )
+	local onLift  = ask( function() return body:isOnLift() end, "?" )
+	local virtual = ask( function() return body:isOnVirtualLift() end, "?" )
+	local ghost   = ask( function() return body:isGhost() end, "?" )
+
+	-- The body's OWN permission flags. If these disagree with the profile below,
+	-- the patrol has not caught up yet; if convertible is false while the
+	-- profile says true, something else is writing it.
+	local conv  = ask( function() return body:isConvertibleToDynamic() end, "?" )
+	local lift  = ask( function() return body:isLiftable() end, "?" )
+	local erase = ask( function() return body:isErasable() end, "?" )
+	local build = ask( function() return body:isBuildable() end, "?" )
+
+	-- What the resolver WOULD hand it right now, and which zone that came from.
+	local profile = "?"
+	if g_swProtection and g_swProtection.sv_profileForTest then
+		local ok, _, name = pcall( function()
+			return g_swProtection:sv_profileForTest( body )
+		end )
+		if ok and name then profile = tostring( name ) end
+	end
+	local zone = "?"
+	if g_swPlots then
+		local ok, z = pcall( function() return g_swPlots:sv_bodyIsOpen( body ) end )
+		if ok then zone = tostring( z ) end
+	end
+
+	local minz = "?"
+	local okBox, aabbMin = pcall( function() return body:getWorldAabb() end )
+	if okBox and aabbMin then minz = string.format( "%.2f", aabbMin.z ) end
+
+	local hasLift = ask( function()
+		local l = body:getLift()
+		return ( l ~= nil and sm.exists( l ) ) and "yes" or "no"
+	end, "?" )
+
+	return string.format(
+		"static=%s dyn=%s onLift=%s virt=%s ghost=%s | flags conv=%s lift=%s "
+		.. "erase=%s build=%s | profile=%s zone=%s | minz=%s liftObj=%s",
+		tostring( static ), tostring( dynamic ), tostring( onLift ),
+		tostring( virtual ), tostring( ghost ), tostring( conv ), tostring( lift ),
+		tostring( erase ), tostring( build ), profile, zone, minz, tostring( hasLift ) )
+end
+
+function World.sv_traceStep( self, tick )
+	local t = self.sw.trace
+	if t == nil then return end
+
+	if t.root == nil or not sm.exists( t.root ) then
+		sm.log.info( string.format( "[ServerWorks] lift-trace t+%.1fs BODY GONE (deleted)",
+			( tick - t.started ) / 40 ) )
+		self.sw.trace = nil
+		return
+	end
+
+	local line = self:sv_traceLine( t.root )
+	local changed = ( line ~= t.last )
+	if changed or tick >= t.nextBeat then
+		sm.log.info( string.format( "[ServerWorks] lift-trace t+%5.2fs %s %s",
+			( tick - t.started ) / 40, changed and "*" or " ", line ) )
+		t.last = line
+		t.nextBeat = tick + World.TRACE_HEARTBEAT
+	end
+
+	if tick > t.untilTick then
+		sm.log.info( "[ServerWorks] lift-trace END -- final: " .. line )
+		self.sw.trace = nil
+	end
+end
+
+
+--[[ NOTLIFT -- importing a creation ]]
+
+-- The second half of an import, one second later.
+--
+-- A creation arrives static and only becomes a build by coming off a lift, so
+-- the import puts it on one and this takes it off. Deferred because lift
+-- placement is itself deferred: doing both in one tick removes the lift before
+-- the creation has been put on it.
+-- The body nearest a lift position, for picking up the creation again after the
+-- engine has swapped the object out from under us.
+function World.sv_bodyNear( self, liftPos )
+	if liftPos == nil then return nil end
+	local want = liftPos * 0.25
+	local best, bestD = nil, 64        -- metres squared; well beyond any lift
+	local ok, bodies = pcall( sm.body.getAllBodies )
+	for _, body in ipairs( ok and bodies or {} ) do
+		local okBox, aabbMin, aabbMax = pcall( function() return body:getWorldAabb() end )
+		if okBox and aabbMin and aabbMax then
+			local cx = ( aabbMin.x + aabbMax.x ) * 0.5 - want.x
+			local cy = ( aabbMin.y + aabbMax.y ) * 0.5 - want.y
+			local d = cx * cx + cy * cy
+			if d < bestD then best, bestD = body, d end
+		end
+	end
+	return best
+end
+
+function World.sv_releaseImportedLift( self, tick )
+	local queue = self.sw.liftReleases
+	if queue == nil or #queue == 0 then return end
+
+	local keep = {}
+	for _, job in ipairs( queue ) do
+		if tick < job.atTick then
+			keep[#keep + 1] = job
+		else
+			-- Destroying the handle is what releases the creation.
+			-- BuilderGuidePlatform does exactly this (:64), and it is the only
+			-- thing that removes a lift made by createNonPlayerLift -- no player
+			-- owns one, so no lift tool will take it.
+			--
+			-- THE BODY IS DELIBERATELY NOT TRACKED HERE. MEASURED: the trace
+			-- said "BODY GONE (deleted)" one tick after createNonPlayerLift,
+			-- every single time. Putting a body on a lift REPLACES it -- the
+			-- engine destroys the original object and makes a new one -- so any
+			-- handle taken before the lift is already dead, and asking it
+			-- anything is why the release logged nothing at all.
+			local ok = job.lift and sm.exists( job.lift )
+				and pcall( function() job.lift:destroy() end )
+			sm.log.info( string.format( "[ServerWorks] NOTlift released %s: %s",
+				tostring( job.name ), ok and "lift destroyed" or "lift already gone" ) )
+			if job.player and sm.exists( job.player ) then
+				self:sv_reply( job.player, string.format(
+					"%s is off its lift and loose now.", tostring( job.name ) ) )
+			end
+
+			-- AND ONLY NOW IS THERE A BODY WORTH WATCHING.
+			--
+			-- Tracing from the import was useless: the body is replaced the
+			-- instant it goes on a lift, so every trace ended "BODY GONE
+			-- (deleted)" one tick in and told us nothing about the creation that
+			-- actually survived. The interesting question was always what the
+			-- thing looks like AFTER the release, so that is where it starts --
+			-- found by position, because the handle we had is gone.
+			self:sv_traceStart( self:sv_bodyNear( job.liftPos ), job.player, job.name )
+		end
+	end
+	self.sw.liftReleases = keep
+end
+
+-- The end of the chain that starts at a NOTlift click. See NotLift.lua for why
+-- the browser is the engine's and everything after the pick is ours.
+--
+-- This lives in the World script for the usual reason: sm.creation.importFromFile
+-- is world-dependent, and a Game script has no world (measured, first run --
+-- "Calling world dependent functions in a no world script!").
+function World.sv_e_swImportCreation( self, params )
+	local player = params and params.player
+	if player == nil or not sm.exists( player ) then return end
+	local function reply( text ) self:sv_reply( player, text ) end
+
+	local path = params.path
+	if type( path ) ~= "string" or path == "" then
+		reply( "That creation has no file behind it." )
+		return
+	end
+
+	-- HOST ONLY, CHECKED HERE AND NOT JUST BY THE TOOL GATE.
+	--
+	-- "the NOT lift shall only be host only. its too powerful."
+	--
+	-- The gate pulls the tool out of a guest's hands within a couple of ticks,
+	-- which is fast but is not the same as impossible -- and this is the one
+	-- action in the mod that creates a whole build from nothing. Same belt-and-
+	-- braces as CleanerTool.sv_n_swDelete, and the same fail-safe direction: if
+	-- the setting cannot be read, it stays host only, because that is the safe
+	-- way to be wrong.
+	local hostOnly = true
+	if Settings and Settings.Get then
+		local okS, value = pcall( Settings.Get, "hostnotlift" )
+		if okS then hostOnly = ( value ~= false ) end
+	end
+	if hostOnly and player ~= sm.player.getHostPlayer() then
+		reply( "Importing creations is host only on this server." )
+		return
+	end
+
+	-- BUILDING HAS TO BE OPEN. Importing is placing, and a world that refuses a
+	-- block has no business accepting a whole creation -- that would be the
+	-- biggest hole in the freeze this mod has. Same test the client's canBuild
+	-- flag uses, so the HUD and this agree.
+	local mode = g_swProtection and g_swProtection:sv_getMode() or nil
+	local canBuild = ( Settings.Get( "buildopen" ) ~= false )
+		and ( mode == "open" or mode == "open_destructible" )
+	if not canBuild then
+		reply( "Building is closed, so nothing can be imported. (/unlock, or wait "
+			.. "for build time.)" )
+		return
+	end
+
+	-- WHERE. THE PLOT YOU ARE STANDING ON, and this changed with the host gate
+	-- rather than in spite of it.
+	--
+	-- The first version refused unless you owned a plot, because for a GUEST the
+	-- only safe target is their own ground -- body permission flags are per-body,
+	-- so a creation dropped on somebody else's plot is one they cannot remove.
+	-- With guests excluded that rule protects nobody, and it would have blocked
+	-- the host outright: a host running an event does not claim a plot, so
+	-- "import onto your own plot" would have meant "you cannot import at all".
+	--
+	-- Standing on it is the rule now. It is predictable, it needs no ownership,
+	-- and it puts the creation where the host is looking.
+	local character = player:getCharacter()
+	if not ( character and sm.exists( character ) ) then
+		reply( "No character to import next to." )
+		return
+	end
+	-- THE FLOOR, NOT THE PLAYER'S MIDDLE.
+	--
+	-- The first attempt at this used character.worldPosition for the lift, and
+	-- that is the character's CENTRE -- roughly a metre off the ground. A lift
+	-- placed there hangs in mid air, which is a good candidate for why the first
+	-- fix changed nothing. Vanilla's own server-side lift spawn derives its
+	-- position from a SHAPE, not a character
+	-- (BuilderGuideLiftPlatform.sv_spawnLift:153).
+	--
+	-- No raycast is needed to find our floor, because we built it: the city's
+	-- walkable surface is at exactly ( DECK_Z + 1 ) * BLOCK = 1.25 everywhere --
+	-- deck, road, plaza and plot slab all finish at the same height, which is why
+	-- "anything merely standing on the floor starts at 1.25" holds at all.
+	local charPos = character.worldPosition
+	local pos = charPos
+	local where = "where you are standing"
+	local CITY_FLOOR = ( Plots.DECK_Z + 1 ) * Plots.BLOCK
+
+	if g_swPlots and g_swPlots.enabled then
+		local zone = g_swPlots:sv_locate( charPos )
+		if zone and zone.kind == "plot" then
+			local centre = g_swPlots:sv_plotWorldCentre( zone.index )
+			if centre then
+				pos = sm.vec3.new( centre.x, centre.y, CITY_FLOOR )
+				where = "plot " .. tostring( zone.index )
+			end
+		elseif zone and zone.kind then
+			-- On the city but not on a plot: road, plaza, anywhere with our
+			-- decking under it. Same floor height, keep the x,y.
+			pos = sm.vec3.new( charPos.x, charPos.y, CITY_FLOOR )
+			where = "the " .. tostring( zone.kind )
+		end
+	end
+
+	-- OFF THE CITY, ASK THE PHYSICS WHERE THE GROUND IS.
+	--
+	-- MEASURED, and it is why the last attempt still hung in the air:
+	--
+	--   liftPos=0,0,3   ->  world z 0.75
+	--
+	-- The city branches above never ran, because the host was stood on open
+	-- terrain, so the fallback used character.worldPosition -- the character's
+	-- CENTRE, about 0.75 m up with nothing under it.
+	--
+	-- sm.physics.raycast works server-side; vanilla casts straight down from a
+	-- character with exactly this shape (TrashBallCharacter.lua:87). Ignoring the
+	-- character matters or the cast hits the caster.
+	if pos == charPos then
+		local okRay, hit, result = pcall( sm.physics.raycast,
+			charPos + sm.vec3.new( 0, 0, 0.5 ),
+			charPos - sm.vec3.new( 0, 0, 6 ), character )
+		if okRay and hit and result and result.pointWorld then
+			pos = sm.vec3.new( charPos.x, charPos.y, result.pointWorld.z )
+			where = "the ground under you"
+		end
+	end
+
+	-- LIFT COORDINATES ARE QUARTER-BLOCKS. Lift.lua:104 builds liftPos as
+	-- `raycastResult.pointWorld * 4` floored, and draws it back with
+	-- `self.liftPos * 0.25` (:299). Our BLOCK is 0.25, so a lift coordinate and
+	-- a city block coordinate are the same number -- which is why this is a
+	-- multiply and not a conversion table.
+	local liftPos = sm.vec3.new(
+		math.floor( pos.x * 4 + 0.5 ),
+		math.floor( pos.y * 4 + 0.5 ),
+		math.floor( pos.z * 4 + 0.5 ) )
+
+	-- AND THE IMPORT GOES TO EXACTLY THAT POINT, SNAPPED.
+	--
+	-- placeLift asserts "The body needs to be static, aligned and not already on
+	-- a lift" (the literal is in the executable). Static and not-on-a-lift come
+	-- free with a fresh import; ALIGNED does not. On a plot the centre is a
+	-- multiple of BLOCK already, but the other branch above uses
+	-- character.worldPosition, which is wherever the host happens to be standing
+	-- -- an arbitrary float. Importing there would produce a body off the grid
+	-- and placeLift would refuse it, landing us back on a static creation welded
+	-- to air by a completely different route.
+	pos = liftPos * 0.25
+
+	-- HOW BIG, BEFORE IT EXISTS IF POSSIBLE.
+	--
+	-- A blueprint on this machine reached 3.1 MB and the browser showed one with
+	-- 40,087 of a single part. Twenty people importing those is goal 1 of this
+	-- project going backwards, so there is a cap.
+	--
+	-- Counting first is better than importing and deleting, so the file is read
+	-- if it can be. $CONTENT_<uuid> is registered on the CLIENT that owns the
+	-- blueprint -- whether the server resolves it is unproven, hence the pcall
+	-- and the fallback below rather than an assumption either way.
+	local cap = tonumber( Settings.Get( "maximportparts" ) ) or 0
+	local counted = nil
+	local okRead, data = pcall( sm.json.open, path )
+	if okRead and type( data ) == "table" and type( data.bodies ) == "table" then
+		counted = 0
+		for _, body in ipairs( data.bodies ) do
+			counted = counted + #( body.childs or {} )
+		end
+		if cap > 0 and counted > cap then
+			reply( string.format( "That creation is %d parts and the limit is %d.",
+				counted, cap ) )
+			return
+		end
+	end
+
+	-- ONE IMPORT. THE VARIANT SWEEP IS DONE AND ITS ANSWER IS RECORDED.
+	--
+	-- Six call shapes were tried -- with and without each of the two
+	-- undocumented booleans, and with world = nil -- across two sessions.
+	-- MEASURED, every time, all six:
+	--
+	--   NOTlift variant world, 4 args       -> 1 bodies, dynamic=false
+	--   NOTlift variant world, +true        -> 1 bodies, dynamic=false
+	--   NOTlift variant world, +true,true   -> 1 bodies, dynamic=false
+	--   NOTlift variant world, +false       -> 1 bodies, dynamic=false
+	--   NOTlift variant world, +false,false -> 1 bodies, dynamic=false
+	--   NOTlift variant nil world, 4 args   -> 1 bodies, dynamic=false
+	--
+	-- sm.creation.importFromFile ALWAYS produces a static body and the booleans
+	-- do not touch it. The question is settled, so the apparatus goes: it
+	-- imported SIX copies of every creation and destroyed five, which is six
+	-- times the cost on a 3 MB blueprint and leaves a duplicate standing if any
+	-- one of those destroys does not take. Reported as "it spawns two and only
+	-- one is not frozen".
+	local function isDynamicNow( list )
+		local b = ( list or {} )[1]
+		if b == nil then return false end
+		local ok, dyn = pcall( function() return b:isDynamic() end )
+		return ok and dyn == true
+	end
+
+	local variant = "single import"
+	local okImport, bodies = pcall( sm.creation.importFromFile, self.world, path,
+		pos, sm.quat.identity() )
+	if okImport and ( bodies == nil or #bodies == 0 ) then okImport = false end
+
+
+	if not okImport then
+		reply( "Could not import that creation -- every import variant refused it." )
+		sm.log.warning( string.format(
+			"[ServerWorks] NOTlift import failed for every variant, path=%s",
+			tostring( path ) ) )
+		if counted == nil then
+			reply( "  (the server could not read the file either -- if you are not "
+				.. "the host, this is the known limit.)" )
+		end
+		return
+	end
+
+	-- THE FALLBACK COUNT. If the file could not be read above, the size is only
+	-- knowable after the fact -- so it is checked here and taken straight back
+	-- out. A brief spike beats an unbounded one, and it is the only option when
+	-- the path is a content id the server does not have.
+	if counted == nil and cap > 0 then
+		local shapes = 0
+		for _, body in ipairs( bodies or {} ) do
+			local okN, n = pcall( function() return body:getShapeCount() end )
+			shapes = shapes + ( ( okN and n ) or 0 )
+		end
+		if shapes > cap then
+			for _, body in ipairs( bodies or {} ) do
+				pcall( function() body:destroyCreation() end )
+			end
+			reply( string.format( "That creation is %d parts and the limit is %d -- "
+				.. "removed again.", shapes, cap ) )
+			return
+		end
+		counted = shapes
+	end
+
+	-- AND ONTO A LIFT, WHICH IS THE WHOLE POINT OF THIS STEP.
+	--
+	-- REPORTED: "the lift spawns the creation welded to air. so I have to unweld
+	-- every block by breaking it which you know doesnt work."
+	--
+	-- Exactly right, and it is not a bug in the import -- it is a missing step.
+	-- sm.creation.importFromFile makes STATIC bodies. The engine says so itself,
+	-- in the assert behind placeLift: "The body needs to be static, aligned and
+	-- not already on a lift." A static body with nothing under it is a creation
+	-- welded to air, and there is no Lua binding that turns one dynamic --
+	-- wrap_Body.cpp has setConvertibleToDynamic, which is a PERMISSION, and
+	-- isDynamic, which is a question. Nothing that converts.
+	--
+	-- What converts one is taking it OFF A LIFT, and that is precisely what
+	-- vanilla's own import does: the creation is handed to the lift tool, placed
+	-- on a lift, and released when the lift is removed. We were doing the import
+	-- and skipping the lift.
+	--
+	-- So: put it on one. The host then has the ordinary lift controls -- raise,
+	-- lower, rotate, remove -- and removing the lift drops the creation as a
+	-- normal dynamic build. No unwelding, because nothing was ever welded.
+	-- WHAT THE BODY ACTUALLY IS, LOGGED.
+	--
+	-- The first attempt reported lift=true and the creation was still static.
+	-- That flag was worthless: sm.player.placeLift returns nothing, so a pcall
+	-- around it only ever says "no Lua error was raised". This asks the body
+	-- itself, which is the only thing that can settle it.
+	local function state( b )
+		local ok, text = pcall( function()
+			return string.format( "static=%s dynamic=%s onLift=%s ghost=%s",
+				tostring( b:isStatic() ), tostring( b:isDynamic() ),
+				tostring( b:isOnLift() ), tostring( b:isGhost() ) )
+		end )
+		return ok and text or "unreadable"
+	end
+
+	local root = ( bodies or {} )[1]
+	if root then
+		sm.log.info( string.format( "[ServerWorks] NOTlift after import: %d bodies, %s",
+			#bodies, state( root ) ) )
+		-- NOT traced from here. Putting the body on a lift replaces it, so a
+		-- trace started now reports BODY GONE one tick later and nothing else.
+		-- sv_releaseImportedLift starts it after the release instead, on the
+		-- body that actually survives.
+	end
+
+	-- ON A LIFT -- ONE LIFT, AND NEVER THE UNREMOVABLE KIND.
+	--
+	-- REPORTED: "this time it is on lift but the lift cant be removed and there
+	-- are two". Both halves of that came from one mistake.
+	--
+	-- MEASURED, the run that produced it:
+	--
+	--   after import: 1 bodies, static=true dynamic=false onLift=false
+	--   after lift (world lift (unconfirmed)): ... onLift=false
+	--
+	-- isOnLift() was false straight after sm.player.placeLift -- not because the
+	-- call failed, but because LIFT PLACEMENT IS DEFERRED. The engine queues it
+	-- through RequestManager and links the body on a later tick, so a same-tick
+	-- check can never see it and was guaranteed to report failure. That false
+	-- negative is what ran the fallback, and the fallback is what made the second
+	-- lift.
+	--
+	-- And the fallback's lift was the one that could not be removed:
+	-- sm.lift.createNonPlayerLift belongs to nobody, so no player's lift tool
+	-- will take it. It is only destroyable through the handle it returns, or
+	-- through body:getLift():destroy() -- see /nolift below. A lift the host
+	-- cannot remove is a creation welded to air by another name, which is the
+	-- bug this whole path exists to fix.
+	--
+	-- So: the player's own lift, once, unverified. It is the one the host can
+	-- remove with the lift tool they already hold, and removing it is what
+	-- converts the creation to dynamic.
+	local liftHow = "none"
+	local alreadyDynamic = isDynamicNow( bodies )
+
+	-- sm.player.placeLift DOES NOT WORK ON A REAL BODY. MEASURED.
+	--
+	-- The 25 second trace never changed once:
+	--
+	--   t+ 0.00s * static=true dyn=false onLift=false ... conv=true
+	--   t+25.00s   static=true dyn=false onLift=false ... conv=true
+	--
+	-- onLift was false immediately and stayed false for the whole window. Last
+	-- round I put that down to deferred placement; the trace shows it is not
+	-- deferral, the body simply never goes on the lift. Vanilla only ever calls
+	-- placeLift with GHOST bodies handed over by the engine's own import
+	-- (Lift.client_onForceTool), never with bodies already standing in the world.
+	--
+	-- sm.lift.createNonPlayerLift is the one that takes a REAL body. Vanilla
+	-- passes an existing shape's body straight into it
+	-- (BuilderGuideLiftPlatform.sv_spawnLift:160), which is exactly our case.
+	--
+	-- It was tried once and dropped because it leaves a lift nobody can pick up.
+	-- That objection is gone: the handle comes back from the call, Lift:destroy()
+	-- is what BuilderGuidePlatform uses on it, and the release below keeps and
+	-- destroys it. Nothing is left standing.
+	if root and not alreadyDynamic then
+		-- UNDER THE CREATION, not under the player. The trace showed the body
+		-- sitting at minz=0.50 while the lift was being asked for at z=0 -- the
+		-- ground under the host's feet, which is not where the creation is. The
+		-- lift belongs at the creation's own base, centred on its footprint.
+		local okBox, aabbMin, aabbMax = pcall( function() return root:getWorldAabb() end )
+		if okBox and aabbMin and aabbMax then
+			liftPos = sm.vec3.new(
+				math.floor( ( aabbMin.x + aabbMax.x ) * 0.5 * 4 + 0.5 ),
+				math.floor( ( aabbMin.y + aabbMax.y ) * 0.5 * 4 + 0.5 ),
+				math.floor( aabbMin.z * 4 + 0.5 ) )
+		end
+
+		local okLift, lift = pcall( sm.lift.createNonPlayerLift, self.world, liftPos,
+			root, 0, 0 )
+		if okLift and lift then
+			liftHow = "world lift"
+			-- A QUEUE, NOT A SINGLE SLOT. Three imports in under a minute each
+			-- wrote their release into the same field and each overwrote the one
+			-- before, so only the last creation was ever let off its lift and
+			-- every earlier one stayed frozen. "it spawns two and only one is
+			-- not frozen."
+			self.sw.liftReleases = self.sw.liftReleases or {}
+			self.sw.liftReleases[#self.sw.liftReleases + 1] = {
+				player = player,
+				atTick = sm.game.getCurrentTick() + 40,
+				lift = lift,          -- the handle, so it can be destroyed again
+				name = tostring( params.name or "creation" ),
+				liftPos = liftPos,    -- where to look for the body afterwards
+
+			}
+		end
+		sm.log.info( string.format(
+			"[ServerWorks] NOTlift lift (%s): %s   liftPos=%s,%s,%s",
+			liftHow, state( root ),
+			tostring( liftPos.x ), tostring( liftPos.y ), tostring( liftPos.z ) ) )
+	end
+	local liftOk = ( liftHow ~= "none" )
+
+	reply( string.format( "Imported \"%s\"%s onto %s.",
+		tostring( params.name or "creation" ),
+		counted and string.format( " (%d parts)", counted ) or "", where ) )
+	if alreadyDynamic then
+		reply( string.format( "  It is a normal build already (%s) -- no lift needed.",
+			variant ) )
+	elseif liftOk then
+		reply( "  It came in static, so it goes on a lift and comes straight back "
+			.. "off -- give it a second." )
+	else
+		reply( "  WARNING: it came in static and could not be put on a lift. The "
+			.. "cleaner removes it -- point and click." )
+	end
+	sm.log.info( string.format(
+		"[ServerWorks] NOTlift imported %s parts=%s onto %s variant=%s dynamic=%s lift=%s",
+		tostring( params.name ), tostring( counted ), where, variant,
+		tostring( alreadyDynamic ), liftHow ) )
 end
 
 

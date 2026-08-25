@@ -113,7 +113,34 @@ local PROFILES = {
 		liftable = true,
 		usable = false,
 		destructable = false,
-		convertibleToDynamic = false,
+		-- TRUE, AND IT WAS FALSE FOR THREE VERSIONS OF "still static".
+		--
+		-- REPORTED, over and over, about an imported creation: "welded to air",
+		-- "still is statick", "still doesnt work". Three fixes went into the
+		-- lift -- placing one, verifying it, releasing it -- and none of them
+		-- could ever have worked, because this line undid all of them a second
+		-- later.
+		--
+		-- MEASURED, the real resolver against a body outside the city:
+		--
+		--   open terrain  zone=sweep  profile=sweep  convertibleToDynamic=False
+		--   on a plot     zone=true   profile=open   convertibleToDynamic=True
+		--
+		-- Anything that lands on ground nobody may build on is swept, and swept
+		-- meant "can never become a moving body". So an import outside a plot
+		-- was pinned static by the patrol within a second of arriving, whatever
+		-- the lift did. On a plot it worked; on terrain it was impossible.
+		--
+		-- The old value was not defensible on its own terms either. This profile
+		-- is already liftable = true -- you may pick the thing up -- and a body
+		-- that can go ON a lift but can never come OFF one is a contradiction,
+		-- not a rule. Lifting it was the one thing the false value made useless.
+		--
+		-- It costs nothing that matters. convertibleToDynamic PERMITS a
+		-- conversion, it does not cause one: litter sits static exactly as
+		-- before until something actually converts it, so the static-bodies-are
+		-- -cheap argument still holds for everything that is really litter.
+		convertibleToDynamic = true,
 	},
 	-- Same as locked, but interactive: seats, buttons, switches still work.
 	display = {
@@ -228,6 +255,13 @@ for name, profile in pairs( PROFILES ) do
 	twin.liftable = false
 	twin.convertibleToDynamic = false
 	PINNED[name] = twin
+end
+
+-- The profile table, for dev/test_logic.py only. PROFILES is file-local on
+-- purpose -- nothing outside this file should be picking flags out of it -- but
+-- a check that re-declares the table cannot catch a change to the real one.
+function Protection.Sv_ProfilesForTest()
+	return PROFILES
 end
 
 Protection.MODES = { "open", "locked", "display", "sweep", "polish" }

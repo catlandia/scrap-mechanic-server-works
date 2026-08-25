@@ -20,6 +20,7 @@ Usage: python dev/test_logic.py
 """
 import io
 import pathlib
+import re
 import sys
 
 try:
@@ -57,6 +58,7 @@ local function deepcopy( v )
 end
 
 _log = {}
+_events = {}
 sm = {
     exists = function( x ) return x ~= nil end,
     log = {
@@ -84,6 +86,17 @@ sm = {
     game = {
         setEnableAggro = function() end,
         getCurrentTick = function() return _tick or 0 end,
+    },
+    -- Cross-script events are recorded rather than dispatched: a world script
+    -- has no network, so "did it ask Game to do X" is the only observable, and
+    -- swallowing them would let a broken hop pass.
+    event = {
+        sendToGame = function( name, params )
+            _events[#_events+1] = { name = name, params = params }
+        end,
+        sendToWorld = function( _, name, params )
+            _events[#_events+1] = { name = name, params = params }
+        end,
     },
     fire = { setFireLimit = function() end },
     tool = { forceTool = function() end },
@@ -599,45 +612,639 @@ def a_plot_is_one_welded_body_with_its_own_stand():
         assert min(sys_) >= y0 and max(sys_) < y0 + h, "the stand pokes out sideways"
 
 
-def nothing_in_this_mod_can_take_a_lift_away():
-    """No lift uuid is in the tool gate, so forceTool can never reach one.
+def the_lift_is_host_only_and_notlift_is_not():
+    """Both the lift and NOTlift are gated to the host.
 
-    "just remove that thing that disables lifts."
+    THIS CHECK REPLACES ITS OWN OPPOSITE, and the reason is worth keeping.
 
-    Settings.TOOLS is the only mechanism in this mod that actively takes a tool
-    out of a player's hands -- sm.tool.forceTool( nil ), every two ticks, the
-    moment the tool's setting goes false. The lift has been reported broken for a
-    dozen versions. Whether the guard was ever the cause or not, it is the one
-    suspect we own, and removing it settles the question rather than arguing it.
+    V51 asserted that NO lift uuid was in the tool gate. That was right at the
+    time: the lift had been reported broken for a dozen versions, the gate was
+    the one suspect we owned, and taking it out settled the question instead of
+    arguing it. It settled it -- the gate was never the cause. The cause was
+    engine-side content (see NotLift.lua).
 
-    What still applies to a lift, and should: a locked or display world refuses
-    new creations, because that is what locked means.
+    The ask then changed, once importing existed somewhere else:
+
+        "make a NOT lift and make the menu of it opened via it and limit the
+         lift to the host"
+
+    So the invariant flips. The first version of THIS check then had NOTlift
+    deliberately ungated, on the reasoning that guests needed some route to
+    importing. The owner overruled it -- "the NOT lift shall only be host only.
+    its too powerful" -- and that is the right call: importing is the only action
+    in the mod that creates a whole build out of nothing, which is a bigger lever
+    than deleting what you point at or moving what already exists.
+
+    So both halves are now host-gated, and the check asserts both, because a gate
+    that exists in the TOOLS table but not in HOST_ONLY silently does nothing.
     """
     src = io.open(SCRIPTS / "Settings.lua", encoding="utf-8").read()
     gate = src[src.index("local TOOLS = {"):src.index("Settings.SCHEMA = {")]
 
-    LIFTS = {
-        "5cc12f03-275e-4c8e-b013-79fc0f913e1b": "the creative lift",
-        "8f190ce2-3a59-423e-8483-a7aa67bd5bc0": "the survival lift",
-        "4c893da9-484d-495b-a013-87beed81c148": "our Import Lift",
-    }
-    for uuid, what in LIFTS.items():
-        assert uuid not in gate, (
-            f"{what} ({uuid[:8]}) is back in the tool gate -- forceTool can pull "
-            "it out of somebody's hands again")
+    # ONE lift. The creative lift and the Import Lift were both added by this mod
+    # and both removed once NOTlift took over importing: 5cc12f03 was a second,
+    # identical copy of a tool survival content already provides, and 4c893da9
+    # was a workaround for a menu that no lift in this game opens. What is left
+    # is survival's, which is base content and cannot be removed.
+    assert "8f190ce2-3a59-423e-8483-a7aa67bd5bc0" in gate, (
+        "the lift is not in the tool gate, so `hostlift` cannot reach it and the "
+        "lift is open to every guest")
+    for gone, why in (
+            ("5cc12f03-275e-4c8e-b013-79fc0f913e1b", "the creative lift"),
+            ("4c893da9-484d-495b-a013-87beed81c148", "the Import Lift")):
+        assert gone not in gate, (
+            f"{why} is back in the tool gate. It is not in the toolset any more, "
+            "so gating it does nothing except make check_uuids fail")
 
-    assert "lift = {" not in gate, "there is still a lift group in the tool gate"
-    assert 'HOST_ONLY = { cleaner' in src, (
-        "the lift is back under HOST_ONLY, which is the other way to lose it")
+    hostonly = src[src.index("local HOST_ONLY"):src.index("local TOOLS")]
+    assert 'lift    = "hostlift"' in hostonly or 'lift = "hostlift"' in hostonly, (
+        "the lift is not under HOST_ONLY, so nothing makes it host only")
+    for live in ('key = "lift"', 'key = "hostlift"'):
+        assert live in src, f'the {live} setting is missing, so the gate has no switch'
 
-    # and the dead switches are gone rather than left lying around doing nothing
-    for dead in ('key = "lift"', 'key = "hostlift"'):
-        assert dead not in src, (
-            f'the {dead} setting still exists but no longer gates anything -- a '
-            "switch that does not switch is worse than no switch")
+    # NOTLIFT IS HOST ONLY TOO. "the NOT lift shall only be host only. its too
+    # powerful." It is the one action in the mod that creates a whole build from
+    # nothing, which is a bigger single lever than deleting what you point at or
+    # moving what already exists.
+    assert 'notlift = "hostnotlift"' in hostonly, (
+        "NOTlift is not under HOST_ONLY, so any guest can spawn whole creations")
+    assert 'key = "hostnotlift"' in src, "hostnotlift has no switch"
+
+    # A CHANGED DEFAULT REACHES NOBODY WHO HAS ALREADY PLAYED. `hostlift = false`
+    # is written into every existing Settings.json by lift_free_v34, and a
+    # default only applies to a key that is absent -- so without a migration this
+    # whole change would do nothing on the one machine that matters.
+    assert "lift_host_only_v55" in src, (
+        "no migration flips the saved hostlift value, so lift_free_v34's "
+        "`hostlift = false` still wins on any server that has been run once")
+    mig = src[src.index("Settings.MIGRATIONS = {"):]
+    v55 = mig[mig.index("lift_host_only_v55"):]
+    v55 = v55[:v55.index("end }")]
+    assert "values.hostlift = true" in v55, (
+        "the migration does not actually set hostlift")
 
     # the cleaner, which DOES delete things, stays gated
     assert 'key = "hostcleaner"' in src, "the cleaner lost its host gate"
+
+
+def the_notlift_import_chain_is_wired_end_to_end():
+    """Every hop from a NOTlift click to an imported creation has a receiver.
+
+    The chain is five hops long, and it is long ON PURPOSE: the browser callback
+    is only PROVEN to land on a Game script (measured, /bptest2), so the tool
+    routes through the Game script rather than opening the browser itself.
+
+        NotLift.client_onEquippedUpdate  -> sv_n_swOpenImport   (NotLift)
+        NotLift.sv_n_swOpenImport        -> sv_e_swOpenImport   (Game)
+        Game.sv_e_swOpenImport           -> client_openImport   (Game)
+        Game.cl_onNotLiftPick            -> sv_n_swImport       (Game)
+        Game.sv_n_swImport               -> sv_e_swImportCreation (World)
+
+    A name that exists on one side of a hop and nowhere on the other is always a
+    bug, and it is exactly the bug that made CLEAR CITY a dead button for three
+    versions -- the panel sent /citycensus and World.lua had no branch for it.
+    """
+    tool = io.open(SCRIPTS / "NotLift.lua", encoding="utf-8").read()
+    game = io.open(SCRIPTS / "Game.lua", encoding="utf-8").read()
+    world = io.open(SCRIPTS / "World.lua", encoding="utf-8").read()
+
+    # THE "( self" IS LOad-BEARING. Without it these are prefix matches, and
+    # renaming sv_e_swOpenImport to sv_e_swOpenImportRENAMED still contains
+    # "function Game.sv_e_swOpenImport" -- so the check passed a deliberately
+    # broken chain when it was first written. Caught by breaking it on purpose,
+    # which is the only way to find out whether a check can fail at all.
+    hops = [
+        (tool, 'sendToServer( "sv_n_swOpenImport"', tool, "function NotLift.sv_n_swOpenImport( self"),
+        (tool, '"sv_e_swOpenImport"', game, "function Game.sv_e_swOpenImport( self"),
+        (game, '"client_openImport"', game, "function Game.client_openImport( self"),
+        (game, '"cl_onNotLiftPick"', game, "function Game.cl_onNotLiftPick( self"),
+        (game, 'sendToServer( "sv_n_swImport"', game, "function Game.sv_n_swImport( self"),
+        (game, '"sv_e_swImportCreation"', world, "function World.sv_e_swImportCreation( self"),
+    ]
+    for src, sends, dst, receiver in hops:
+        assert sends in src, f"nothing sends {sends}"
+        assert receiver in dst, (
+            f"{sends} is sent but {receiver} does not exist -- that hop goes nowhere")
+
+    # The error callback too: setGarageErrorCallback names a handler and a name
+    # the engine cannot resolve is a silent dead end.
+    assert '"cl_onNotLiftError"' in game and "function Game.cl_onNotLiftError( self" in game
+
+    # THE PICK HANDLER MUST NOT TOUCH A GUI. The browser widget is alive and this
+    # callback is on its stack. Closing or redrawing from inside a callback is
+    # the single bug that accounted for every "the buttons dont work" report in
+    # this project, and with a focused widget it crashed the game outright.
+    pick = game[game.index("function Game.cl_onNotLiftPick"):]
+    pick = pick[:pick.index(chr(10) + "function ")]
+    for forbidden in ("cl_showPanel", "cl_closeMenu", ":close()", "openGarageImportGui",
+                      "cl_renderLater", ":render("):
+        assert forbidden not in pick, (
+            f"cl_onNotLiftPick calls {forbidden} from inside a live GUI callback")
+
+
+def importing_a_creation_enforces_the_rules():
+    """NOTlift places onto your OWN plot, only while building is open, capped.
+
+    Without all three this is a griefing tool, and a better one than anything the
+    mod already defends against: drop a 40,000-part creation onto somebody else's
+    plot in a locked world. The browser in the probe was showing exactly such a
+    blueprint, so the number is not hypothetical.
+    """
+    world = io.open(SCRIPTS / "World.lua", encoding="utf-8").read()
+    body = world[world.index("function World.sv_e_swImportCreation"):]
+    body = body[:body.index(chr(10) + "function ")]
+
+    # 0. HOST ONLY, ON THE SERVER. The tool gate pulls it out of a guest's hands
+    #    in a couple of ticks; that is fast, not impossible, and this is the only
+    #    action in the mod that creates a build from nothing.
+    assert '"hostnotlift"' in body and "getHostPlayer()" in body, (
+        "importing is not host-checked server-side -- the tool gate alone is a "
+        "race, not a rule")
+    assert "local hostOnly = true" in body, (
+        "the host check does not fail safe: if the setting cannot be read it must "
+        "stay host only, not fall open")
+
+    # 1. building has to be open -- the same test the client's canBuild uses, so
+    #    the HUD and the import cannot disagree
+    assert 'Settings.Get( "buildopen" )' in body and "sv_getMode()" in body, (
+        "importing does not check that building is open, so a locked world would "
+        "still accept whole creations -- the biggest hole the freeze could have")
+
+    # 2. onto the plot you are standing on, tidily centred, rather than wherever
+    #    the character happens to be. (Own-plot was the GUEST rule; with the host
+    #    gate it would have blocked the host, who owns no plot.)
+    assert "sv_locate" in body and "sv_plotWorldCentre" in body, (
+        "importing does not centre onto the plot the caller is standing on")
+
+    # 3. a size cap
+    assert 'Settings.Get( "maximportparts" )' in body, (
+        "importing has no part cap, so one blueprint can sink the server")
+    assert "destroyCreation" in body, (
+        "there is no fallback that removes an over-cap creation the server could "
+        "not measure before importing")
+
+    settings = io.open(SCRIPTS / "Settings.lua", encoding="utf-8").read()
+    assert 'key = "maximportparts"' in settings, "maximportparts is not a setting"
+
+
+def lua_code(text):
+    """Lua with comments removed, for checks that must match CODE not prose.
+
+    These scripts are far more comment than code, and every string-matching
+    check here is one well-meaning paragraph away from passing for the wrong
+    reason. That is not hypothetical: the check below asserted a fallback call
+    existed, the fallback was deleted, and the check kept passing because the
+    comment explaining WHY it was deleted still contained the function name.
+    """
+    out, i, n = [], 0, len(text)
+    while i < n:
+        if text.startswith("--[[", i):
+            end = text.find("]]", i)
+            i = n if end < 0 else end + 2
+        elif text.startswith("--", i):
+            end = text.find(chr(10), i)
+            i = n if end < 0 else end
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+def an_imported_creation_lands_on_a_lift():
+    """Import makes STATIC bodies; a lift is what lets one become a build again.
+
+    REPORTED: "the lift spawns the creation welded to air. so I have to unweld
+    every block by breaking it which you know doesnt work."
+
+    That is not a bug in the import, it is a missing step. The engine's own
+    assert behind placeLift says what an imported body is:
+
+        "The body needs to be static, aligned and not already on a lift."
+
+    Static, with nothing under it, IS a creation welded to air -- and nothing in
+    wrap_Body.cpp converts one. There is setConvertibleToDynamic (a permission)
+    and isDynamic (a question), and no verb. What actually converts a creation is
+    coming OFF a lift, which is exactly what vanilla's own import does and what
+    ours was skipping.
+
+    Three things have to hold, and each was a way to arrive back at a static
+    creation by a different route:
+    """
+    world = io.open(SCRIPTS / "World.lua", encoding="utf-8").read()
+    body = world[world.index("function World.sv_e_swImportCreation"):]
+    body = body[:body.index(chr(10) + "function ")]
+    code = lua_code(body)
+
+    # 1. it is actually put on a lift
+    assert "sm.lift.createNonPlayerLift" in code, (
+        "nothing puts the imported creation on a lift, so it stays static -- "
+        "welded to air, with no Lua binding that can free it")
+
+    # 2. the position is SNAPPED. placeLift refuses a misaligned body, and the
+    #    non-plot branch imports at character.worldPosition, an arbitrary float.
+    assert "pos = liftPos * 0.25" in code, (
+        "the import position is not snapped to the lift grid, so placeLift will "
+        "refuse a body imported at a character's raw world position")
+
+    # 3. a failure is REPORTED. Silently falling back to the old behaviour is
+    #    how this went unnoticed the first time.
+    assert "liftOk" in body and "WARNING" in body, (
+        "a failed placeLift is not reported, so the broken case looks identical "
+        "to the working one")
+
+    # 4. THE RESULT IS ASKED FOR, NOT ASSUMED. The first fix logged lift=true and
+    #    the creation was still static, because sm.player.placeLift returns
+    #    nothing -- the pcall only ever proved no Lua error was raised. The body
+    #    itself is the only thing that can settle it.
+    # ...but NOT by branching on it in the same tick. Lift placement is deferred
+    # through RequestManager, so isOnLift() is still false when placeLift
+    # returns. MEASURED: "after lift (...): onLift=false" on a placement that
+    # had in fact worked. Branching on that false negative ran a fallback and
+    # produced a SECOND lift -- reported as "the lift cant be removed and there
+    # are two".
+    # sm.player.placeLift DOES NOT WORK ON A REAL BODY -- MEASURED, a 25 second
+    # trace in which onLift never once became true. Vanilla only ever passes it
+    # GHOST bodies from the engine's own import. createNonPlayerLift is the call
+    # that takes a real one (BuilderGuideLiftPlatform:160).
+    assert "createNonPlayerLift" in code, (
+        "the import is back on sm.player.placeLift, which measurably does "
+        "nothing to a body already standing in the world")
+    assert "sm.player.placeLift" not in code, (
+        "placeLift is being called on a real body again -- 25 seconds of trace "
+        "say it never takes")
+
+    lifts = code.count("createNonPlayerLift")
+    assert lifts == 1, (
+        f"{lifts} lift placements in one import; there must be exactly one or "
+        "the host gets a pile of them")
+
+    # A non-player lift belongs to nobody, so the HANDLE is the only way to be
+    # rid of it. Keeping it is what makes this safe to use at all.
+    assert "lift = lift" in code, (
+        "the lift handle is not kept, so nothing can ever destroy it -- that is "
+        "what left two unremovable lifts standing last time")
+
+    # 4b. EVERY IMPORT VARIANT IS TRIED, AND A DYNAMIC RESULT WINS.
+    #
+    # A blueprint file carries no static flag -- MEASURED across 400 of the
+    # owner's own, the only keys are bodies/joints/version/dependencies -- so
+    # staticness is decided by the CALL. importFromString takes two undocumented
+    # booleans that nothing in the game names, and vanilla's own 4-argument
+    # importFromFile demonstrably CAN produce a body that moves (a chopped tree
+    # becomes a log that falls, WoodHarvestable.lua:127).
+    #
+    # Four fixes were shipped on reasoning about this and none landed. So the
+    # code tries the calls and asks the body which one worked.
+    # ONE import call. The sweep answered its question -- all six call shapes
+    # produce a static body, twice over -- so keeping it meant importing SIX
+    # copies of every creation and destroying five. Six times the cost on a 3 MB
+    # blueprint, and a duplicate left standing whenever a destroy did not take.
+    # Reported as "it spawns two and only one is not frozen".
+    assert code.count("importFromFile") == 1, (
+        f"{code.count('importFromFile')} import calls. There must be exactly one "
+        "-- the variant sweep is finished and each extra call spawns another "
+        "copy of the creation that has to be cleaned up again")
+    assert "isDynamic()" in code, (
+        "nothing asks whether the imported body is actually dynamic")
+    assert "not alreadyDynamic" in code, (
+        "the lift is placed even when the import already came out dynamic, "
+        "which puts a finished build back onto a lift for no reason")
+
+    # 4c. THE LIFT IS TAKEN BACK OFF AGAIN.
+    #
+    # MEASURED, all six variants, twice: dynamic=false every time. An import is
+    # ALWAYS static and coming off a lift is the only thing that converts one --
+    # so putting it on a lift is half a fix. Leaving the other half to the host
+    # meant lifts accumulated one per import (two in the screenshot, two imports
+    # in the log) and the creation stayed stuck until somebody acted.
+    #
+    # It has to be DEFERRED: placement goes through RequestManager, so removing
+    # the lift in the same tick removes it before the creation is on it.
+    world_all = lua_code(world)
+    assert "liftRelease" in code, (
+        "nothing schedules the lift to be removed again, so every import leaves "
+        "a lift standing and the creation static until the host intervenes")
+    assert "function World.sv_releaseImportedLift( self" in world_all, (
+        "the release is scheduled but nothing performs it")
+    assert "sv_releaseImportedLift" in lua_code(
+        world[world.index("function World.server_onFixedUpdate"):]
+        [:world[world.index("function World.server_onFixedUpdate"):].index(chr(10) + "end")]), (
+        "the release is never driven from the tick loop, so it never runs")
+    rel = world_all[world_all.index("function World.sv_releaseImportedLift"):]
+    rel = rel[:rel.index(chr(10) + "function ")]
+    assert "atTick" in rel and "destroy()" in rel, (
+        "the release does not wait, or does not destroy the lift handle")
+
+    # A QUEUE, NOT A SLOT. Three imports inside a minute each wrote their
+    # release into the same field and overwrote the one before, so only the last
+    # creation was ever let off its lift -- "it spawns two and only one is not
+    # frozen".
+    assert "liftReleases" in code and "liftReleases" in rel, (
+        "pending releases are held in a single slot again, so a second import "
+        "cancels the first one's release and leaves that creation frozen")
+    assert "for _, job in ipairs( queue )" in rel, (
+        "the release does not drain a queue, so only one can ever be pending")
+
+    # 5. THE LIFT GOES ON THE FLOOR. character.worldPosition is the character's
+    #    CENTRE, about a metre up; a lift placed there hangs in mid air. Vanilla's
+    #    own server-side spawn derives its position from a shape, not a character
+    #    (BuilderGuideLiftPlatform.sv_spawnLift).
+    assert "CITY_FLOOR" in code and "sm.physics.raycast" in code, (
+        "the lift height comes from the character again, which puts it a metre "
+        "above the floor -- MEASURED as liftPos z=3, world 0.75, on open terrain")
+
+
+def a_body_on_a_lift_is_never_the_ground():
+    """The ground pin must not reach a creation being placed.
+
+    PROFILES pin the ground with convertibleToDynamic = false, and a creation
+    that cannot convert can never come off a lift. Plots.sv_isGround is a pure
+    height test -- right for every piece of the city, because none of it is ever
+    on a lift, and wrong for an import.
+
+    It only bites low down. NOTlift puts the lift at slab top, world z 1.25,
+    against a 1.10 threshold, so on a plot there is margin. Import while standing
+    on the terrain outside the city and there is none -- the creation would be
+    pinned onto the lift and never come off, which is the same symptom this whole
+    change exists to fix.
+    """
+    src = io.open(SCRIPTS / "Plots.lua", encoding="utf-8").read()
+    fn = src[src.index("function Plots.sv_isGround"):]
+    fn = fn[:fn.index(chr(10) + "end")]
+    assert "isOnLift" in fn, (
+        "sv_isGround is a bare height test again, so a creation imported low "
+        "down gets pinned onto its own lift and can never be released")
+
+    # and it must come BEFORE the height test, or the height test wins
+    assert fn.index("isOnLift") < fn.index("getWorldAabb"), (
+        "the lift test runs after the height test, so it cannot save a body the "
+        "height test already claimed")
+
+    # AND HEIGHT ALONE IS NOT THE CITY FLOOR.
+    #
+    # The pin protects the deck and the plot slabs, all of which are inside the
+    # footprint. Terrain OUTSIDE the city is LOWER than our deck, so a pure
+    # height test claims anything resting on it -- the same shape as the bug
+    # that made a metal 2 block outside the city undeletable.
+    #
+    # It bites imports hardest: a creation released from a lift onto open
+    # terrain settles around z 0.75, under the 1.10 threshold, and the pinned
+    # twin sets convertibleToDynamic = false. It would freeze the instant it came
+    # off the lift -- "still static", by a fourth route.
+    assert "sv_locate" in lua_code(fn), (
+        "sv_isGround does not check the city footprint, so anything resting on "
+        "terrain outside the city is pinned as though it were the city floor")
+
+
+def every_step_works_with_items_alone():
+    """Import, place and release need no typing at all.
+
+    "make sure it works just with the items and without commands since the
+    glitch is still there."
+
+    A chat command is fine as an escape hatch and useless as a workflow: at an
+    event the host has both hands full. Every step has to be on a tool.
+
+        NOTlift left click    open the creations browser, import
+        NOTlift right click   release the lift, so the creation becomes a build
+        Cleaner               delete a lift you point at, including the kind no
+                              lift tool can pick up
+
+    The last one matters most. sm.lift.createNonPlayerLift makes a lift that
+    belongs to no player, and nothing but Lift:destroy() removes one. Two are
+    standing in the owner's world right now because an earlier build made them.
+    """
+    tool = lua_code(io.open(SCRIPTS / "NotLift.lua", encoding="utf-8").read())
+    cleaner = lua_code(io.open(SCRIPTS / "CleanerTool.lua", encoding="utf-8").read())
+
+    # NOTlift: both buttons do something, and the release is wired end to end
+    assert "pressed( primaryState )" in tool, "NOTlift has no import button"
+    assert "pressed( secondaryState )" in tool, (
+        "NOTlift has no release button, so dropping a creation off its lift "
+        "still needs a chat command")
+    assert 'sendToServer( "sv_n_swDropLift"' in tool and         "function NotLift.sv_n_swDropLift( self" in tool, (
+        "the release button sends somewhere nothing receives")
+    for verb in ("removeLift", "destroy()"):
+        assert verb in tool, f"the release never calls {verb}"
+
+    # ...and it is host-gated on the SERVER, like every other NOTlift action
+    drop = tool[tool.index("function NotLift.sv_n_swDropLift"):]
+    assert "hostnotlift" in drop and "getHostPlayer()" in drop, (
+        "the release is not host-checked server-side")
+    assert "local hostOnly = true" in drop, (
+        "the release host check does not fail safe")
+
+    # Cleaner: a lift is a thing you can point at, so it must be deletable
+    assert 'result.type == "lift"' in cleaner, (
+        "the cleaner cannot target a lift, so a non-player lift is permanent "
+        "without a chat command")
+    assert "getLiftData()" in cleaner, (
+        "the cleaner does not read the lift out of the raycast")
+    assert "params.lift" in cleaner, (
+        "the cleaner's server half never receives a lift to destroy")
+
+
+def anything_liftable_can_also_be_set_down():
+    """If a profile lets you lift a body, it must let that body become dynamic.
+
+    THIS IS THE CHECK THAT WOULD HAVE SAVED THREE VERSIONS.
+
+    `sweep` was liftable = true with convertibleToDynamic = false. Read as a
+    sentence that is "you may put this on a lift, and it may never come off" --
+    a contradiction, not a rule. Nothing enforced the pairing, so it sat there.
+
+    What it cost: every creation NOTlift imported outside a plot got `sweep` from
+    the patrol within a second of landing, and was pinned static forever. Three
+    separate fixes went into the lift -- placing one, verifying placement,
+    releasing it with a right click -- and not one of them could have worked,
+    because this undid all of them. MEASURED against the real resolver:
+
+        open terrain  zone=sweep  profile=sweep  convertibleToDynamic=False
+        on a plot     zone=true   profile=open   convertibleToDynamic=True
+
+    Reported three times as "welded to air", "still is statick", "still doesnt
+    work" -- and each report was answered by looking at the lift, because the
+    lift was the thing that had just changed.
+
+    The PINNED twins are exempt and that is the point of them: they are
+    liftable = false AND convertible = false together, which is consistent.
+    """
+    lua = fresh("Palette.lua", "Protection.lua")
+    profiles = lua.eval("PROFILES_FOR_TEST")
+    if profiles is None:
+        # PROFILES is a file-local table; reach it through the resolver's own
+        # accessor rather than re-declaring it here, so the two cannot drift.
+        lua.execute("PROFILES_FOR_TEST = Protection.Sv_ProfilesForTest()")
+        profiles = lua.eval("PROFILES_FOR_TEST")
+
+    bad = []
+    for name in profiles:
+        p = profiles[name]
+        if p["liftable"] and not p["convertibleToDynamic"]:
+            bad.append(name)
+    assert not bad, (
+        f"{', '.join(sorted(bad))}: liftable but not convertibleToDynamic. A body "
+        "you can put on a lift and never take off is stuck there -- and anything "
+        "given that profile can never become a normal build again")
+
+
+def the_lift_trace_is_bounded():
+    """A per-tick logger that cannot run away.
+
+    "make a detailed log about the lift that works real time so you can get info
+    why tis wrong."
+
+    Right -- every measurement so far was one sample at one instant chosen by me,
+    and each was taken at the wrong instant: isOnLift() before placement had been
+    processed, isDynamic() before the release, "lift=true" which only ever meant
+    "no Lua error was raised". A creation passes through imported, on-a-lift,
+    released and settled, and the interesting thing is which TRANSITION fails.
+
+    But a per-tick log is also exactly the shape of the worst performance bug
+    this project has measured -- 1.79 GB and 1.88 M lines in one session, from a
+    print() running every tick. So the trace must be bounded three ways, and this
+    check is what keeps it that way.
+    """
+    world = io.open(SCRIPTS / "World.lua", encoding="utf-8").read()
+    code = lua_code(world)
+
+    assert "function World.sv_traceStep( self" in code, "no trace stepper"
+    assert "sv_traceStep" in lua_code(
+        world[world.index("function World.server_onFixedUpdate"):]
+        [:world[world.index("function World.server_onFixedUpdate"):].index(chr(10) + "end")]), (
+        "the trace is never driven from the tick loop, so it never runs")
+
+    step = code[code.index("function World.sv_traceStep"):]
+    step = step[:step.index(chr(10) + "function ")]
+
+    # 1. only on change, or on a heartbeat -- never unconditionally per tick
+    assert "changed or tick >= t.nextBeat" in step, (
+        "the trace logs every tick regardless of whether anything changed, which "
+        "is 40 lines a second of identical text")
+    # 2. the heartbeat is at most one line a second
+    assert "TRACE_HEARTBEAT" in step and "World.TRACE_HEARTBEAT = 40" in code, (
+        "the heartbeat is not one line a second")
+    # 3. it stops on its own
+    assert "untilTick" in step and "self.sw.trace = nil" in step, (
+        "the trace never ends, so one import logs for the rest of the session")
+
+    # and it must record the two things that look identical from outside: what
+    # the BODY says and what the RESOLVER would give it
+    line = code[code.index("function World.sv_traceLine"):]
+    line = line[:line.index(chr(10) + "function ")]
+    for probe in ("isConvertibleToDynamic", "sv_profileForTest", "isOnLift", "isDynamic"):
+        assert probe in line, (
+            f"the trace does not record {probe}, so 'the patrol pinned it again' "
+            "and 'the engine never converted it' stay indistinguishable")
+
+
+def a_new_world_does_not_inherit_the_last_ones_state():
+    """Fresh world, fresh protection, fresh plots, fresh clock.
+
+    REPORTED: "every time I create a new world. and fix something you havent
+    updated yet in a long time."
+
+    Every state file this mod writes lives in $CONTENT_DATA -- one folder for the
+    whole MOD, shared by every world made from it. Nothing here uses per-world
+    storage at all. So a new world inherited the previous world's protection
+    mode, buildopen flag, plot claims and event phase: it came up LOCKED, with
+    claims on plots that did not exist, and an event that had already ended.
+
+    Every time. This is also what was misread this morning as "one test event
+    left it locked" -- it was never a leftover, it was structural, and /unlock
+    was a fix for the symptom.
+
+    Runs the real reset rather than reading the table, for the reason the buffer
+    bug taught: a correct table that nothing reaches is not a feature.
+    """
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Event.lua", "Plots.lua")
+    S, E = lua.globals().Settings, lua.globals().Event
+    S.Sv_Load(False)
+
+    # the state a previous world leaves behind
+    S.Sv_SetQuiet("protection", "locked")
+    S.Sv_SetQuiet("buildopen", False)
+    S.Sv_SetQuiet("worldstamp", "the-old-world")
+    # ...and a host preference, which must SURVIVE
+    S.Sv_SetQuiet("maxjoints", 3)
+
+    S.Sv_ResetWorldState("the-new-world")
+
+    assert S.Get("protection") == "open", (
+        "a new world still starts on the previous world's protection mode -- "
+        "which is how a fresh world came up locked")
+    assert S.Get("buildopen") is True, "a new world still starts with building shut"
+    assert S.Get("worldstamp") == "the-new-world", "the stamp was not updated"
+    assert S.Get("maxjoints") == 3, (
+        "the reset wiped a HOST preference. Only the two settings that describe "
+        "a particular world may be cleared; losing the tool and rule settings on "
+        "every new world would be its own bug")
+
+    ev = E.Sv_ResetFile()
+    assert ev["phase"] == "off", (
+        "the event clock is not reset, so a new world inherits `ended` -- the one "
+        "phase that locks everything")
+
+    # and the reset must be REACHED, after the base call that creates the world
+    game = io.open(SCRIPTS / "Game.lua", encoding="utf-8").read()
+    code = lua_code(game)
+    assert "self:sv_newWorldReset()" in code, "nothing calls the reset"
+    assert "function Game.sv_newWorldReset( self" in code, "the reset does not exist"
+    assert code.index("CreativeGame.server_onCreate( self )") <         code.index("self:sv_newWorldReset()"), (
+        "the reset runs BEFORE the base create. Writing to self.storage first "
+        "makes CreativeGame's `if self.sv.saved == nil` see a non-empty table and "
+        "skip creating the world -- no world at all, which is exactly what the "
+        "baseGameContent experiment produced")
+
+    reset = code[code.index("function Game.sv_newWorldReset"):]
+    reset = reset[:reset.index(chr(10) + "function ")]
+    for part in ("Settings.Sv_ResetWorldState", "Plots.Sv_ResetFile", "Event.Sv_ResetFile"):
+        assert part in reset, f"the reset does not clear {part}"
+    # bans and snapshots are NOT world state and must survive
+    assert "Identity" not in reset and "Sv_ResetBans" not in reset, (
+        "the reset touches the ban list -- bans are the one thing that is "
+        "deliberately global, and a persistent ban list is the point of it")
+
+
+def deleting_a_whole_creation_crosses_joints():
+    """"The whole creation" means every body in it, not one weld group.
+
+    REPORTED: "the cleaner even with F wont delete the whole thing", about a
+    build of 72 blocks and 20 BEARINGS.
+
+    The bearing count is the tell. Only a shared `childs` array is a weld -- see
+    the reference creation in CLAUDE.md -- and a bearing joins two SEPARATE
+    bodies. So that build is roughly 21 bodies, and body:getShapes() returns the
+    shapes of exactly one of them. F deleted the chunk under the crosshair and
+    left twenty standing, which reads as "the delete is broken" rather than "the
+    delete did a twenty-first of the job".
+
+    The same mistake was sitting in /purge look <n>, which announced "removed the
+    whole creation" while removing one body. Two independent places, same
+    misreading -- hence a check.
+
+    getCreationShapes() is the one that crosses joints.
+    """
+    for path, fn_marker in (
+        (SCRIPTS / "CleanerTool.lua", "function CleanerTool.sv_n_swDelete"),
+        (SCRIPTS / "World.lua", 'cmd == "/purge"'),
+    ):
+        src = lua_code(io.open(path, encoding="utf-8").read())
+        assert "getCreationShapes()" in src, (
+            f"{path.name} deletes a 'whole creation' with getShapes(), which is "
+            "one weld group -- anything joined by a bearing survives")
+
+    # ...and reaching further makes the per-SHAPE city guard load-bearing: a
+    # build bolted to a plot slab now brings the slab into range.
+    world = lua_code(io.open(SCRIPTS / "World.lua", encoding="utf-8").read())
+    purge = world[world.index('cmd == "/purge"'):]
+    purge = purge[:purge.index("elseif cmd ==")]
+    assert "sv_isCityShape" in purge, (
+        "/purge can now reach across joints but has no per-shape city guard, so "
+        "one bearing bolted to a plot puts the city floor in range")
+
+    cleaner = lua_code(io.open(SCRIPTS / "CleanerTool.lua", encoding="utf-8").read())
+    assert "isCity(" in cleaner, "the cleaner lost its per-shape city guard"
 
 
 def the_cleaner_is_wired_to_the_same_uuid_everywhere():
@@ -895,6 +1502,113 @@ def buffer_time_actually_reaches_the_polish_profile():
     shut = flags("open", False)
     assert shut["buildable"] is False and shut["paintable"] is False, (
         "closing building in OPEN mode no longer locks anything")
+
+
+def unlock_actually_reopens_building():
+    """The lift bug, and the one command that was supposed to undo it.
+
+    REPORTED, over and over: "I cant use lift in custom game."
+
+    The world shuts with TWO persisted switches, not one:
+
+        protection  (hidden setting, Event.PROTECTION[phase])
+        buildopen   (visible setting, sv_applyEventPhase)
+
+    The end of an event writes both -- protection "locked", buildopen false --
+    and `ended` is terminal, so both survive every restart. /unlock wrote only
+    the first. And `buildopen == false` fires in World's resolver BEFORE the
+    zone verdict, so every plot came back on the LOCKED profile anyway:
+
+        liftable false, convertibleToDynamic false
+
+    Vanilla's Lift.lua:127 needs targetBody:isLiftable() before it will hover,
+    select or carry anything, so a locked world is a lift that silently does
+    nothing. /unlock said "Building reopened" and reopened nothing.
+
+    This runs the real resolver, not the table -- the same reason
+    buffer_time_actually_reaches_the_polish_profile exists.
+    """
+    lua = fresh("Layout.lua", "Settings.lua", "Protection.lua", "Plots.lua", "Event.lua")
+    lua.globals().Settings.Sv_Load(False)
+    P, Prot = lua.globals().Plots, lua.globals().Protection
+
+    plots = lua.eval("Plots()")
+    P.sv_onCreate(plots, lua.table_from({"grid": lua.table_from({}), "enabled": True}))
+    plots["enabled"] = True
+    lua.globals().g_swPlots = plots
+
+    prot = lua.eval("Protection()")
+    Prot.sv_onCreate(prot, "open")
+    lua.globals().g_swProtection = prot
+    Prot.sv_setResolver(prot, lua.execute("""
+        return function( body )
+            if g_swPlots:sv_isScenery( body ) then return "locked" end
+            local zone = g_swPlots:sv_bodyIsOpen( body )
+            if zone == "sweep" then return "sweep" end
+            if Settings.Get( "buildopen" ) == false
+                and not g_swProtection:sv_modeClosesBuilding() then
+                return false
+            end
+            return zone
+        end
+    """))
+
+    bx, by = lua.globals().Layout.plotCentre(plots["layout"], 1)
+    block = float(P.BLOCK)
+    body = lua.execute("""
+        return function( x, y, z )
+            local b = { worldPosition = { x = x, y = y, z = z } }
+            function b:getShapes() return { { shapeUuid = "not-ours" } } end
+            function b:getWorldAabb()
+                return { x = x, y = y, z = z }, { x = x, y = y, z = z + 1 }
+            end
+            return b
+        end
+    """)(float(bx) * block, float(by) * block, 1.5)
+    assert P.sv_bodyIsOpen(plots, body) is True, "the fixture is not on a buildable plot"
+
+    def profile(mode, buildopen):
+        Prot.sv_setMode(prot, mode)
+        lua.globals().Settings.Sv_SetQuiet("buildopen", buildopen)
+        got = Prot.sv_profileForTest(prot, body)
+        return got[0] if isinstance(got, tuple) else got
+
+    # the state one finished event leaves behind, forever
+    ended = profile("locked", False)
+    assert ended["liftable"] is False, (
+        "an ended event no longer locks the world -- this check is testing nothing")
+
+    # what /unlock used to do: the mode only. STILL DEAD.
+    half = profile("open", False)
+    assert half["liftable"] is False and half["buildable"] is False, (
+        "the buildopen blanket no longer overrides an open mode, so the bug this "
+        "check exists for cannot happen -- confirm before deleting the check")
+
+    # what /unlock must do: both.
+    whole = profile("open", True)
+    assert whole["liftable"] is True, (
+        "reopening the world does not make a plot liftable, so the lift still "
+        "cannot pick anything up")
+    assert whole["convertibleToDynamic"] is True, (
+        "a creation placed by the lift cannot convert to dynamic")
+    assert whole["buildable"] is True and whole["erasable"] is True
+
+    # ...and /unlock must ACTUALLY write both. String-matching, but a command
+    # that sets one flag and announces the other is exactly this bug.
+    world_src = io.open(SCRIPTS / "World.lua", encoding="utf-8").read()
+    game_src = io.open(SCRIPTS / "Game.lua", encoding="utf-8").read()
+    assert "sv_e_swOpenBuilding" in world_src, (
+        "/unlock no longer asks Game to reopen building, so it sets the "
+        "protection mode and leaves buildopen false -- the original bug")
+    assert "function Game.sv_e_swOpenBuilding" in game_src, (
+        "World.lua sends sv_e_swOpenBuilding and Game.lua has no handler for it")
+    handler = game_src.split("function Game.sv_e_swOpenBuilding", 1)[1]
+    handler = handler.split(chr(10) + "function ", 1)[0]
+    assert 'Sv_SetQuiet( "buildopen", true )' in handler, (
+        "sv_e_swOpenBuilding does not open building, which is its whole job")
+    assert "sv_stop" in handler, (
+        "sv_e_swOpenBuilding leaves a stale `ended` clock in Event.json, so the "
+        "HUD keeps saying builds are locked over a world that is open")
 
 
 def buffer_time_lets_you_polish_but_not_place_or_break():
@@ -2027,7 +2741,7 @@ def every_button_reaches_a_branch():
     import re
     game = read("Game.lua")
     panels = ["MenuGui.lua", "PlotsGui.lua", "SettingsGui.lua",
-              "EventGui.lua", "MyPlotGui.lua", "ConfirmGui.lua"]
+              "EventGui.lua", "MyPlotGui.lua", "ConfirmGui.lua", "StyleGui.lua"]
     orphans = []
     for name in panels:
         for action in sorted(set(re.findall(r'action = "([^"]+)"', read(name)))):
@@ -2146,6 +2860,13 @@ def every_caption_can_be_drawn():
            "roadwidth": 6, "plazacells": 2, "claimed": {}}
     collect("city", lua.globals().PlotsGui.Build(lua.table_from(
         {k: (lua.table_from(v) if isinstance(v, dict) else v) for k, v in cfg.items()})))
+
+    for piece in ("pad", "border", "road", "plaza", "stand"):
+        collect(f"style/{piece}", lua.globals().StyleGui.Build(style_state(lua, piece)))
+    # and the state a host reaches with /set padcolour ff00ff -- a colour with no
+    # swatch on the grid, whose name is the hex itself
+    collect("style/rawhex", lua.globals().StyleGui.Build(
+        style_state(lua, "pad", padcolour="ff00ff")))
 
     st = lua.table_from({"plotsOn": True, "mine": 34,
                          "standing": lua.table_from({"kind": "plot", "index": 34,
@@ -2294,7 +3015,8 @@ def walk_raw(node, out=None):
 def gui_lua():
     lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Event.lua", "EventHud.lua",
                 "RosterHud.lua", "EventGui.lua", "ConfirmGui.lua",
-                "SettingsGui.lua", "PlotsGui.lua", "MenuGui.lua", "MyPlotGui.lua")
+                "SettingsGui.lua", "PlotsGui.lua", "MenuGui.lua", "MyPlotGui.lua",
+                "StyleGui.lua")
     lua.globals().Settings.Sv_Load(False)
     return lua
 
@@ -2346,6 +3068,102 @@ def the_city_panel_fits_at_every_setting():
             no_button_is_buried(label, items, G.H)
             tried += 1
     assert tried >= 30, f"only exercised {tried} combinations"
+
+
+ACCENT_RGB = "1 0.74 0.35 1"        # the map key's "taken" colour
+
+
+def the_top_down_map_tiles_exactly():
+    """No seams in the map, at any scale.
+
+    REPORTED: "the road is crosed by frame that it shoudlnt be."
+
+    The layout was never wrong -- dev/test_layout.py proves it is an exact
+    partition and no deck piece overlaps the plaza. The DRAWING was: it floored
+    the position and the size independently, so a piece ending at 149.7 was drawn
+    to 149 while its neighbour starting at 149.7 was drawn from 149. Some seams
+    gained a pixel, some lost one, and a partition with no holes acquired holes.
+
+    Rounding both EDGES instead makes adjacent pieces resolve to the same
+    boundary pixel by construction. MEASURED across a row: 10 seam breaks before,
+    0 after, on a 10x10 grid.
+
+    This walks a scanline through the drawn rectangles and demands they are
+    contiguous from the left edge of the map to the right.
+    """
+    lua = fresh("Layout.lua")
+    L = lua.globals().Layout
+    import math
+
+    # THE PLAZA MUST NOT WEAR THE "TAKEN" COLOUR.
+    #
+    # It was ACCENT orange, which the key underneath calls "taken", and it is
+    # deliberately BIGGER than a plot -- with plazacells 2 it is 41 blocks across
+    # against a plot's 20, because it swallows the seam between the cells it
+    # covers. MEASURED: 74 px wide beside a 36 px plot. So the spawn plaza read
+    # as somebody's claimed tile, of the wrong size, sitting off the grid.
+    # Reported as "see? they are offset."
+    src = io.open(SCRIPTS / "PlotsGui.lua", encoding="utf-8").read()
+    shade = src[src.index("local SHADE = {"):]
+    shade = shade[:shade.index("}")]
+    plaza = shade[shade.index("plaza"):shade.index(chr(10), shade.index("plaza"))]
+    assert ACCENT_RGB not in plaza, (
+        "the plaza is drawn in the same colour the map key calls 'taken', so the "
+        "spawn plaza reads as an oversized claimed plot sitting off the grid")
+    assert "spawn plaza" in src, (
+        "the map key does not name the plaza colour, so it is an unexplained "
+        "block on the map")
+
+    for cfg in ({"cols": 10, "rows": 10, "plot": 20, "roadwidth": 6, "plazacells": 2},
+                {"cols": 5, "rows": 5, "plot": 20, "roadwidth": 6, "plazacells": 1},
+                {"cols": 12, "rows": 8, "plot": 16, "roadwidth": 4, "plazacells": 2},
+                {"cols": 3, "rows": 3, "plot": 24, "roadwidth": 0, "plazacells": 0}):
+        grid = L.grid(lua.table_from(cfg))
+        size = 380.0
+        span = max(grid["width"], grid["height"], 1)
+        scale = size / span
+        ox = (size - grid["width"] * scale) * 0.5 - grid["x0"] * scale
+        oy = (size - grid["height"] * scale) * 0.5 - grid["y0"] * scale
+
+        def draw(cx, cy, cw, ch):
+            x0 = math.floor(ox + cx * scale + 0.5)
+            y0 = math.floor(oy + cy * scale + 0.5)
+            x1 = math.floor(ox + (cx + cw) * scale + 0.5)
+            y1 = math.floor(oy + (cy + ch) * scale + 0.5)
+            return x0, y0, max(1, x1 - x0), max(1, y1 - y0)
+
+        rects = []
+        pieces = L.deckPieces(grid)
+        for i in range(1, len(pieces) + 1):
+            pc = pieces[i]
+            rects.append((pc["x"], pc["y"], pc["w"], pc["h"]))
+        for row in range(grid["cfg"]["rows"]):
+            for col in range(grid["cfg"]["cols"]):
+                r = L.plotRect(grid, col, row)
+                if r:
+                    rects.append((r["x"], r["y"], r["w"], r["h"]))
+
+        # a scanline through the middle of each plot row must be covered edge to
+        # edge with no gap and no overlap
+        for row in range(grid["cfg"]["rows"]):
+            probe = L.plotRect(grid, 0, row)
+            if not probe:
+                continue
+            yb = probe["y"] + probe["h"] * 0.5
+            spans = []
+            for bx, by, bw, bh in rects:
+                if by <= yb < by + bh:
+                    x, _, w, _ = draw(bx, by, bw, bh)
+                    spans.append((x, x + w))
+            spans.sort()
+            assert spans, f"cols={cfg['cols']} row {row}: nothing drawn at all"
+            for (a0, a1), (b0, b1) in zip(spans, spans[1:]):
+                assert a1 == b0, (
+                    f"cols={cfg['cols']} plot={cfg['plot']} row {row}: the map has "
+                    f"a seam -- one piece ends at px {a1} and the next starts at "
+                    f"px {b0}. Layout is an exact partition, so this is the "
+                    "drawing rounding position and size separately instead of "
+                    "rounding both edges")
 
 
 def the_city_map_never_leaves_its_box():
@@ -3085,6 +3903,244 @@ def the_city_is_built_out_of_the_selected_blocks():
     assert got[Pal.MaterialUuid("concrete")] == "ff00ff", "a raw hex colour was ignored"
 
 
+# ------------------------------------------------- the city style panel ---
+#
+# REPORTED: "city build settings. specialy the material and colour selection.
+# make it not a slider like. but like a list so its easier to select. and use
+# the color pallete selection of paint tool for the city part color selection."
+#
+# The ten style settings used to be ten stepper rows on the settings panel: one
+# button per setting, click it and it moves to the next of twenty-five blocks or
+# forty colours, wrapping at the end. Every click was a server round trip, and at
+# no point could you see what you were choosing between.
+#
+# StyleGui puts all of it on one screen. These checks are about the two ways that
+# can be wrong without looking wrong: an option that is not on the panel at all,
+# and an option that is on the panel but sends a value the validator refuses.
+
+
+def style_state(lua, piece="pad", **over):
+    """Exactly what Game.sv_openStyleGui sends the client.
+
+    Built from the schema rather than hand-written, so a new piece of the city
+    is picked up here the same way the real thing picks it up.
+    """
+    S = lua.globals().Settings
+    style = {}
+    for p in lua.globals().Palette.PIECES.values():
+        key = p["key"]
+        style[key] = lua.table_from({
+            "block": over.get(key + "block", S.Get(key + "block")),
+            "colour": over.get(key + "colour", S.Get(key + "colour")),
+        })
+    return lua.table_from({"style": lua.table_from(style),
+                           "piece": piece, "back": "city"})
+
+
+def clickables(root):
+    """(action, onClickData table, raw node) for everything on a panel."""
+    out = []
+    for node in walk_raw(root):
+        data = node["onClickData"]
+        if data is not None:
+            out.append((data["action"], data, node))
+    return out
+
+
+def the_style_panel_fits_for_every_piece():
+    lua = gui_lua()
+    G = lua.globals().StyleGui
+    for piece in ("pad", "border", "road", "plaza", "stand"):
+        root = G.Build(style_state(lua, piece))
+        label = f"style {piece}"
+        items = panel_fits(label, root, G.W, G.H)
+        no_button_is_buried(label, items, G.H)
+
+    # The states that are NOT a clean selection. A raw hex has no swatch on the
+    # grid, so the selection ring is not drawn at all -- and a panel that only
+    # lays out correctly when something is selected is a panel that breaks the
+    # first time a host uses /set.
+    for extra in ({"padcolour": "ff00ff"}, {"padblock": "nonsense"},
+                  {"padcolour": "", "padblock": ""}):
+        root = G.Build(style_state(lua, "pad", **extra))
+        label = f"style {extra}"
+        items = panel_fits(label, root, G.W, G.H)
+        no_button_is_buried(label, items, G.H)
+
+    # ...and with no state at all, which is what a client has if it renders
+    # before its first update arrives.
+    panel_fits("style (no state)", G.Build(None), G.W, G.H)
+
+
+def every_block_and_every_colour_is_one_click_away():
+    """No stepping, and nothing left off the panel.
+
+    A list that offers twenty of the twenty-five blocks is the same bug in a
+    nicer shape. And the half that would fail silently: a button whose value the
+    validator on the other side refuses, which shows up as a click that does
+    nothing for one particular material.
+    """
+    lua = gui_lua()
+    G, Pal, S = lua.globals().StyleGui, lua.globals().Palette, lua.globals().Settings
+    offered = {"block": set(), "colour": set(), "piece": set(), "stylepreset": set()}
+    for action, data, _ in clickables(G.Build(style_state(lua, "pad"))):
+        if action in ("block", "colour"):
+            offered[action].add(data["value"])
+        elif action == "piece":
+            offered["piece"].add(data["piece"])
+        elif action == "stylepreset":
+            offered["stylepreset"].add(data["preset"])
+
+    blocks = set(Pal.MATERIAL_ORDER.values())
+    colours = set(Pal.COLOUR_ORDER.values())
+    assert offered["block"] == blocks, (
+        "the block list is not the block list -- missing "
+        f"{sorted(blocks - offered['block'])}, invented "
+        f"{sorted(offered['block'] - blocks)}")
+    assert offered["colour"] == colours, (
+        "the swatch grid is not the palette -- missing "
+        f"{sorted(colours - offered['colour'])}, invented "
+        f"{sorted(offered['colour'] - colours)}")
+    assert offered["piece"] == {p["key"] for p in Pal.PIECES.values()}, (
+        f"the panel offers pieces {sorted(offered['piece'])}")
+    assert offered["stylepreset"] == set(Pal.STYLE_ORDER.values()), (
+        f"the panel offers styles {sorted(offered['stylepreset'])}")
+
+    # Every value on the panel has to survive Settings.Sv_Set, which is what
+    # actually receives it. A button and a validator that disagree by one entry
+    # is a panel that works twenty-four times out of twenty-five.
+    for name in sorted(blocks):
+        got = S.Sv_Set("padblock", name)
+        assert got[0], f"clicking block {name!r} would be refused: {got[1]}"
+    for name in sorted(colours):
+        got = S.Sv_Set("padcolour", name)
+        assert got[0], f"clicking colour {name!r} would be refused: {got[1]}"
+
+
+def the_swatch_grid_is_the_paint_tools_grid():
+    """Four rows of ten, at the tool's colours, in the tool's order.
+
+    "use the color pallete selection of paint tool" -- so a swatch drawn at the
+    wrong colour is not a cosmetic complaint, it is the feature being wrong. The
+    colour is read back off the widget and converted to hex again here, which
+    also checks Palette.GuiColour in the only place it is used.
+    """
+    lua = gui_lua()
+    G, Pal = lua.globals().StyleGui, lua.globals().Palette
+    swatches = {}
+    for action, data, node in clickables(G.Build(style_state(lua, "pad"))):
+        if action == "colour":
+            swatches[data["value"]] = node
+
+    xs, ys = {}, {}
+    rows = list(Pal.ROWS.values())
+    assert len(rows) == 4
+    for r, row in enumerate(rows):
+        cols = list(row.values())
+        assert len(cols) == 10
+        for c, hexv in enumerate(cols):
+            name = Pal.NameOfHex(hexv)
+            node = swatches.get(name)
+            assert node is not None, f"{name} ({hexv}) has no swatch on the grid"
+
+            got = tuple(round(float(v) * 255) for v in str(node["Colour"]).split()[:3])
+            want = tuple(int(hexv[i:i + 2], 16) for i in (0, 2, 4))
+            assert got == want, (
+                f"swatch {name} is drawn {got}, the paint tool's is {want}")
+
+            w, h = node["width"], node["height"]
+            assert w == h and w >= 20, f"swatch {name} is {w}x{h}"
+
+            x, y = node["x"], node["y"]
+            xs.setdefault(c, x)
+            ys.setdefault(r, y)
+            assert x == xs[c], f"{name} is not lined up with the rest of column {c + 1}"
+            assert y == ys[r], f"{name} is not lined up with the rest of row {r + 1}"
+
+    assert [xs[c] for c in range(10)] == sorted(xs.values()), \
+        "the columns are not in the paint tool's left-to-right order"
+    assert [ys[r] for r in range(4)] == sorted(ys.values()), \
+        "the rows are not in the paint tool's top-to-bottom order"
+
+
+def the_panel_agrees_with_itself_about_what_is_selected():
+    """The block list, the selection ring and the preview are three separate
+    reads of the same two values, and it is entirely possible to update one and
+    not the others -- which reads as a panel that highlights the wrong thing."""
+    lua = gui_lua()
+    G, Pal, S = lua.globals().StyleGui, lua.globals().Palette, lua.globals().Settings
+    for p in Pal.PIECES.values():
+        key, label = p["key"], p["label"]
+        block, colour = S.Get(key + "block"), S.Get(key + "colour")
+        root = G.Build(style_state(lua, key))
+        named = {n["Name"]: n for n in walk_raw(root) if n["Name"] is not None}
+
+        lit = [(d["value"], n) for a, d, n in clickables(root)
+               if a == "block" and n["Skin"] == "StyledButtonLarge"]
+        assert len(lit) == 1, f"{key}: {len(lit)} blocks are highlighted, not 1"
+        assert lit[0][0] == block, (
+            f"{key}: the panel highlights {lit[0][0]!r} but the setting is {block!r}")
+
+        ring, sw = named.get("SwRing"), named.get("Sw" + colour)
+        assert sw is not None, f"{key}: {colour!r} has no swatch"
+        assert ring is not None, f"{key}: nothing marks which swatch is selected"
+        assert ring["x"] < sw["x"] and ring["y"] < sw["y"], (
+            f"{key}: the selection ring is not behind the {colour} swatch")
+        assert ring["x"] + ring["width"] > sw["x"] + sw["width"], (
+            f"{key}: the selection ring does not surround the {colour} swatch")
+
+        assert named["SelPiece"]["Caption"] == label, (
+            f"the preview says {named['SelPiece']['Caption']!r}, not {label!r}")
+        assert named["SelBlock"]["Caption"] == Pal.MaterialLabel(block)
+        assert str(named["SelSw"]["Colour"]) == str(Pal.GuiColour(colour)), (
+            f"{key}: the big preview swatch is not the selected colour")
+
+
+def the_style_panel_and_the_builder_name_the_same_pieces():
+    """Palette.PIECES and Plots.STYLE_PIECES are the same five, in order.
+
+    Written out twice on purpose: Plots.lua is loaded WITHOUT Palette.lua in
+    every plot check, so a load-time dependency between the two would break a
+    dozen tests that have nothing to do with styling. Duplication plus a check is
+    the trade, and this is the check. A piece on one list and not the other is
+    either ground nobody can style or a button that changes nothing.
+    """
+    lua = fresh("Layout.lua", "Palette.lua", "Plots.lua")
+    Pal, P = lua.globals().Palette, lua.globals().Plots
+    gui = [p["key"] for p in Pal.PIECES.values()]
+    builder = list(P.STYLE_PIECES.values())
+    assert gui == builder, (
+        f"the style panel offers {gui} and the builder styles {builder}")
+    for p in Pal.PIECES.values():
+        assert p["label"], f"piece {p['key']} has no name a host would recognise"
+        assert p["help"], f"piece {p['key']} has no explanation"
+
+
+def the_settings_panel_no_longer_steps_through_the_style():
+    """The ten style settings must not be stepper rows anywhere any more.
+
+    The trap is RowsFor("other"): it sweeps up every schema row that no group
+    claims, so dropping the CITY STYLE group without leaving its keys claimed
+    puts all ten straight back as steppers under OTHER -- the exact thing being
+    replaced, wearing a different tab.
+    """
+    lua = gui_lua()
+    G = lua.globals().SettingsGui
+    for group in [g["key"] for g in G.GROUPS.values()] + ["other"]:
+        rows = G.RowsFor(group)
+        for row in (rows.values() if rows is not None else []):
+            key = row["key"]
+            assert not (key.endswith("block") or key.endswith("colour")), (
+                f"{key} is still a stepper row under {group!r}")
+
+    # ...and the nav still gets you to the panel that replaced them.
+    values = lua.table_from({row["key"]: row["default"]
+                             for row in lua.globals().Settings.SCHEMA.values()})
+    actions = {a for a, _, _ in clickables(G.Build(values, "safety", 1))}
+    assert "style" in actions, (
+        "nothing on the settings panel opens the city style panel any more")
+
+
 def a_plot_can_never_be_scenery_whatever_it_is_made_of():
     """Scenery is locked in every mode. A plot must never resolve to it.
 
@@ -3246,6 +4302,868 @@ def clicking_a_style_row_cycles_it_all_the_way_round():
         assert len(str(c["color"])) == 6, f"bad colour {c['color']!r} in the blueprint"
 
 
+# --------------------------------------------------- the network surface ---
+
+# Handlers a guest may reach, and why each is safe without a host test of its
+# own. Anything NOT named here has to test the sender itself.
+GUEST_REACHABLE = {
+    "sv_n_openMenu":
+        "opens the hub, and MenuGui.Build( isHost ) leaves the host entries "
+        "out -- each of them is reached through sv_n_menuOpen, which gates",
+    "sv_n_myPlotAction":
+        "a player acting on their own plot: authority comes from where the "
+        "sender is standing, never from the payload",
+    "sv_n_swImport":
+        "forwards to World.sv_e_swImportCreation, which is host-gated there "
+        "deliberately -- see the HOST ONLY comment in that function",
+}
+
+
+def every_network_handler_checks_the_sender():
+    """The client half of this mod runs from the PLAYER'S disk.
+
+    So every sendToServer in it is a message a modified client can send at
+    will, with any payload it likes, at any time. A server handler therefore
+    cannot treat "the panel only shows this button to the host" as a check --
+    the panel is not what sent the message.
+
+    The engine hands the real sender in as the third argument, and that is the
+    only trustworthy answer to "who asked". This walks every sv_n_ handler and
+    demands it either tests that argument or is named in GUEST_REACHABLE with a
+    reason.
+
+    Written after auditing T mod, whose whole host-takeover path is one
+    unguarded RPC. See docs/MODS-AND-TRUST.md.
+    """
+    offenders, seen = [], 0
+    for path in sorted(SCRIPTS.glob("*.lua")):
+        src = io.open(path, encoding="utf-8").read()
+        for m in re.finditer(r"^function\s+\w+\.(sv_n_\w+)\s*\(([^)]*)\)",
+                             src, re.M):
+            name, args = m.group(1), m.group(2)
+            end = src.find('\nfunction ', m.end())
+            body = src[m.end(): end if end != -1 else len(src)]
+            seen += 1
+
+            assert "player" in args, (
+                f"{path.name}: {name} does not take the sender as an argument, "
+                f"so it cannot know who called it")
+
+            if "getHostPlayer" in body or name in GUEST_REACHABLE:
+                continue
+            offenders.append(f"{path.name}:{name}")
+
+    assert seen, "found no sv_n_ handlers at all -- the scan is broken"
+    assert not offenders, (
+        "these server handlers neither test the sender nor appear in "
+        "GUEST_REACHABLE, so any modified client can call them: "
+        + ", ".join(offenders))
+
+
+def no_handler_trusts_an_identity_from_its_payload():
+    """The caller is an argument. A player named in a message is a CLAIM.
+
+    T mod's opCheck is the worked example of getting this wrong: it grants
+    operator to data[3], a player id the client supplies, so whoever holds the
+    key can op anybody rather than only themselves.
+    """
+    claim = re.compile(
+        r"(?:data|params|args)\s*(?:\.\s*player\b|\[\s*['\"]player['\"]\s*\])")
+    for path in sorted(SCRIPTS.glob("*.lua")):
+        src = io.open(path, encoding="utf-8").read()
+        for m in re.finditer(r"^function\s+\w+\.(sv_n_\w+)\s*\([^)]*\)",
+                             src, re.M):
+            end = src.find('\nfunction ', m.end())
+            body = src[m.end(): end if end != -1 else len(src)]
+            hit = claim.search(body)
+            assert hit is None, (
+                f"{path.name}: {m.group(1)} reads {hit.group(0)!r} out of its "
+                f"payload. The sender is the third argument; a player named in "
+                f"a message is only who the client SAYS it is.")
+
+
+# ---------------------------------------------------------------- wardrobe ---
+#
+# The crowd bot's whole appearance is pure, which is the point of putting it in
+# its own file: every one of these runs the real Lua and nothing is restated in
+# Python. What they CANNOT prove is that the renderables draw -- for that,
+# dev/check_uuids.py resolves all 84 paths against the install, and only the game
+# can say whether a character wearing them looks right.
+
+SEEDS = list(range(1, 201))
+
+# The wardrobe lives in BotCharacter.lua, not a file of its own: a character
+# script cannot dofile mod content. Measured -- every bot threw "attempt to
+# call field 'Name' (a nil value)" and walked around in the characterset's
+# fallback outfit. The note at the top of that file has the log line.
+
+
+def _look(lua, seed):
+    """(list, sex, chosen) for one seed, as plain Python."""
+    W = lua.globals().Wardrobe
+    lst, sex, chosen = W.Look(seed)
+    return [lst[i] for i in range(1, len(lst) + 1)], sex, dict(chosen)
+
+
+def every_bot_is_dressed_and_named():
+    lua = fresh("BotCharacter.lua")
+    W = lua.globals().Wardrobe
+    for seed in SEEDS:
+        items, sex, chosen = _look(lua, seed)
+        assert sex in ("male", "female"), f"seed {seed}: sex {sex!r}"
+
+        if chosen.get("style") == "classic":
+            # The classic set replaces the whole body at once -- head, chest,
+            # hands, feet, legs, hair, backpack -- so it fills no slots and
+            # must arrive complete or the bot is missing a limb.
+            expect = set(W.CLASSIC[sex].values())
+            missing = expect - set(items)
+            assert not missing, (
+                f"seed {seed}: classic {sex} bot is missing "
+                f"{[q.rsplit('/', 1)[-1] for q in missing]}")
+        else:
+            # The slots with no bare-skin alternative for BOTH sexes. Female
+            # has no char_female_body_pants / _jacket / _shoes at all, so a
+            # bot missing one is a hole in the model.
+            for slot in ("head", "jacket", "gloves", "pants", "shoes"):
+                assert chosen.get(slot), f"seed {seed} ({sex}): no {slot}"
+
+            # THE ONE COMBINATION RULE: a hat renderable carries Hathair_mat,
+            # so a hat over hair draws hair through the hat.
+            assert not (chosen.get("hat") and chosen.get("hair")), (
+                f"seed {seed}: wearing a hat AND hair")
+            # ...and the other half of it: a bare head is never bald.
+            assert chosen.get("hat") or chosen.get("hair"), (
+                f"seed {seed}: neither hat nor hair")
+
+        assert len(items) == len(set(items)), f"seed {seed}: a renderable twice"
+        assert len(items) >= len(W.BASE) + 6, f"seed {seed}: only {len(items)} pieces"
+
+        name = W.Name(seed)
+        assert 3 <= len(name) <= 24, f"seed {seed}: name {name!r} is {len(name)} chars"
+        assert " " not in name, f"seed {seed}: {name!r} has a space in it"
+
+
+def a_bot_looks_the_same_every_time():
+    """The seed IS the network protocol -- see BotCharacter.lua.
+
+    A bot's appearance is never sent anywhere: the server and every client each
+    derive it from character.id. So if Look were not a pure function of its seed
+    -- if it drew from math.random, or from table order -- every client would see
+    a different crowd, and the bug would only ever appear with two people
+    watching.
+    """
+    a, b = fresh("BotCharacter.lua"), fresh("BotCharacter.lua")
+    for seed in SEEDS[:40]:
+        assert _look(a, seed) == _look(b, seed), \
+            f"seed {seed} dresses differently in a fresh Lua state"
+        # ...and twice running in the SAME state, which catches a generator that
+        # keeps state between calls.
+        assert _look(a, seed) == _look(a, seed), f"seed {seed} is not stable"
+
+
+def dressing_a_crowd_never_moves_math_random():
+    """math.random is global, and the city draws from it.
+
+    Layout and the plot shuffler both use math.random. If dressing a bot advanced
+    that sequence, the city you got would depend on how many bots had been
+    spawned first -- a genuinely horrible bug to find, and a silent one, because
+    both cities would look perfectly plausible.
+    """
+    lua = fresh("BotCharacter.lua")
+    lua.execute("math.randomseed( 12345 )")
+    before = [lua.eval("math.random( 1, 1000000 )") for _ in range(5)]
+
+    lua.execute("math.randomseed( 12345 )")
+    for seed in range(1, 60):
+        lua.globals().Wardrobe.Look(seed)
+        lua.globals().Wardrobe.Name(seed)
+    after = [lua.eval("math.random( 1, 1000000 )") for _ in range(5)]
+
+    assert before == after, ("dressing bots advanced math.random -- the city "
+                            "would come out differently depending on the crowd")
+
+
+def a_crowd_does_not_come_out_in_uniform():
+    """The failure mode of a bad LCG is not randomness, it is lockstep.
+
+    Consecutive seeds differ only in their low bits and an LCG's low bits are its
+    worst, so bots 1..20 -- which is exactly the range /crowd uses -- are where a
+    naive generator collapses. Sampled over the crowd sizes the host will
+    actually type.
+    """
+    lua = fresh("BotCharacter.lua")
+    for n in (10, 20, 50):
+        seeds = list(range(1, n + 1))
+        # MODERN bots only, for the outfit count. The classic set is a whole
+        # body with no slots, so it has exactly two looks -- one per sex -- and
+        # counting those as duplicates would be counting a feature as a bug.
+        # Every name is still expected to be unique, classic or not.
+        modern = [s for s in seeds if _look(lua, s)[2].get("style") == "modern"]
+        looks = {tuple(_look(lua, s)[0]) for s in modern}
+        names = {lua.globals().Wardrobe.Name(s) for s in seeds}
+        assert len(looks) >= len(modern) * 0.9, (
+            f"{len(modern)} modern bots produced only {len(looks)} distinct outfits")
+        assert len(names) == n, f"{n} bots produced only {len(names)} distinct names"
+
+    # Both sexes turn up, and neither dominates. A 50/50 split that came out
+    # 48/2 would still pass every check above.
+    # Both art paths turn up. The classic set is a different directory tree
+    # and a different texture convention, which is the half of this that
+    # actually tests "handling of extra assets".
+    styles = [_look(lua, s)[2].get("style") for s in SEEDS]
+    assert "classic" in styles and "modern" in styles, (
+        f"only one body style across {len(SEEDS)} bots: {set(styles)}")
+    classic = styles.count("classic")
+    assert 0.1 < classic / len(styles) < 0.45, (
+        f"{classic}/{len(styles)} classic -- the style roll is lopsided")
+
+    sexes = [_look(lua, s)[1] for s in SEEDS]
+    males = sexes.count("male")
+    assert 0.3 < males / len(sexes) < 0.7, \
+        f"{males}/{len(sexes)} male -- the sex bit is not doing its job"
+
+    # And the optional slots are genuinely optional, in both directions.
+    # Only modern bots have slots at all; a classic body fills none.
+    modern = [s for s in SEEDS if _look(lua, s)[2].get("style") == "modern"]
+    for slot in ("facial", "backpack", "hat"):
+        worn = sum(1 for s in modern if _look(lua, s)[2].get(slot))
+        assert 0 < worn < len(modern), (
+            f"{slot} is worn by {worn}/{len(modern)} modern bots -- "
+            f"it is not optional at all")
+
+
+def a_character_script_never_reads_a_shared_global():
+    """The bug that shipped twice, in two different disguises.
+
+    A character or unit script is instantiated per character, and those
+    instances do NOT share a thread -- the log showed the same error arriving
+    from Logic Task 25332, 4764 and 22328. A bare `Wardrobe = {}` at the top of
+    one instance's chunk therefore blanks the table another instance's callback
+    is halfway through reading, and the symptom is
+    "attempt to call field 'Name' (a nil value)" on a table that plainly has it.
+
+    It survived being moved from its own file into this one, four hundred lines
+    above its only caller, which is what finally ruled out every explanation
+    except sharing.
+
+    The invariant: **anything shared between the chunk and its callbacks must be
+    an upvalue.** Assigning a global is allowed -- the test suite reaches the
+    wardrobe that way, and the engine finds the class that way -- but READING one
+    back is the bug.
+    """
+    # The scripts a characterset points at, which is what makes them character
+    # scripts rather than ordinary ones.
+    scripts = set()
+    for path in (ROOT / "mod").rglob("*.characterset"):
+        text = io.open(path, encoding="utf-8").read()
+        for m in re.finditer(r'"scriptPath"\s*:\s*"[^"]*/([A-Za-z_]\w*)\.lua"', text):
+            scripts.add(m.group(1) + ".lua")
+    assert scripts, "no character scripts found -- the scan is broken"
+
+    for name in sorted(scripts):
+        src = io.open(SCRIPTS / name, encoding="utf-8").read()
+        lines = [l for l in src.split("\n") if not l.lstrip().startswith("--")]
+
+        # Globals this chunk assigns at top level (column 0, no `local`).
+        assigned = set()
+        for l in lines:
+            m = re.match(r"^([A-Za-z_]\w*)\s*=\s*\S", l)
+            if m:
+                assigned.add(m.group(1))
+        # The class name is assigned for the ENGINE to find; we never read it.
+        klass = name[:-4]
+        assigned.discard(klass)
+
+        for g in sorted(assigned):
+            readers = [
+                l.strip() for l in lines
+                if re.search(r"\b" + g + r"\s*[.\[]", l)
+                or re.search(r"[(,=]\s*" + g + r"\s*[),]", l)
+            ]
+            assert not readers, (
+                f"{name} reads the shared global {g!r}, which another instance "
+                f"of this script can blank between chunk load and callback -- "
+                f"make it a local and capture it as an upvalue. First: "
+                f"{readers[0][:70]!r}")
+
+        # And the class table is not a place to keep state either, for the same
+        # reason -- it is one table shared by every instance.
+        stashes = [l.strip() for l in lines
+                   if re.match(r"^\s*" + klass + r"\.\w+\s*=", l)
+                   and "function" not in l]
+        assert not stashes, (
+            f"{name} stores state on the shared class table: {stashes[0][:70]!r}")
+
+
+def a_crowd_is_random_not_merely_balanced():
+    """A perfect 50/50 split can still be perfectly predictable.
+
+    The first generator produced exactly this over ids 1..20:
+
+        M f M f M f M f M f M f M f M f M f f M
+
+    Fifty per cent male, and two bots side by side could never be the same sex.
+    The ratio check above passed it without complaint, which is the whole point
+    of this one existing separately. REPORTED as "make sure gender is random
+    too".
+
+    Counted as RUNS -- maximal stretches of the same value. A fair coin over n
+    flips averages about n/2 runs; strict alternation gives n. The bound is wide
+    because a real coin is noisy, and it only has to catch lockstep.
+    """
+    lua = fresh("BotCharacter.lua")
+    W = lua.globals().Wardrobe
+
+    def runs(seq):
+        return 1 + sum(1 for a, b in zip(seq, seq[1:]) if a != b)
+
+    # Across bots: consecutive character ids, which is what a crowd actually is.
+    for base in (1, 100, 5000):
+        seq = [W.Sex(base + i) for i in range(40)]
+        r = runs(seq)
+        assert 12 <= r <= 30, (
+            f"ids {base}..+40 gave {r} runs of 40 -- "
+            f"{'lockstep' if r > 30 else 'sticky'}: "
+            + "".join("M" if s == "male" else "f" for s in seq))
+
+    # Within one bot: the same generator drawn from repeatedly.
+    rng = W.Rng(12345)
+    seq = [rng.next(rng, 2) for _ in range(60)]
+    r = runs(seq)
+    assert 18 <= r <= 45, f"one generator gave {r} runs of 60: {seq}"
+
+    # And the body style, the other two-way roll a crowd shows off at a glance.
+    styles = [_look(lua, i)[2].get("style") for i in range(1, 41)]
+    assert runs(styles) >= 8, (
+        f"body style alternates in lockstep: {''.join(s[0] for s in styles)}")
+
+
+def no_bot_wears_the_other_sex():
+    """Female garments live in the Char_Male tree, so the split is by FILENAME.
+
+    char_male_ / char_female_ / char_shared_ is the only thing separating them,
+    which makes a copy-paste in the table completely invisible until a bot is
+    standing in front of you wearing half a female outfit.
+
+    Hair is the deliberate exception: vanilla's own mechanicmale1 wears
+    char_female_hair_07, so the hair pool is shared on purpose.
+    """
+    lua = fresh("BotCharacter.lua")
+    base = set(lua.globals().Wardrobe.BASE.values())
+    for seed in SEEDS:
+        items, sex, chosen = _look(lua, seed)
+        wrong = "char_female_" if sex == "male" else "char_male_"
+        # The classic set is checked over the whole renderable list, since it
+        # fills no slots -- and it is the easier of the two to get wrong,
+        # because male and female differ only by a directory name.
+        for r in items:
+            leaf = r.rsplit("/", 1)[-1]
+            if r in base or not leaf.startswith("char_classic_"):
+                continue
+            other = "female" if sex == "male" else "male"
+            assert not leaf.startswith("char_classic_" + other), (
+                f"seed {seed}: a {sex} classic bot is wearing {leaf}")
+        for slot, path in chosen.items():
+            if slot in ("style", "hair") or path in base:
+                continue
+            leaf = path.rsplit("/", 1)[-1]
+            assert not leaf.startswith(wrong), \
+                f"seed {seed}: a {sex} bot is wearing {leaf} in the {slot} slot"
+        # The skeleton and its animations are char_male_ for everybody -- that is
+        # the rig, not a garment, and vanilla's female NPCs use it too.
+        for r in base:
+            assert r in items, f"seed {seed}: missing base renderable {r}"
+
+
+# --------------------------------------------------------------- crowd work ---
+#
+# Build mode is the owner's idea and the better of the two tests:
+#
+#   "we take the city. and the bots. the bots stand on their plots. and build up
+#    with various blocks. this will make them build."
+#
+# It is better because accumulated content is what actually degraded in the one
+# real event on record. It is also the mode that can do real damage if it is
+# wrong -- a bot building outside its own plot is griefing the city with the
+# host's own tool, and a bot whose blocks are not tracked leaves them standing
+# after /crowd off.
+#
+# Crowd needs Plots and Layout for real (the pad geometry is the thing under
+# test), so these build the actual grid rather than a stand-in.
+
+CROWD_STUB = """
+_imported = {}
+_nextBody = 0
+-- A body double that records what was imported and can be destroyed. Body flags
+-- are the engine's; what matters here is the blueprint that was asked for.
+function _import( bp )
+    _nextBody = _nextBody + 1
+    local child = bp.bodies[1].childs[1]
+    local body = { id = _nextBody, dead = false, child = child,
+                   destroyCreation = function( self ) self.dead = true end }
+    _imported[#_imported+1] = body
+    return { body }
+end
+"""
+
+
+def _crowd(bots=4, mode="build"):
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Plots.lua", "Crowd.lua")
+    lua.execute(CROWD_STUB)
+    g = lua.globals()
+
+    plots = g.Plots()
+    plots.sv_onCreate(plots, None)
+    plots.enabled = True
+
+    crowd = g.Crowd()
+    crowd.sv_onCreate(crowd, plots)
+    crowd.sv_setMode(crowd, mode)
+
+    # The bot ROWS are built directly rather than through sv_spawnOne, because
+    # sm.unit.createUnit is the engine's and there is nothing honest to fake
+    # about it. What is under test here is the geometry -- which pad a plot
+    # index maps to, and where a block lands inside it -- and that needs no unit.
+    g._crowdRef = crowd
+    indices = crowd.sv_plotIndices(crowd)
+    # Styles are assigned round-robin rather than at random, so every one of them
+    # is exercised on every run. A style that only builds outside its own plot
+    # one time in four is not something to discover by luck.
+    styles = [crowd.STYLES[i + 1] for i in range(len(crowd.STYLES))]
+    for n in range(1, bots + 1):
+        idx = indices[((n - 1) % len(indices)) + 1]
+        lua.execute(
+            "local c = _crowdRef\n"
+            "c.bots[#c.bots+1] = { n = %d, unit = nil, perma = 'crowdbot:%d',\n"
+            "    plot = %d, nextBuild = 0, blocks = {}, height = {}, pad = nil,\n"
+            "    style = '%s' }"
+            % (n, n, idx, styles[(n - 1) % len(styles)])
+        )
+    return lua, crowd, plots
+
+
+def _place(lua, crowd, times):
+    g = lua.globals()
+    for i in range(len(crowd.bots)):
+        bot = crowd.bots[i + 1]
+        for _ in range(times):
+            crowd.sv_placeBlock(crowd, bot, g._import)
+
+
+def a_bot_only_ever_builds_on_its_own_plot():
+    """A bot building outside its plot is the host griefing the city.
+
+    The pad is the plot rectangle inset by the metal ring, and every block has to
+    land inside it -- not on the ring, not on the road, not on a neighbour.
+    """
+    lua, crowd, plots = _crowd(bots=6)
+    g = lua.globals()
+    L, P = g.Layout, g.Plots
+    _place(lua, crowd, 30)
+
+    assert len(g._imported) > 0, "no blocks were placed at all"
+    for i in range(len(crowd.bots)):
+        bot = crowd.bots[i + 1]
+        pad = crowd.sv_padFor(crowd, bot)
+        col, row = L.plotColRow(plots.layout, bot["plot"])
+        rect = L.plotRect(plots.layout, col, row)
+        border = P.BORDER
+        assert pad["x"] >= rect["x"] + border, "pad starts inside the metal ring"
+        assert pad["x"] + pad["w"] <= rect["x"] + rect["w"] - border, \
+            "pad runs past the ring"
+
+        for k in range(len(bot["blocks"])):
+            child = bot["blocks"][k + 1]["child"]
+            x, y, z = child["pos"]["x"], child["pos"]["y"], child["pos"]["z"]
+            assert pad["x"] <= x < pad["x"] + pad["w"], (
+                f"bot on plot {bot['plot']} placed a block at x={x}, "
+                f"pad is {pad['x']}..{pad['x'] + pad['w'] - 1}")
+            assert pad["y"] <= y < pad["y"] + pad["h"], (
+                f"bot on plot {bot['plot']} placed a block at y={y}, outside its pad")
+            assert z >= P.DECK_Z + 1, f"a block was placed at z={z}, inside the deck"
+
+
+def every_build_style_builds_something_different():
+    """'so like a lot of random bots. make random stuff.'
+
+    Twenty bots all picking a uniformly random cell build the same thing twenty
+    times -- one shape, tested repeatedly. The four styles exist so the crowd
+    produces towers, walls, floors and mess, which differ in the ways that
+    matter here: a tower touches few cells and goes up, a platform touches all of
+    them and stays down, and the two load cell streaming and culling quite
+    differently at the same block count.
+
+    Each style is checked against the property that defines it, not against a
+    fixed layout -- the cells inside it stay random.
+    """
+    lua, crowd, plots = _crowd(bots=4)
+    g = lua.globals()
+    by_style = {}
+    for i in range(len(crowd.bots)):
+        bot = crowd.bots[i + 1]
+        for _ in range(g.Crowd.MAX_BLOCKS):
+            crowd.sv_placeBlock(crowd, bot, g._import)
+        cells = [(bot["blocks"][k + 1]["child"]["pos"]["x"],
+                  bot["blocks"][k + 1]["child"]["pos"]["y"])
+                 for k in range(len(bot["blocks"]))]
+        by_style[bot["style"]] = (cells, crowd.sv_padFor(crowd, bot))
+
+    assert set(by_style) == set(g.Crowd.STYLES.values()), (
+        f"only {sorted(by_style)} were exercised")
+
+    tower_cells = len(set(by_style["tower"][0]))
+    scatter_cells = len(set(by_style["scatter"][0]))
+    assert tower_cells < scatter_cells, (
+        f"tower touched {tower_cells} cells, scatter {scatter_cells} -- "
+        f"a tower is supposed to concentrate")
+
+    xs = {c[0] for c in by_style["wall"][0]}
+    ys = {c[1] for c in by_style["wall"][0]}
+    assert len(xs) == 1 or len(ys) == 1, (
+        f"a wall spread over {len(xs)}x{len(ys)} cells -- it is not a line")
+
+    # A platform fills before it stacks, so its tallest column is short.
+    pcells = by_style["platform"][0]
+    tallest = max(pcells.count(c) for c in set(pcells))
+    tcells = by_style["tower"][0]
+    tower_tallest = max(tcells.count(c) for c in set(tcells))
+    assert tallest < tower_tallest, (
+        f"platform stacked {tallest} high and tower only {tower_tallest} -- "
+        f"the two styles are the wrong way round")
+
+
+def bots_build_up_and_stay_inside_the_height_cap():
+    """'build up with various blocks' -- so it has to actually stack.
+
+    A height map that never increments would place every block at deck level and
+    the tower would be a floor, which looks fine in the results file and is a
+    completely different render and physics shape.
+    """
+    lua, crowd, plots = _crowd(bots=3)
+    g = lua.globals()
+    _place(lua, crowd, 40)
+
+    heights = set()
+    for i in range(len(crowd.bots)):
+        bot = crowd.bots[i + 1]
+        for k in range(len(bot["blocks"])):
+            heights.add(bot["blocks"][k + 1]["child"]["pos"]["z"])
+    assert len(heights) > 1, "every block landed at the same height -- nothing stacked"
+
+    base = g.Plots.DECK_Z + 1
+    assert max(heights) <= base + g.Crowd.MAX_STACK - 1, (
+        f"a column reached z={max(heights)}, past the MAX_STACK cap")
+
+    for i in range(len(crowd.bots)):
+        bot = crowd.bots[i + 1]
+        assert len(bot["blocks"]) <= g.Crowd.MAX_BLOCKS, (
+            f"a bot placed {len(bot['blocks'])} blocks, past MAX_BLOCKS")
+
+
+def a_crowd_builds_out_of_various_blocks():
+    """'various blocks' was the request, and one repeated block is a different
+    render cost -- different materials mean different textures and draw batches."""
+    lua, crowd, plots = _crowd(bots=6)
+    g = lua.globals()
+    _place(lua, crowd, 30)
+
+    uuids, colours = set(), set()
+    for b in range(len(g._imported)):
+        child = g._imported[b + 1]["child"]
+        uuids.add(child["shapeId"])
+        colours.add(child["color"])
+
+    assert len(uuids) >= 8, f"only {len(uuids)} distinct materials in {len(g._imported)} blocks"
+    assert len(colours) >= 8, f"only {len(colours)} distinct colours"
+
+    # Every one has to be a real block, or the import silently produces nothing.
+    real = {g.Palette.MATERIALS[k]["uuid"] for k in g.Palette.MATERIAL_ORDER.values()}
+    assert uuids <= real, f"a bot placed a uuid that is not in the palette: {uuids - real}"
+
+
+def clearing_the_crowd_takes_the_buildings_with_it():
+    """A test tool that leaves its rubbish standing is worse than no test tool.
+
+    The blocks are separate bodies welded to nothing, so nothing else in the mod
+    would ever collect them -- not the patrol, not /purge walkways, not the
+    cleaner unless somebody clicks every one.
+    """
+    lua, crowd, plots = _crowd(bots=5)
+    g = lua.globals()
+    _place(lua, crowd, 20)
+
+    placed = len(g._imported)
+    assert placed > 0, "nothing was built, so the test proves nothing"
+    assert crowd.sv_blockCount(crowd) == placed, "the crowd lost track of its blocks"
+
+    for i in range(len(crowd.bots)):
+        crowd.sv_dropBlocks(crowd, crowd.bots[i + 1])
+
+    assert crowd.sv_blockCount(crowd) == 0, "blocks remained on the books"
+    alive = [b + 1 for b in range(len(g._imported)) if not g._imported[b + 1]["dead"]]
+    assert not alive, f"{len(alive)} of {placed} bodies were never destroyed"
+
+
+def churn_mode_never_lets_the_world_grow():
+    """Churn is the steady-state mode: it exists so a /bench run measures the
+    same amount of world at every stage. If it accumulated, it would be build
+    mode with extra steps and the per-bot number would drift stage by stage."""
+    lua, crowd, plots = _crowd(bots=4, mode="churn")
+    g = lua.globals()
+
+    peak = 0
+    for _ in range(30):
+        crowd.sv_stepWork(crowd, 10 ** 9, g._import)   # every timer is due
+        peak = max(peak, crowd.sv_blockCount(crowd))
+
+    assert peak > 0, "churn never placed anything"
+    assert peak <= len(crowd.bots), (
+        f"churn accumulated {peak} blocks for {len(crowd.bots)} bots -- "
+        f"it is supposed to put back exactly what it takes away")
+
+
+def the_crowd_cannot_flood_the_server_with_imports():
+    """Per-bot timers are randomised, but 'should never all land together' is not
+    a guarantee -- and a burst of imports would show up as a spike the run blames
+    on the bot count instead of on itself."""
+    lua, crowd, plots = _crowd(bots=40)
+    g = lua.globals()
+
+    before = len(g._imported)
+    crowd.sv_stepWork(crowd, 10 ** 9, g._import)       # every one of the 40 is due
+    placed = len(g._imported) - before
+
+    assert placed <= g.Crowd.PLACE_PER_TICK, (
+        f"{placed} blocks imported in one tick, cap is {g.Crowd.PLACE_PER_TICK}")
+
+
+# ------------------------------------------------------------------- bench ---
+#
+# The arithmetic in Bench.lua is the kind that fails QUIETLY: get the settle
+# discard wrong and every row is 20% low, use ticks as the clock and every row
+# reads exactly 40 Hz however bad it got. A benchmark that lies is worse than no
+# benchmark, because it gets believed.
+#
+# These drive the real Bench against a fake crowd and fed samples, so the numbers
+# below are the ones the game would produce from the same input.
+
+BENCH_STUB = """
+-- A crowd that costs nothing and always succeeds, so a bench test measures the
+-- bench. Crowd itself is exercised in game; there is nothing to fake about it
+-- here that would not just be restating it.
+_crowdSize = 0
+_fakeCrowd = {
+    churn = false,
+    sv_clear = function( self ) _crowdSize = 0 end,
+    sv_set = function( self, n ) _crowdSize = math.min( n, _crowdCap or 1000 ); return _crowdSize end,
+}
+Crowd = { MAX = 128 }
+g_swProtection = { sv_census = function( self ) return _censusShapes or 1000 end }
+_replies = {}
+function _reply( t ) _replies[#_replies+1] = t end
+"""
+
+
+def _bench(cap=1000):
+    lua = lupa.LuaRuntime(unpack_returned_tuples=True)
+    lua.execute(STUB)
+    lua.execute(BENCH_STUB)
+    lua.execute(f"_crowdCap = {cap}")
+    lua.execute(io.open(SCRIPTS / "Bench.lua", encoding="utf-8").read())
+    g = lua.globals()
+    b = g.Bench()
+    b.sv_onCreate(b, g._fakeCrowd)
+    return lua, b
+
+
+def _feed(lua, b, seconds, fps, tick_hz, start_tick=0):
+    """One-second samples from the host, at a given frame and tick rate.
+
+    The tick figure is a DELTA over the same second the frames cover, which is
+    what the client actually sends -- see the note in Game.client_onUpdate.
+    """
+    for _ in range(seconds):
+        b.sv_sample(b, "HOST", True, fps, 1.0, tick_hz)
+    return start_tick + seconds * tick_hz
+
+
+def the_bench_reports_the_frame_rate_it_was_given():
+    lua, b = _bench()
+    g = lua.globals()
+    b.sv_start(b, 5, 10, 10, g._reply)
+
+    # SETTLE first. Bench.SETTLE seconds of samples are meant to be DISCARDED --
+    # they are the price of spawning, not of standing -- so they are fed at a
+    # deliberately wrong frame rate. If any of it leaks into the row, the number
+    # below moves.
+    tick = _feed(lua, b, int(g.Bench.SETTLE), 5, 40)
+    tick = _feed(lua, b, 10, 60, 40, tick)
+
+    rows = b.rows
+    assert len(rows) >= 1, "no row was recorded after a full window"
+    r = rows[1]
+    assert abs(r["fps"] - 60) < 0.01, (
+        f"fed 60 fps, recorded {r['fps']:.2f} -- the settle samples leaked in")
+    assert abs(r["tickRate"] - 40) < 0.01, f"fed 40 Hz, recorded {r['tickRate']:.2f}"
+    assert r["bots"] == 0, "the first row must be the empty-city baseline"
+
+
+def a_starved_server_does_not_report_forty_hertz():
+    """The trap this whole design exists to avoid.
+
+    sm.game.getCurrentTick() is the simulation counter. Time a stage in ticks and
+    divide ticks by ticks and the answer is 40 Hz no matter how badly the server
+    is doing -- a benchmark that reports perfect health under any load. The wall
+    clock has to come from client_onUpdate's dt, and this proves it does.
+    """
+    lua, b = _bench()
+    g = lua.globals()
+    b.sv_start(b, 5, 10, 10, g._reply)
+    tick = _feed(lua, b, int(g.Bench.SETTLE), 12, 18)
+    _feed(lua, b, 10, 12, 18, tick)          # 18 ticks per REAL second
+
+    r = b.rows[1]
+    assert abs(r["tickRate"] - 18) < 0.01, (
+        f"server ran at 18 Hz, bench says {r['tickRate']:.1f} -- it is timing "
+        f"itself with the counter it is measuring")
+    assert abs(r["fps"] - 12) < 0.01, f"fed 12 fps, recorded {r['fps']:.2f}"
+
+
+def the_bench_walks_the_crowd_up_and_stops():
+    lua, b = _bench()
+    g = lua.globals()
+    step, window, cap = 5, 10, 20
+    b.sv_start(b, step, window, cap, g._reply)
+
+    tick = 0
+    for _ in range(400):
+        tick = _feed(lua, b, 1, 60, 40, tick)
+        if not b.sv_running(b):
+            break
+
+    assert not b.sv_running(b), "the bench never finished"
+    got = [b.rows[i + 1]["bots"] for i in range(len(b.rows))]
+    assert got == [0, 5, 10, 15, 20], f"stages were {got}, expected 0,5,10,15,20"
+
+    # It must have disarmed the probe on the way out, or every client keeps
+    # sending a message a second forever.
+    arms = [e for e in [b and lua.globals()._events[i + 1]
+                        for i in range(len(lua.globals()._events))]
+            if e["name"] == "sv_e_swBenchArm"]
+    assert arms, "the probe was never armed"
+    assert arms[-1]["params"]["on"] is False, "the probe was left armed"
+
+
+def the_bench_stops_early_if_the_crowd_will_not_grow():
+    """A row labelled '40 bots' with 12 standing is a lie in the results file."""
+    lua, b = _bench(cap=12)
+    g = lua.globals()
+    b.sv_start(b, 5, 10, 40, g._reply)
+
+    tick = 0
+    for _ in range(400):
+        tick = _feed(lua, b, 1, 60, 40, tick)
+        if not b.sv_running(b):
+            break
+
+    assert not b.sv_running(b), "the bench never finished against a capped crowd"
+    for i in range(len(b.rows)):
+        assert b.rows[i + 1]["bots"] <= 12, (
+            f"a row claims {b.rows[i + 1]['bots']} bots but only 12 could spawn")
+
+
+def a_wild_frame_sample_is_thrown_away():
+    """One alt-tabbed client can hand over a single enormous dt.
+
+    In a thirty-second mean that is enough to move the answer, and it looks
+    entirely plausible in the results file afterwards.
+    """
+    lua, b = _bench()
+    g = lua.globals()
+    b.sv_start(b, 5, 10, 10, g._reply)
+    tick = _feed(lua, b, int(g.Bench.SETTLE), 60, 40)
+
+    for _ in range(5):
+        b.sv_sample(b, "HOST", True, 60, 1.0, 40)
+    # 90 seconds in one sample: an alt-tab, not a measurement.
+    b.sv_sample(b, "HOST", True, 3, 90.0, 3600)
+    for _ in range(5):
+        b.sv_sample(b, "HOST", True, 60, 1.0, 40)
+
+    r = b.rows[1]
+    assert abs(r["fps"] - 60) < 0.01, (
+        f"a 90-second sample was averaged in: {r['fps']:.2f} fps")
+
+
+def the_results_survive_a_restart():
+    lua, b = _bench()
+    g = lua.globals()
+    b.sv_start(b, 5, 10, 5, g._reply)
+    tick = 0
+    for _ in range(200):
+        tick = _feed(lua, b, 1, 60, 40, tick)
+        if not b.sv_running(b):
+            break
+    assert len(b.rows) >= 2, "not enough rows to be worth persisting"
+    before = [b.rows[i + 1]["fps"] for i in range(len(b.rows))]
+
+    fresh_bench = g.Bench()
+    fresh_bench.sv_onCreate(fresh_bench, g._fakeCrowd)
+    assert len(fresh_bench.rows) == 0, "a fresh Bench started with rows"
+    fresh_bench.sv_load(fresh_bench)
+    after = [fresh_bench.rows[i + 1]["fps"] for i in range(len(fresh_bench.rows))]
+    assert before == after, f"results did not round-trip: {before} vs {after}"
+
+
+def a_guest_cannot_drive_the_run():
+    """The host's sample is the stage timer AND the whole tick-rate column.
+
+    Game.sv_n_benchSample resolves host-ness from the engine's sender argument
+    rather than from the payload, and this is the other half of that: a sample
+    that did not come from the host must move nothing except that guest's own
+    frame-rate row.
+    """
+    lua, b = _bench()
+    g = lua.globals()
+    b.sv_start(b, 5, 10, 10, g._reply)
+
+    for _ in range(200):
+        b.sv_sample(b, "GUEST", False, 5, 1.0, 5)
+    assert b.state == "settle", (
+        "guest samples advanced the run past settle -- a guest can drive it")
+    assert len(b.rows) == 0, "guest samples recorded a row on their own"
+
+    tick = _feed(lua, b, int(g.Bench.SETTLE), 60, 40)
+    _feed(lua, b, 10, 60, 40, tick)
+    r = b.rows[1]
+    assert abs(r["fps"] - 60) < 0.01, (
+        f"the guest's 5 fps leaked into the host column: {r['fps']:.2f}")
+    names = {r["clients"][i + 1]["name"] for i in range(len(r["clients"]))}
+    assert "HOST" in names, "the host is missing from the per-client rows"
+
+
+def every_world_command_has_a_branch():
+    """A chat command routed to the world with nothing to answer it is silent.
+
+    Exactly how CLEAR CITY was dead for a version: Game forwarded /citycensus and
+    World had no branch, so the panel closed and nothing happened.
+    """
+    game = io.open(SCRIPTS / "Game.lua", encoding="utf-8").read()
+    world = io.open(SCRIPTS / "World.lua", encoding="utf-8").read()
+
+    table = re.search(r"local WORLD_COMMANDS = \{(.*?)\n\}", game, re.S)
+    assert table, "WORLD_COMMANDS table not found in Game.lua"
+    routed = set(re.findall(r'\["(/\w+)"\]', table.group(1)))
+    assert routed, "WORLD_COMMANDS parsed as empty -- the scan is broken"
+
+    answered = set(re.findall(r'cmd == "(/\w+)"', world))
+    orphans = sorted(routed - answered)
+    assert not orphans, (
+        "these commands are routed to the world and nothing there answers them, "
+        "so they do nothing at all: " + ", ".join(orphans))
+
+
 def main():
     check("rules: over budget still lets you trim", over_budget_still_lets_you_trim)
     check("rules: over budget never opens somebody else's plot",
@@ -3273,6 +5191,57 @@ def main():
           a_plot_can_never_be_scenery_whatever_it_is_made_of)
     check("style: a restyle never unmakes the existing city",
           a_style_change_never_unmakes_the_existing_city)
+
+    check("style: the panel fits for every piece and every odd value",
+          the_style_panel_fits_for_every_piece)
+    check("style: every block and every colour is one click away",
+          every_block_and_every_colour_is_one_click_away)
+    check("style: the swatch grid is the paint tool's grid",
+          the_swatch_grid_is_the_paint_tools_grid)
+    check("style: the panel agrees with itself about what is selected",
+          the_panel_agrees_with_itself_about_what_is_selected)
+    check("style: the panel and the builder name the same pieces",
+          the_style_panel_and_the_builder_name_the_same_pieces)
+    check("style: the settings panel no longer steps through the style",
+          the_settings_panel_no_longer_steps_through_the_style)
+
+    check("crowd: every bot is dressed and named", every_bot_is_dressed_and_named)
+    check("crowd: a bot looks the same to everybody", a_bot_looks_the_same_every_time)
+    check("crowd: dressing a crowd never moves math.random",
+          dressing_a_crowd_never_moves_math_random)
+    check("crowd: a crowd does not come out in uniform",
+          a_crowd_does_not_come_out_in_uniform)
+    check("crowd: a character script never reads a shared global",
+          a_character_script_never_reads_a_shared_global)
+    check("crowd: a crowd is random, not merely balanced",
+          a_crowd_is_random_not_merely_balanced)
+    check("crowd: no bot wears the other sex", no_bot_wears_the_other_sex)
+
+    check("bench: reports the frame rate it was given",
+          the_bench_reports_the_frame_rate_it_was_given)
+    check("bench: a starved server does not report 40 Hz",
+          a_starved_server_does_not_report_forty_hertz)
+    check("bench: walks the crowd up and stops", the_bench_walks_the_crowd_up_and_stops)
+    check("bench: stops early if the crowd will not grow",
+          the_bench_stops_early_if_the_crowd_will_not_grow)
+    check("bench: a wild frame sample is thrown away", a_wild_frame_sample_is_thrown_away)
+    check("bench: results survive a restart", the_results_survive_a_restart)
+    check("bench: a guest cannot drive the run", a_guest_cannot_drive_the_run)
+    check("plumbing: every world command has a branch", every_world_command_has_a_branch)
+
+    check("crowd: a bot only ever builds on its own plot",
+          a_bot_only_ever_builds_on_its_own_plot)
+    check("crowd: every build style builds something different",
+          every_build_style_builds_something_different)
+    check("crowd: bots build up, inside the height cap",
+          bots_build_up_and_stay_inside_the_height_cap)
+    check("crowd: a crowd builds out of various blocks",
+          a_crowd_builds_out_of_various_blocks)
+    check("crowd: clearing takes the buildings with it",
+          clearing_the_crowd_takes_the_buildings_with_it)
+    check("crowd: churn never lets the world grow", churn_mode_never_lets_the_world_grow)
+    check("crowd: imports cannot flood one tick",
+          the_crowd_cannot_flood_the_server_with_imports)
 
     check("hud: the roster fits in the top left corner",
           the_roster_hud_fits_in_the_top_left_corner)
@@ -3316,12 +5285,32 @@ def main():
           the_city_is_many_separate_bodies)
     check("plots: a plot is one welded body with its own stand",
           a_plot_is_one_welded_body_with_its_own_stand)
-    check("tools: nothing in this mod can take a lift away",
-          nothing_in_this_mod_can_take_a_lift_away)
+    check("tools: the lift and NOTlift are both host only",
+          the_lift_is_host_only_and_notlift_is_not)
+    check("notlift: the import chain is wired end to end",
+          the_notlift_import_chain_is_wired_end_to_end)
+    check("notlift: importing enforces plot, open building and the cap",
+          importing_a_creation_enforces_the_rules)
+    check("notlift: an imported creation lands on a lift",
+          an_imported_creation_lands_on_a_lift)
+    check("notlift: a body on a lift is never the ground",
+          a_body_on_a_lift_is_never_the_ground)
+    check("notlift: every step works with items alone",
+          every_step_works_with_items_alone)
+    check("tools: deleting a whole creation crosses joints",
+          deleting_a_whole_creation_crosses_joints)
+    check("notlift: the lift trace is bounded",
+          the_lift_trace_is_bounded)
+    check("world: a new world does not inherit the last one's state",
+          a_new_world_does_not_inherit_the_last_ones_state)
+    check("protection: anything liftable can also be set down",
+          anything_liftable_can_also_be_set_down)
     check("tools: the cleaner is wired to one uuid everywhere",
           the_cleaner_is_wired_to_the_same_uuid_everywhere)
     check("protection: the floor is free while building, pinned otherwise",
           the_city_floor_is_pinned_except_while_people_are_building)
+    check("protection: /unlock actually reopens building (the lift bug)",
+          unlock_actually_reopens_building)
     check("protection: buffer time actually reaches the polish profile",
           buffer_time_actually_reaches_the_polish_profile)
     check("protection: buffer time polishes but never places or breaks",
@@ -3395,12 +5384,18 @@ def main():
     check("plumbing: the panels share one interactive gui",
           only_one_interactive_gui_exists)
 
+    check("access: every server handler checks the sender",
+          every_network_handler_checks_the_sender)
+    check("access: no handler trusts an identity from its payload",
+          no_handler_trusts_an_identity_from_its_payload)
+
     check("gui: the menu fits, for host and guest", the_menu_panel_fits)
     check("gui: every settings page fits and nothing is buried",
           the_settings_panel_fits_on_every_page)
     check("gui: the city panel fits at every value it can be stepped to",
           the_city_panel_fits_at_every_setting)
     check("gui: the city map stays inside its box", the_city_map_never_leaves_its_box)
+    check("gui: the top-down map tiles exactly", the_top_down_map_tiles_exactly)
     check("gui: the my-plot panel fits in every state",
           the_my_plot_panel_fits_in_every_state)
 

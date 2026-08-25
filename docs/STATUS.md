@@ -1,6 +1,7 @@
 # What is actually verified, and what is not
 
-Written 2026-08-24, at V53. **This file is the honest ledger.** Everywhere else
+Written 2026-08-24, at V53; revised 2026-08-25 after the co-loaded mod
+audit. **This file is the honest ledger.** Everywhere else
 in this repo describes what the code is *meant* to do; this one says which of it
 has been seen to happen.
 
@@ -10,7 +11,7 @@ Read it before believing any other document in here.
 
 ## The one thing to understand about the checks
 
-`python dev/check_all.py` runs **91 checks** in ten seconds and they all pass.
+`python dev/check_all.py` runs **110 checks** in ten seconds and they all pass.
 That is worth having and it is not evidence the mod works.
 
 | what the checks DO touch | what they CANNOT touch |
@@ -21,6 +22,7 @@ That is worth having and it is not evidence the mod works.
 | fonts: existence *and* glyph coverage | the renderer, and therefore frame rate |
 | the command plumbing, both directions | the lift, blueprints, or `importFromString` |
 | every setting, preset and migration | anything the engine does with any of it |
+| that every `sv_n_*` handler gates on the sender | whether a real guest is actually refused |
 
 Nothing in `dev/` has ever created a body, equipped a tool, or sent a packet.
 **A passing suite means "no known logic error". A failing one is always real.**
@@ -83,6 +85,26 @@ yet a backup** — it is the single most important untested thing left.
 
 ## B. Seen BROKEN in game — a fix shipped, not re-tested
 
+### Seen working in game, 2026-08-25
+
+The first features in this project confirmed working by the owner rather than by
+a check passing:
+
+| feature | evidence |
+|---|---|
+| **NOTlift imports a creation and it is a normal build** | *"FINALLY IT WORKS LIKE IT SHOULD"* — after six causes, each measured; see the import section in CLAUDE.md |
+| **the Cleaner deletes a whole creation across joints** | fixed after *"the cleaner even with F wont delete the whole thing"* on a build with 20 bearings |
+| **the city map and the roads** | *"its all good now"* — roads clean on both axes, plaza distinct from claimed plots |
+| **a 384-plot city builds and holds 40 Hz** | *"I tested the largest city setup can pull. AND IT DIDNT CRASH"* — `city built: 384 plots, 0 failed`, tick 39.7 during the build minute, 39.9 after. One player, empty city |
+| **the custom NOTlift icon** (crossed-out lift) | visible in the creative menu in the owner's screenshot |
+| **a new world starts clean** | HUD read `NO EVENT / build freely` on a fresh world instead of inheriting `ended` and `locked` |
+| **the engine's blueprint browser opens for us** | `LOAD CREATION` panel, and the pick callback reached a Game script five times |
+| **the lift trace** | 25 seconds of per-change logging, which is what finally disproved the `placeLift` theory |
+
+Not yet re-tested after the last fixes: importing several creations back to back
+(the release queue), and importing onto a plot inside a built city — every test so
+far was on open terrain with no city.
+
 **This is the most important section in the file.** Every line is a real report
 from a real session, with a real fix behind it, and **not one of them has been
 seen working since.** A fix that has not been re-tested is a hypothesis.
@@ -91,6 +113,9 @@ seen working since.** A fix that has not been re-tested is a hypothesis.
 |---|---|---|---|
 | *"I cant build on my plot even when the time has started"* | V43, V46, V48, V50 | four separate causes, each sufficient on its own — see below | **no** |
 | *"the lift is still fuc-SAD"* | V49, V51 | added an Import Lift on our own uuid; took all three lifts out of the tool gate | **no** |
+| *"I cant press E on the lift to import creations"* | **V54–V56** | the tool was never the gate. Solved a different way: **NOTlift**, a new tool that borrows the engine's own blueprint browser and imports onto a lift, then takes it off again | **YES — seen working in game 2026-08-25** |
+| *"stuck at 100 when loading into the mod"* | **V54** | `"Creative"` registers no scriptable objects, so `CreativeGame.server_onCreate` threw on line 47 and never reached `sm.world.createWorld`. Reverted to `"Survival"`; `check_uuids.py` now fails the build on it | **fix is a revert to the state that was working at 10:46** |
+| *"/unlock says Building reopened and nothing reopens"* | **V54** | the world shuts with TWO persisted switches and `/unlock` wrote one; every plot stayed on the `locked` profile, `liftable` false | **no** |
 | *"game crashed when I tried to change the number of build time"* | V45 | redrawing a json GUI from inside an EditBox callback is a native crash | **no** |
 | *"you need to fix the unremovable craft bots, gems and others"* | V38 | three separate places locked shared ground; carryables need `destroyShape` | **no** |
 | *"I still cant remove metal 2 via the tool. even if its not on the platform"* | V44 | a pure height test called terrain-level metal "city floor" | **no** |
@@ -138,6 +163,95 @@ Written, compiled, checked, installed. **Never once executed in the game.**
 - **City style** — ten settings, `/citystyle`, six presets.
 - **The roster HUD** — ONLINE and RESIDENTS, top left.
 
+### New in V54, none of it run
+
+- **The city style picker** (`StyleGui.lua`) — the five city pieces, all
+  twenty-five blocks as a list, all forty paint-tool colours as a grid, and the
+  six whole-city styles, on one screen. Replaces ten stepper rows.
+- **A Button drawn with `WhiteSkin` + `Colour`** — the swatch. Both halves have
+  a vanilla precedent (`EditorSkin.xml:27`, `DigitalSign.gui`) and the
+  *combination* does not. **This is the thing to look at first when the panel
+  opens**: if the forty swatches are grey or invisible, the Button half is not
+  honouring `Colour` and the fix is to drop back to the `fill()` drawn
+  underneath each one and put an unskinned Button on top of it. The fill is
+  already there — see the note at the top of `StyleGui.lua`.
+- **`CITY STYLE` on the city panel** and the settings nav entry that now opens a
+  panel instead of selecting a tab.
+- **Two host gates that were missing** -- `Game.sv_n_openPanel` and
+  `NotLift.sv_n_swOpenImport`. Both let a guest open a host UI on their own
+  screen; neither could change anything, because the action handlers behind them
+  all test the sender. **This is the one line here that cannot be turned green
+  solo:** proving a guest is refused needs a second client, and there is no
+  dedicated server to stand in for one.
+- **`allow_add_mods: false`** in `description.json`. The world has never been
+  loaded with it off. What to check is only that the world still creates and the
+  Custom Game still lists -- it changes the world-creation screen, and nothing in
+  `dev/` can see that screen.
+
+### New in V55, none of it run
+
+The crowd. `/crowd N` puts N human-model bots on the city. The whole argument
+for what it does and does not measure is in [`CROWD.md`](CROWD.md); what follows
+is only the list of things that have never executed.
+
+- **A mod-shipped character set.** `mod/Characters/Database/`. The Custom Game
+  template has the directory, so the mechanism is the engine's -- but **no mod in
+  the 1205-item Workshop corpus ships one**, so there is no prior art whatsoever
+  and this is the highest-risk line in the release. **What to look at first:** if
+  `/crowd 5` says `5 failed`, the character set did not load, and the log line
+  from `Crowd.sv_spawnOne` names the uuid it asked for.
+- **`sm.unit.createUnit` with a uuid of our own.** Vanilla only ever passes its
+  own. Guarded, and it stops at the first failure rather than spinning.
+- **`character:overrideRenderableList` on a unit we made.** The vanilla caller is
+  a quest NPC. The failure mode is a bot that looks like the characterset's
+  fallback -- an ordinary mechanic -- rather than a random one, and twenty
+  identical mechanics is the tell.
+- **`character:setNameTag` on a non-player.** One vanilla caller, and it is
+  guarded by `sm.exists( player )`. Read as a player feature; argued in
+  `BotCharacter.lua` not to be one. If bots are nameless, that reading was wrong.
+- **`unit:setMovementDirection` / `setMovementType` / `setFacingDirection`
+  without a pathfinder.** Vanilla always feeds these from a path query. Bots
+  standing still would mean a direction alone is not enough.
+- **Crowd bots inside `Plots.sv_updateOccupancy`.** They are handed in as real
+  occupants and are deliberately kept out of the push-out table. **What to check:
+  a bot must never lock a plot a real player cannot get back** -- stand on a plot
+  a bot is on and confirm you can still build.
+- **`/crowd claim on`.** Writes `crowdbot:` permas into `Plots.json`. Swept at
+  world create, and released by `/crowd off` and `/crowd claim off`. If a plot is
+  ever stuck owned by nobody, this is why, and `/crowd off` is the remedy.
+- **`/crowd churn on`.** Each bot places one block and later removes it, through
+  the same `sv_importBlueprint` the city uses. Watch for blocks left standing
+  after `/crowd off`.
+
+**And `/bench`**, which drives the crowd up in steps and records the numbers.
+
+- **`Game.client_onUpdate`.** The mod has never had one; `CreativeGame` does, and
+  ours now calls it. **What to check first:** if the day/night cycle stops
+  advancing, the parent call is not happening.
+- **The frame-rate probe round trip.** Client -> `sv_n_benchSample` -> world ->
+  `Bench`. Armed only for the length of a run. If `/bench start` prints its
+  header and then nothing ever happens, no sample is arriving and the run
+  self-abandons after fifteen seconds of silence (`Bench.WATCHDOG`).
+- **`dt` being wall-clock seconds.** Argued from `CreativeGame.lua:208`, never
+  measured here. The tell if it is wrong: a baseline row reporting a frame rate
+  nothing like what the game is visibly drawing.
+- **`Bench.json` being written at all.** Same `sm.json.save` path as
+  `Settings.json`, which is known to work, so this is the lowest-risk line here.
+  `dev/bench_report.py` reads it, and has been exercised against a synthetic file
+  of the right shape.
+
+The arithmetic underneath is NOT on this list -- seven checks in
+`dev/test_logic.py` drive the real `Bench` against fed samples, including the one
+that catches a benchmark timing itself with the counter it is measuring. They
+already found one bug: absolute ticks differenced across a window reported 36 Hz
+on a clean 40.
+
+Nothing in this list is on the event path: `/crowd` and `/bench` are host-only,
+do nothing until asked for, and their faults are caught in a `pcall` separate
+from the protection patrol's -- deliberately, so a test harness can never switch
+off protection, and a protection fault can never leave a crowd nothing can
+clear. `/bench` additionally refuses to start while an event clock is running.
+
 ### Specific API calls that are still guesses
 
 Each is `pcall`'d and logs once rather than per tick, but none has returned a
@@ -154,8 +268,15 @@ value anybody has looked at.
 
 ## D. Measured, and still true
 
-Two facts from `dev/session_stats.py` over the owner's own logs. These are the
-only *numbers* this project has.
+Two facts from `dev/session_stats.py` over the owner's own client logs. These
+are the only *numbers* this project has, and **neither was measured on a world
+running Server Works.**
+
+**The 19-player session was somebody else's event, joined as a guest** -- that
+log loads City Building MMO, not this mod. It is evidence about the *engine*
+under 19 players and it is not evidence about anything in this repo. There has
+never been a multi-player session on a Server Works world, and as of
+2026-08-25 there is no lobby available to hold one.
 
 | session | players | server tick | client frames |
 |---|---|---|---|
@@ -170,6 +291,25 @@ only *numbers* this project has.
 - **The single-player collapse was self-inflicted**: a 1.79 GB log, 1.45 M lines
   of a per-tick `print()` plus 58 K tracebacks. Log spam is the largest
   performance bug this project has measured.
+
+### A third number, 2026-08-25: what one co-loaded mod costs
+
+MEASURED in a **Server Works world** with T mod (Workshop `3438987478`) enabled
+beside it -- `Logs/game-20260825-143811.log`, two players:
+
+| | with T mod (27 min) | clean Server Works, same day |
+|---|---|---|
+| log size | **95.6 MB** | 126 KB |
+| tick/s min | **4.6** | -- |
+| frame/s min | **4.4** | -- |
+
+760x the log volume, and 6,341 of the 6,342 `__mul` errors carry T mod's content
+id. **One player plus one co-loaded mod did more damage to the tick rate than
+nineteen players building did**, with nobody attacking anything. Full working in
+[`MODS-AND-TRUST.md`](MODS-AND-TRUST.md). Caveat: one session, not a controlled
+A/B.
+
+---
 
 **Consequence, stated plainly:** freezing builds buys simulation headroom, and
 simulation was not the bottleneck. Do not credit the freeze with fixing frame
@@ -199,6 +339,38 @@ Written down so no future session spends a day rediscovering them.
   separation and part budgets can help client frame rate.
 - **The remove tool deletes at most 16×16 = 256 shapes** in one action. Any
   grief-alarm threshold below that is a false alarm generator.
+- **The Lua sandbox has no network and no general filesystem.** No HTTP, socket,
+  URL, download, `os` or `io` module exists in the engine at all -- MEASURED from
+  `dev/dump_api.py` over the full module list. File access is `sm.json` over
+  `$CONTENT_*` paths only, and absolute paths and `..` are refused.
+- **A guest cannot bring their own mods.** MEASURED: joined a world while
+  subscribed to 101 Blocks-and-Parts mods, and the world loaded exactly one --
+  the host's. The host's world dictates the list, which is why join-time
+  auto-subscribe exists at all.
+- **An installed mod that is not enabled executes nothing.** MEASURED: same
+  machine, same day, 12,766 lines referencing T mod with it ticked and **0**
+  without.
+- **There is no dedicated server *binary*.** The install ships only
+  `Release/ScrapMechanic.exe`, so `sm.player.getHostPlayer()` is never nil --
+  vanilla dereferences it unguarded at `SurvivalGame.lua:1846`. Consequence for
+  testing: you cannot be a guest on your own machine.
+
+  **One correction, 2026-08-25:** that same executable *does* parse a
+  `-dedicated_server` command-line flag, alongside `-use_null_driver`,
+  `-console`, `-window` and `-connect_steam_id <id>` (all of them in `Main.cpp`'s
+  argument list). This does not move the line -- there is no
+  `DedicatedServer.cpp` anywhere in the binary, only `ListenServer.cpp`, so the
+  flag is plausibly a dead dev stub -- but it is no longer true that nothing in
+  the install suggests one. **Untried, and it is a two-minute test.** See
+  [`CROWD.md`](CROWD.md).
+
+- **The per-client network budget cannot be measured alone.** MEASURED across
+  all 150 logs here: `NetworkServer.cpp` only ever writes its
+  `Skip sending unreliable network data to client <id>` warning about a REMOTE
+  client, never about the host's own loopback. No crowd of bots produces one,
+  because a bot holds no client connection. The good news in the same fact:
+  the budget is per client and independent, so **one guest measures it as well
+  as twenty would.**
 
 ---
 

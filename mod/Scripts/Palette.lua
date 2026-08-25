@@ -203,3 +203,41 @@ function Palette.NameOfHex( hex )
 	end
 	return key
 end
+
+-- The five pieces of the city, in the order the style panel lists them, and
+-- with names a host would recognise -- "pad" and "border" are what the code
+-- calls them, not what they look like from the ground.
+--
+-- Plots.STYLE_PIECES is the same five keys in the same order. They are written
+-- twice on purpose: the plot tests load Plots.lua WITHOUT Palette.lua, so a
+-- load-time dependency between the two would break a dozen checks that have
+-- nothing to do with styling. A check asserts the two lists never drift.
+Palette.PIECES = {
+	{ key = "pad",    label = "PLOT PAD",
+	  help = "the buildable square in the middle of a plot" },
+	{ key = "border", label = "PLOT FRAME",
+	  help = "the ring welded round each plot" },
+	{ key = "road",   label = "STREETS",
+	  help = "the ground between the plots" },
+	{ key = "plaza",  label = "SPAWN PLAZA",
+	  help = "the square everybody arrives on" },
+	{ key = "stand",  label = "STANDS",
+	  help = "the column under each plot and under the plaza" },
+}
+
+-- "rrggbb" -> the "r g b a" string a json GUI widget wants.
+--
+-- The style panel draws the paint tool's own forty swatches at their own
+-- colours, so the hex has to become floats somewhere. Here, because this file
+-- is pure and dev/test_logic.py can therefore check the conversion without a
+-- game. Anything unknown comes back white rather than nil: a widget handed nil
+-- for Colour is a render error, and a white swatch is a visible bug rather than
+-- a silent one.
+function Palette.GuiColour( name, alpha )
+	local hex = Palette.Hex( name )
+	if hex == nil then return "1 1 1 1" end
+	local r = tonumber( string.sub( hex, 1, 2 ), 16 ) / 255
+	local g = tonumber( string.sub( hex, 3, 4 ), 16 ) / 255
+	local b = tonumber( string.sub( hex, 5, 6 ), 16 ) / 255
+	return string.format( "%.3f %.3f %.3f %.2f", r, g, b, alpha or 1 )
+end

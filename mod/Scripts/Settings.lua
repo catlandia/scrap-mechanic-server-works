@@ -58,7 +58,18 @@ local HAZARD = {
 -- Tools only the host may hold, even when the tool itself is switched on. The
 -- lift is here because it spawns whole saved creations out of thin air: fine for
 -- whoever is running the event, not something a lobby of guests should each have.
-local HOST_ONLY = { cleaner = "hostcleaner" }
+-- Tools only the host may hold, even when the tool itself is switched on.
+--
+-- NOTlift is here because "its too powerful" -- and it is. It spawns a whole
+-- saved creation out of nothing, which is a bigger single action than anything
+-- else in the game: the cleaner deletes what you point at, the lift moves what
+-- already exists, this one CREATES. The server-side rules on it (own plot,
+-- building open, part cap) bound the damage; they do not make it a guest tool.
+local HOST_ONLY = {
+	cleaner = "hostcleaner",
+	lift    = "hostlift",
+	notlift = "hostnotlift",
+}
 
 local TOOLS = {
 	-- default OFF
@@ -74,10 +85,15 @@ local TOOLS = {
 	cornades = { sm.uuid.new( "f978a804-0685-4c3e-b282-cedec6140f33" ) },
 
 	-- default ON
-	-- Only the survival sledgehammer. The creative variant is uuid ed185725, and
-	-- baseGameContent "Survival" never loads Data/Tools/ToolSets/tools.json, so
-	-- that item does not exist in this game at all -- naming it here was a uuid
-	-- that could never match anything. dev/check_uuids.py found it.
+	-- THE SURVIVAL SLEDGEHAMMER. There are two, and only one exists at a time --
+	-- whichever tool index baseGameContent loads:
+	--
+	--   bb641a4f  Survival/Tools/ToolSets/tools.json  loaded by "Survival"  <- us
+	--   ed185725  Data/Tools/ToolSets/tools.json      loaded by "Creative"
+	--
+	-- This flipped to ed185725 for one build when config.json went to "Creative",
+	-- and flipped back with it. dev/check_uuids.py is what keeps the two in step;
+	-- it fails on a uuid the loaded content does not know.
 	sledgehammer = { sm.uuid.new( "bb641a4f-e391-441c-bc6d-0ae21a069476" ) },
 	-- Names below are the IN-GAME titles from
 	-- Survival/Gui/Language/English/inventoryDescriptions.json, not the script
@@ -100,23 +116,31 @@ local TOOLS = {
 	-- (SurvivalLift). baseGameContent "Survival" only ships the second, so our
 	-- toolset adds the first -- and a gate that named one of them would let the
 	-- other straight through.
-	-- THE LIFT IS NOT IN THIS TABLE, ON PURPOSE.
+	-- THE LIFT IS BACK IN THE GATE, AND THIS TIME IT IS NOT A GUESS.
 	--
-	-- "just remove that thing that disables lifts."
+	-- It was taken out in V51: the lift had been reported broken for a dozen
+	-- versions, the tool gate was the one suspect we owned, and removing it was
+	-- how that question got settled rather than argued about. It settled it --
+	-- the gate was never the cause. The cause was engine-side content, see
+	-- NotLift.lua.
 	--
-	-- Everything listed here can be pulled out of a player's hands by
-	-- sm.tool.forceTool( nil ) the moment its setting goes false. That is the only
-	-- mechanism in this mod that actively takes a tool away, and the lift has been
-	-- reported broken for a dozen versions running. Whether the guard was ever the
-	-- cause or not, it is the one suspect we own, and removing it settles the
-	-- question instead of arguing about it.
+	-- It goes back because the ask changed once importing existed elsewhere:
+	-- "make a NOT lift and make the menu of it opened via it and limit the lift
+	-- to the host." NOTlift is host only as well -- "its too powerful" -- so at
+	-- an event neither lifting nor importing is a guest action. Guests build;
+	-- the host arranges. That is the whole shape of it.
 	--
-	-- All three lifts are now ungated: the creative one, the survival one, and our
-	-- Import Lift. Nothing this mod does can take a lift out of anybody's hands.
-	--
-	-- What still applies to a lift, and should: a locked or display world refuses
-	-- new creations, because that is what locked means. Game.cl_warnIfBuildingIsShut
-	-- explains that when it happens rather than leaving it silent.
+	-- Gated by `hostlift`, not by `lift`: `lift = false` would remove it from
+	-- everyone including the host, which is a themed-round switch, not this.
+	-- ONE LIFT. The two this mod used to add are gone -- see the toolset -- so
+	-- the only one in the game is survival's, which is base content and cannot
+	-- be removed. Gating it is the whole of "the lift is host only".
+	lift = { sm.uuid.new( "8f190ce2-3a59-423e-8483-a7aa67bd5bc0" ) },
+	-- NOTlift, and it is HOST ONLY -- see HOST_ONLY above. The gate pulls it out
+	-- of a guest's hands within a couple of ticks, and
+	-- World.sv_e_swImportCreation refuses a non-host outright, because "fast" is
+	-- not the same as "impossible" for a tool that spawns whole creations.
+	notlift = { sm.uuid.new( "7b3d5c91-4a2e-4f88-9c17-2e6d0b5a13ff" ) },
 	glowsticks = { sm.uuid.new( "9506abb9-e415-4229-a824-28a479cca788" ) },
 	-- Ours. See CleanerTool.lua: point at anything and it is deleted, including
 	-- the carryable props -- craftbots, gems, crates -- that the remove tool
@@ -190,9 +214,32 @@ Settings.SCHEMA = {
 	{ key = "hostcleaner", kind = "bool", default = true,
 	  help = "only the host may use the cleaner -- leave this on" },
 
-	-- There are no `lift` or `hostlift` settings any more. See TOOLS above: the
-	-- lifts left the tool gate entirely, so there is nothing left for a switch
-	-- to switch. A setting that no longer does anything is worse than no setting.
+	{ key = "lift", kind = "bool", default = true,
+	  help = "allow the lift at all (off removes it from the host too)" },
+	{ key = "hostlift", kind = "bool", default = true,
+	  help = "only the host may hold a lift -- guests import with NOTlift" },
+	{ key = "notlift", kind = "bool", default = true,
+	  help = "allow NOTlift, the creations importer" },
+	{ key = "hostnotlift", kind = "bool", default = true,
+	  help = "only the host may import creations -- leave this on" },
+
+	-- THE IMPORT CAP, OFF BY DEFAULT.
+	--
+	-- "maximum parts since its a host tool shall be inf."
+	--
+	-- It shipped at 2000 for one build, when NOTlift was going to be a guest
+	-- tool and an unbounded import was a griefing vector. It is host only now,
+	-- and a cap on the host is a cap on the person who decides what the event
+	-- is -- pure friction, protecting the host from themselves.
+	--
+	-- The mechanism stays, because the reason it existed has not gone away:
+	-- blueprints on this machine reach 3.1 MB and the browser showed one with
+	-- 40,087 of a single part, and goal 1 of this project is twenty people
+	-- building at once. If a host ever hands NOTlift to guests with
+	-- /set hostnotlift off, /set maximportparts N is the brake, already built
+	-- and already enforced server-side.
+	{ key = "maximportparts", kind = "number", default = 0,
+	  help = "biggest creation NOTlift will import, in parts (0 = no limit)" },
 
 	{ key = "plots", kind = "bool", default = false, help = "restrict building to owned plots" },
 	{ key = "pushintruders", kind = "bool", default = true,
@@ -252,6 +299,10 @@ Settings.SCHEMA = {
 
 	-- Not shown as a toggle; /lockdown and /unlock write it. Kept in settings so
 	-- the World can read the mode back on load without touching Game storage.
+	-- Which WORLD the state in this file belongs to. See Game.sv_newWorldReset.
+	{ key = "worldstamp", kind = "string", default = "", hidden = true,
+	  help = "internal: the world this mod's saved state belongs to" },
+
 	{ key = "protection", kind = "string", default = "open", hidden = true,
 	  help = "current protection mode: open, polish, display, sweep or locked" },
 
@@ -357,6 +408,24 @@ Settings.MIGRATIONS = {
 	-- has already played, so it needs a migration to land.
 	{ key = "alarm_does_not_lock_v50", run = function( values )
 		values.alarmlock = false
+	end },
+	-- THE OPPOSITE OF lift_free_v34, and it needs a migration for the same
+	-- reason that one did -- plus a sharper one. `hostlift = false` is still
+	-- sitting in every existing Settings.json, written by that migration, and a
+	-- changed DEFAULT never reaches a key that is already present. Without this,
+	-- "limit the lift to the host" would have quietly done nothing on the only
+	-- machine that matters.
+	{ key = "lift_host_only_v55", run = function( values )
+		values.hostlift = true
+		values.lift = true
+	end },
+	-- The import cap shipped at 2000 and is already written into Settings.json
+	-- on this machine -- verified, it is there. NOTlift is host only now, so the
+	-- cap comes off: "maximum parts since its a host tool shall be inf." A
+	-- changed default cannot do that on its own, because a default only ever
+	-- applies to a key that is ABSENT.
+	{ key = "import_cap_off_for_host_v56", run = function( values )
+		values.maximportparts = 0
 	end },
 }
 
@@ -680,4 +749,22 @@ function Settings.Sv_CheckTools( players, blocked, notify )
 			end
 		end
 	end
+end
+
+
+-- WORLD STATE, CLEARED WHEN THE WORLD CHANGES.
+--
+-- Everything in Settings.json is one file for the whole MOD, shared by every
+-- world ever created from it -- so a brand new world inherits the last one's
+-- protection mode and buildopen flag. That is not a leftover, it happens every
+-- single time, and it is why a fresh world came up locked.
+--
+-- Split deliberately rather than wiping the file: most settings are the HOST's
+-- preferences -- which tools are on, alarm thresholds, plot size, city style --
+-- and losing those on every new world would be its own bug. Only the two that
+-- describe the state of a particular world are reset.
+function Settings.Sv_ResetWorldState( stamp )
+	Settings.Sv_SetQuiet( "protection", "open" )
+	Settings.Sv_SetQuiet( "buildopen", true )
+	Settings.Sv_SetQuiet( "worldstamp", stamp )
 end

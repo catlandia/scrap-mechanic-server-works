@@ -1,0 +1,101 @@
+// SERVER WORKS -- the crowd bot.
+//
+// A stand-in for a player, used by /crowd to put load on the server when there
+// is nobody to invite. It is a HUMAN character rather than a totebot on purpose:
+// a totebot is a different capsule, a different mass, a different collision hull
+// and a different renderable count, so measuring twenty totebots would not tell
+// you anything about twenty mechanics.
+//
+// Every field below is copied from Survival/Character/CharacterSets/npc_mechanics.json
+// -- the same capsule, mass, material, ragdoll, hit hulls and tumble hull vanilla
+// gives its own human NPCs. The MOVEMENT block is the one deliberate change: it
+// is the PLAYER's, out of Data/Character/CharacterSets/default.json, because a
+// bot that is meant to stand in for a player should move at a player's speed and
+// weigh what a player weighs. Vanilla's NPC mechanics sprint at 8.0, which is
+// twice a player.
+//
+// The renderables here are only a fallback. BotCharacter.lua replaces the whole
+// list on the client with a random outfit the moment the character is created
+// (see Wardrobe.lua), so what is listed is what you would see if that failed --
+// deliberately a complete, ordinary-looking mechanic rather than something
+// obviously broken, since a half-drawn character is harder to diagnose than a
+// plain one.
+//
+// A Custom Game may ship this at all because the template does:
+// Data/ExampleMods/Templates/Survival Custom Game/Characters/Database/. Note that
+// NO Workshop mod in the 1205-item corpus ships a character set, so there is no
+// prior art beyond the template -- treat anything here as unproven until it has
+// been seen in game.
+{
+	"characters" :
+	[
+		{
+			"capsule" :
+			{
+				"crouchHeight" : 0.8,
+				"height" : 1.4,
+				"radius" : 0.3
+			},
+			"character" :
+			{
+				"data" : {},
+				"scriptClass" : "BotCharacter",
+				"scriptPath" : "$CONTENT_DATA/Scripts/BotCharacter.lua"
+			},
+			"hit" :
+			{
+				"crouch" :
+				{
+					"col" : "$SURVIVAL_DATA/Character/Char_Male/char_male_hit_crouch_col.obj",
+					"offset" : [ 0.0, 0.0, 0.4 ]
+				},
+				"stand" :
+				{
+					"col" : "$SURVIVAL_DATA/Character/Char_Male/char_male_hit_stand_col.obj",
+					"offset" : [ 0.0, 0.0, 0.7 ]
+				}
+			},
+			"mass" : 120.0,
+			"material" : "RagdollHuman",
+			"movement" :
+			{
+				"canSwim" : true,
+				"crouchSpeed" : 3.0,
+				"facingRotationSpeed" : 3.1415,
+				"headingRotationSpeed" : 3.1415,
+				"jumpImpulse" : 7.0,
+				"moveSpeed" : 1.4575,
+				"slowDownSpeed" : 2.5,
+				"sprintSpeed" : 4.0
+			},
+			"ragdoll" : "$SURVIVAL_DATA/Character/Char_Male/char_male_ragdoll.json",
+			"renderables" :
+			[
+				"$GAME_DATA/Character/Char_Male/Animations/char_male_tp.rend",
+				"$GAME_DATA/Character/Char_Male/Animations/char_male_tp_swim.rend",
+				"$SURVIVAL_DATA/Character/Char_Male/Animations/char_male_tp_npc_emote.rend",
+				"$SURVIVAL_DATA/Character/Char_Male/Head/Male/char_male_head02/char_male_head02.rend",
+				"$SURVIVAL_DATA/Character/Char_Male/Hair/Male/char_male_hair_03/char_male_hair_03.rend",
+				"$SURVIVAL_DATA/Character/Char_Male/Outfit/Jacket/Outfit_default_jacket/char_male_outfit_default_jacket.rend",
+				"$SURVIVAL_DATA/Character/Char_Male/Outfit/Gloves/Outfit_default_gloves/char_shared_outfit_default_gloves.rend",
+				"$SURVIVAL_DATA/Character/Char_Male/Outfit/Pants/Outfit_default_pants/char_male_outfit_default_pants.rend",
+				"$SURVIVAL_DATA/Character/Char_Male/Outfit/Shoes/Outfit_default_shoes/char_male_outfit_default_shoes.rend",
+				"$SURVIVAL_DATA/Character/Char_Male/Outfit/Backpack/Outfit_default_backpack/char_shared_outfit_default_backpack.rend"
+			],
+			"tumble" :
+			{
+				"col" : "$SURVIVAL_DATA/Character/Char_Male/char_male_col.obj",
+				"offset" : [ 0.0, 0.0, 0.683 ]
+			},
+			"unit" :
+			{
+				"data" : {},
+				"scriptClass" : "BotUnit",
+				"scriptPath" : "$CONTENT_DATA/Scripts/BotUnit.lua"
+			},
+			"uuid" : "d465d7f2-c705-481d-8010-d3455839beed",
+			"name" : "sw_crowd_bot",
+			"showInEditor" : false
+		}
+	]
+}

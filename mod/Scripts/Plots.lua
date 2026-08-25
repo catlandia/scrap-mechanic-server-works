@@ -69,6 +69,17 @@ function Plots.sv_onCreate( self, saved )
 	self.overBudget = {}      -- plotIndex -> true, set by the rules audit
 	self.lastPush = {}
 	self.enabled = ( saved and saved.enabled ) or false
+	-- { character, perma } for every crowd bot, refreshed each tick by the world.
+	-- Never serialised: a bot is a live unit, and a saved reference to one would
+	-- be a dead handle the moment the session ends.
+	self.crowd = {}
+end
+
+-- Handed to the occupancy pass, which treats bots as presence-only occupants.
+-- See the crowd block in sv_updateOccupancy for why they are kept apart from
+-- real players rather than appended to the same list.
+function Plots.sv_setCrowd( self, occupants )
+	self.crowd = occupants or {}
 end
 
 -- The grid and the derived segment lists are computed ONCE and cached. sv_locate
@@ -276,6 +287,47 @@ function Plots.sv_updateOccupancy( self, identify, tick )
 			-- be standing. See Plots.HOLD_RANGE: without this, stepping onto a
 			-- road locked your own plot behind you.
 			self:sv_holdNearby( identify( player ), at )
+		end
+	end
+
+	-- CROWD BOTS STAND HERE TOO.
+	--
+	-- /crowd hands this pass real characters at real positions (Crowd.sv_occupants)
+	-- so that the per-player work -- sv_locate, sv_zoneKey, activePlots,
+	-- sv_holdNearby, and the authorisation walk below -- runs its true cost
+	-- against true geometry rather than against a fabricated player list. The
+	-- only invented thing is the perma string.
+	--
+	-- They are NOT put in `occupied`, and that is deliberate: the loop below
+	-- pushes unauthorised occupants out, and sv_pushOut needs a Player to move.
+	-- A bot cannot be pushed, so a bot standing on somebody else's plot would
+	-- hold that plot shut forever with no way to clear it. Bots contribute
+	-- presence and hold their own team's ground; they never deny anyone else's.
+	--
+	-- Grouped by zone before the authorisation walk, exactly as the player loop
+	-- is. sv_authorised is the one call on this path that is not O(1), and a
+	-- hundred bots on one plot must not mean a hundred of them.
+	local botZones = {}
+	for _, occ in ipairs( self.crowd or {} ) do
+		if sm.exists( occ.character ) then
+			local at = occ.character.worldPosition
+			local z = self:sv_locate( at )
+			local zk = self:sv_zoneKey( z )
+			if z and z.kind == "plot" then self.activePlots[z.index] = true end
+			self:sv_holdNearby( occ.perma, at )
+			if zk then
+				botZones[zk] = botZones[zk] or { zone = z, permas = {} }
+				table.insert( botZones[zk].permas, occ.perma )
+			end
+		end
+	end
+	for _, entry in pairs( botZones ) do
+		local allowed = self:sv_authorised( entry.zone )
+		for _, perma in ipairs( entry.permas ) do
+			if allowed[perma] then
+				self:sv_holdTeam( entry.zone )
+				break
+			end
 		end
 	end
 
@@ -894,6 +946,13 @@ local function blueprint( childs )
 	return { version = 4, bodies = { { childs = childs } }, joints = {} }
 end
 
+-- Public so Crowd.lua can build the single-block bodies its churn places without
+-- restating the child shape. One definition, so a blueprint the crowd imports is
+-- the same shape of thing as a plot -- which matters, because the whole point of
+-- the churn is to make the patrol and the rules audit do their real work on it.
+Plots.Child = child
+Plots.Blueprint = blueprint
+
 -- A street piece's style. The filler strips -- the seams that become shared
 -- ground once the plots either side team up -- follow the plot BORDER rather
 -- than the road, so a seam reads as part of the two plots it joins rather than
@@ -1057,9 +1116,49 @@ end
 -- keeps the slab's 1.00 and is pinned too -- which is right: their tower is part
 -- of the ground now and must not be liftable either.
 function Plots.sv_isGround( self, body )
-	local ok, aabbMin = pcall( function() return body:getWorldAabb() end )
+	-- A BODY ON A LIFT IS NEVER THE GROUND, whatever height it is at.
+	--
+	-- The height test alone is right for everything the city is made of, because
+	-- none of it is ever on a lift. It is wrong for a creation being placed: the
+	-- pinned twin sets convertibleToDynamic = false, and a creation that cannot
+	-- convert can never come OFF the lift -- which is the exact "welded to air"
+	-- this whole path exists to fix, arriving by a different door.
+	--
+	-- It only bites low down: NOTlift puts the lift at slab top (world z 1.25)
+	-- against a 1.10 threshold, so on a plot there is margin. Import while
+	-- standing on the terrain outside the city and there is none at all.
+	local onLift, lifted = pcall( function() return body:isOnLift() end )
+	if onLift and lifted then return false end
+
+	local ok, aabbMin, aabbMax = pcall( function() return body:getWorldAabb() end )
 	if not ok or aabbMin == nil then return false end
-	return aabbMin.z <= ( Plots.DECK_Z + 0.4 ) * Plots.BLOCK
+	if aabbMin.z > ( Plots.DECK_Z + 0.4 ) * Plots.BLOCK then return false end
+
+	-- AND IT HAS TO BE IN THE CITY. Height alone is not the city floor.
+	--
+	-- The pin exists to stop the deck and the plot slabs being carried off, and
+	-- everything it protects is inside the footprint. Out on the terrain the
+	-- ground is LOWER than our deck, so a pure height test claims anything
+	-- resting on it -- which is the same shape as the bug that made a metal 2
+	-- block outside the city undeletable ("I still cant remove metal 2 via the
+	-- tool. even if its not on the platform").
+	--
+	-- It bites imports specifically. A creation released from a lift onto open
+	-- terrain settles at about z 0.75, well under the 1.10 threshold, and the
+	-- pinned twin sets convertibleToDynamic = false -- so it would freeze solid
+	-- the moment it came off the lift, which is exactly the "still static" this
+	-- has been chased through three times now.
+	--
+	-- sv_locate is Layout.locate, pure grid arithmetic on two numbers, so this
+	-- is affordable on the patrol path in a way sv_isCityShape's per-shape work
+	-- is not.
+	--
+	-- The AABB CENTRE, never body.worldPosition -- that is the body's origin and
+	-- can report a point nowhere near the thing on screen.
+	if aabbMax == nil then return false end
+	local zone = self:sv_locate( sm.vec3.new(
+		( aabbMin.x + aabbMax.x ) * 0.5, ( aabbMin.y + aabbMax.y ) * 0.5, 0 ) )
+	return zone ~= nil and zone.kind ~= nil
 end
 
 function Plots.sv_isScenery( self, body )
@@ -1179,4 +1278,14 @@ function Plots.sv_isStandBlock( self, bx, by, zone )
 	local x = r.x + math.floor( ( r.w - size ) / 2 )
 	local y = r.y + math.floor( ( r.h - size ) / 2 )
 	return bx >= x and bx < x + size and by >= y and by < y + size
+end
+
+
+-- Claims belong to a world's city, and a new world has neither. Written rather
+-- than deleted so the file always exists and Sv_LoadFile has nothing to guess.
+function Plots.Sv_ResetFile()
+	local ok, err = pcall( sm.json.save, { owners = {}, teams = {} }, Plots.FILE )
+	if not ok then
+		sm.log.warning( "[ServerWorks] could not reset plots: " .. tostring( err ) )
+	end
 end

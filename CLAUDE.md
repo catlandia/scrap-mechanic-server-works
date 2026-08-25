@@ -93,6 +93,21 @@ presence. And an event needs plots buildable *while the event runs*, so damage b
 somebody with legitimate access is not preventable at all. That is the gap the
 alarm exists to detect, contain and reverse.
 
+### Co-loaded mods: the whole argument is in docs/MODS-AND-TRUST.md
+
+There is no sandbox between mods, so a Blocks-and-Parts mod enabled beside this
+one runs server-side Lua on the host with nearly our own reach. `allow_add_mods`
+is therefore a security setting, and it is now **false**.
+
+The short version, all of it measured: a guest CANNOT bring their own mods (101
+subscribed, 1 loaded, on a real join), an installed-but-unticked mod executes
+nothing at all (12,766 lines vs 0), and the Lua sandbox has no network and no
+filesystem outside `$CONTENT_*`. So the only door is the host ticking the box at
+world creation -- which is the one that is now shut. The doc traces T mod's
+host-takeover backdoor as the worked example, and records the 95 MB / 4.6 Hz
+session it caused in a Server Works world by accident, with nobody attacking
+anything.
+
 ### Anti-grief is an engine primitive, not something we invent
 
 Bodies carry the whole permission set: `setBuildable`, `setErasable`, `setConnectable`,
@@ -166,11 +181,214 @@ So there are **two lifts and they are different items**:
 | `8f190ce2` | `SurvivalLift` | `Survival/Tools/ToolSets/tools.json:44` |
 
 With `baseGameContent: "Survival"` the creative lift is **not in the game**, and
-the blueprint menu that E opens is engine-side (`GarageImportGui` driving
-`Data/Gui/Layouts/Lift/Lift_Import.layout`), so no Lua could bring it back. Our
-toolset now adds `5cc12f03`, which is the case that works.
+the blueprint menu that E opens is engine-side (`ImportGui.cpp` / `LiftGui.cpp`,
+title `#{LIFT_IMPORT_BLUEPRINTS}`, drawing
+`Data/Gui/Layouts/Lift/Lift_Import.layout`), so no Lua could bring it back.
+
+**Adding `5cc12f03` did NOT bring the import menu back, and the tool was never
+the gate.** REPORTED: *"in survival you cant press E on the lift to import stuff.
+this is a feature. the same feature is turned on in custom game."*
+
+Both lift classes end at the same call — `Lift.server_placeLift` and
+`SurvivalLift`'s inherited copy both do `sm.player.placeLift( ... )`
+(`Data/Scripts/game/Lift.lua:388`) — so the *placed* lift is identical whichever
+tool placed it. Our toolset's `5cc12f03` was created with class `Lift`, confirmed
+in the log, and E still did nothing. A gate the tool cannot influence has to be
+keyed on the loaded **content**.
+
+### Do NOT set `baseGameContent: "Creative"`. It cannot create a world.
+
+Tried, 2026-08-25, to reach the import menu. **It bricked the game**, and the
+failure is worth the whole section because nothing in `dev/` caught it.
+
+    ERROR: ScriptableObjectManager.cpp:252
+           ScriptableObject type {46e23051-...(<Unnamed>)} not found!
+    [Lua] ERROR: $GAME_DATA/Scripts/game/CreativeGame.lua:47:
+           createScriptableObject failed due to invalid uuid
+
+`46e23051` is the **WeatherManager**, and `CreativeGame.server_onCreate` builds it
+on line 47 — which is **before** line 57, `self.sv.saved.world =
+sm.world.createWorld( ... )`. `createScriptableObject` raises, `server_onCreate`
+stops there, and **no world is ever created**. The loading screen still finishes
+(`Load finished : 2237.98ms`, `Start state: Game`) and then sits at 100% with
+nothing to enter. Reported as *"stuck at 100 when loading into the mod"*. Every
+later tick throws `CreativeGame.lua:95: attempt to index field 'time'`, and every
+join throws `:114: attempt to index field 'saved'` — the same shape as the 1.79 GB
+log, from the same cause: a `server_onCreate` that died half way.
+
+**And the reason is not the one you would guess.** `46e23051` *is* listed in
+`Data/ScriptableObjects/scriptableObjectSets.sobdb`, the index you would expect
+`"Creative"` to load. It was still not found. So **`"Creative"` loads no
+scriptable object index at all — only `"Survival"` does.** That is measured, not
+inferred; `RenderSettingsManager` (`54563daa`, `CreativeGame.lua:131`) failed the
+same way in the same session.
+
+Shipping our own `.sobdb` is the engine's supported way to add types — both
+`Data/ExampleMods/Templates/*/ScriptableObjects/scriptableObjectSets.sobdb` do
+exactly that — so `"Creative"` plus a `.sobdb` registering `sob_managers.sobset`
+is probably reachable. **Untried.** Do not attempt it without one.
+
+`dev/check_uuids.py` now fails the build on this. It had said *"89 uuids resolve,
+0 do not"* about the build that could not create a world, because it only ever
+looked at **tools**; it now also resolves every `createScriptableObject` uuid on
+the game script's inheritance path (following one level of `dofile` out of the mod
+and into the install, which is exactly far enough to reach `CreativeGame`) against
+the scriptable object index the configured `baseGameContent` actually loads. Flip
+`config.json` to `"Creative"` today and it names `CreativeGame.lua:47` and `:131`
+and exits 1.
+
+**What is still true, and cost nothing to learn:** `config.json` said `"Survival"`
+*"for survival parts in creative"*, and that premise is wrong.
+`Data/Objects/Database/shapesets.json` — the database `"Creative"` loads — already
+lists **51 `$SURVIVAL_DATA` shapesets**. The survival building parts were never
+behind `baseGameContent`. That is not a reason to switch, given the above; it just
+means the stated reason for the current setting is not the real one. The real one
+is that `"Survival"` is the only value that registers the scriptable objects
+`CreativeGame` needs.
 
 The general rule: **before blaming a script, check the uuid is even loaded.**
+And the corollary this cost a version to learn: **a uuid being loaded is not the
+same as the feature being on.**
+
+### Importing a creation: six facts, each of which cost a build to learn
+
+REPORTED across a dozen exchanges as *"welded to air"*, *"still is statick"*,
+*"the lift isnt even connected and still holds"*, *"it spawns two and only one is
+not frozen"*. Every one of those was a different cause. `NOTlift` is the tool;
+`NotLift.lua` and `World.sv_e_swImportCreation` are the code.
+
+**1. The engine's blueprint browser can be borrowed, and it is the only door.**
+`sm.gui.openGarageImportGui()` plus `sm.gui.setGarageButtonCallback( name )` is
+how the survival garage picks a creation (`GarageConsole.lua:468`). MEASURED: it
+opens **with no storage set**, from a **Game script**, and the callback
+`( self, path, name )` really arrives there — which no vanilla code does, every
+caller being an interactable. `/bptest2` is the probe that settled it.
+
+**2. A blueprint is its own content id.** The path handed back is
+`$CONTENT_<uuid>/blueprint.json`. MEASURED, `/bptest`, every other form refused
+with *"is not located in a valid directory"* — absolute paths, `$BLUEPRINT_DATA`,
+`$USER_DATA`, `..` traversal — against a control that came back READABLE. And
+there is **no directory-listing binding at all**: `listFiles` `getFiles`
+`readDirectory` `directoryExists` are 0 hits in the executable. So Lua can open a
+blueprint only when the engine has already handed over the path. A custom
+creations list is not possible; borrowing the browser is not a shortcut.
+
+**3. `sm.creation.importFromFile` ALWAYS makes a static body.** MEASURED, six
+call shapes, two sessions, `dynamic=false` every time: 4 args, `+true`,
+`+true,true`, `+false`, `+false,false`, and `world = nil`. The two undocumented
+booleans do not touch it. A blueprint file carries no static flag either — 400 of
+the owner's own have only `bodies`/`joints`/`version`/`dependencies`. **Do not go
+looking for an import that returns a dynamic creation. There isn't one.**
+
+**4. `sm.player.placeLift` does nothing to a real body.** MEASURED by a 25-second
+trace in which `onLift` was false at t+0.00 and still false at t+25.00, without
+one change. Vanilla only ever calls it with **ghost** bodies handed over by the
+engine's own import (`Lift.client_onForceTool`). It is not deferral — an earlier
+version of this file claimed that, and the trace disproved it.
+
+`sm.lift.createNonPlayerLift( world, liftPos, body, level, rotation )` is the one
+that takes a **real** body; vanilla passes an existing shape's body straight in
+(`BuilderGuideLiftPlatform.sv_spawnLift:160`). Lift coordinates are quarter
+blocks (`liftPos = worldPos * 4`), and since `Plots.BLOCK` is 0.25 a lift
+coordinate and a city block coordinate are the same number.
+
+**5. PUTTING A BODY ON A LIFT REPLACES IT.** MEASURED: the trace said `BODY GONE
+(deleted)` one tick after `createNonPlayerLift`, every single time. The engine
+destroys the original body object and makes a new one. So **every handle taken
+before the lift is dead afterwards** — which is why a release that was working
+logged nothing at all, and why the trace now starts *after* the release and finds
+the body by position instead.
+
+Keep the **lift** handle, not the body handle. `Lift:destroy()` is what releases
+the creation (`BuilderGuidePlatform.lua:64`) and the only thing that removes a
+non-player lift — no player owns one, so no lift tool will pick it up. Two
+unremovable lifts were left standing in a test world by not keeping it.
+
+**6. Anything that can be lifted must be convertible to dynamic.** `sweep` was
+`liftable = true` with `convertibleToDynamic = false` — "you may put this on a
+lift, and it may never come off". Every creation imported outside a plot got that
+profile from the patrol within a second of landing and was pinned static forever,
+which defeated three separate fixes to the lift before anyone looked at it.
+`dev/test_logic.py` now asserts the pairing over every profile.
+
+The shape of the whole episode: **four fixes were shipped on reasoning and none
+landed.** What worked was a real-time trace — one line per change, a heartbeat, a
+hard stop — because every single-instant measurement had been taken at an instant
+chosen before anyone knew which transition was failing. See `World.sv_traceStep`.
+
+### The map draws what the builder builds, so a map bug is usually a CITY bug
+
+REPORTED: *"the road is crosed by frame that it shoudlnt be"*, then *"still line
+on one of the axis"*. Both were one fault, and it was not in the drawing.
+
+`Layout.deckPieces` emitted every non-plot **column** as a single full-height
+strip, while horizontal seams were only emitted across plot **columns**. So a
+one-block seam between two plots ran the entire height of the city, straight
+through the middle of every horizontal road, carrying its own `filler` kind --
+a line of the wrong material across each road, on **one axis only**, because the
+reverse case never happens.
+
+**The partition was intact the whole time, which is exactly why nothing caught
+it.** `dev/test_layout.py` checked for overlap, gaps and fractional blocks and
+all of them passed: the ground *was* covered exactly once, just by the wrong
+piece. A suite that verifies coverage does not verify *kind*. It now asserts no
+`filler` piece sits inside a road band, on either axis, across all 13
+configurations.
+
+Two smaller things in the same panel, both genuinely cosmetic:
+
+- **The plaza wore the "taken" colour.** It is drawn in ACCENT orange, which the
+  key underneath calls *taken*, and a plaza is deliberately larger than a plot --
+  with `plazacells 2` it is 41 blocks across against a plot's 20, because it
+  swallows the seam between the cells it covers. So it read as a claimed tile of
+  the wrong size sitting off the grid. Reported as *"see? they are offset."* It
+  is blue now and named in the key.
+- **Rounding position and size independently un-tiles a partition.** A piece
+  ending at 149.7 was drawn to 149 while its neighbour starting at 149.7 was
+  drawn *from* 149. Round both EDGES instead and adjacent pieces land on the same
+  boundary pixel by construction. MEASURED: 10 seam breaks across a row before,
+  0 after. `dev/test_logic.py` walks a scanline and demands contiguity.
+
+### Mod state is GLOBAL to the mod, not per world
+
+`Settings.json`, `Plots.json`, `Event.json`, `Players.json` and `Snapshots/` all
+live in `$CONTENT_DATA` — **one folder shared by every world ever created from
+this mod** — and nothing here uses per-world storage at all.
+
+So a brand new world inherited the previous world's protection mode, `buildopen`
+flag, plot claims and event phase: it came up **locked**, with claims on plots
+that did not exist, and an event that had already ended. Every time. REPORTED as
+*"every time I create a new world. and fix something you havent updated yet in a
+long time."* It is also what was first misread as "one test event left it locked".
+
+`self.storage` **is** per world (it is where `CreativeGame` keeps `self.sv.saved`),
+so a stamp written there and mirrored into `Settings.json` says whether the files
+on disk belong to this world. `Game.sv_newWorldReset` clears protection,
+`buildopen`, plot claims and the clock, and keeps tool settings, bans and
+snapshots — a host's preferences and a persistent ban list are not world state.
+
+**It must run AFTER `CreativeGame.server_onCreate`.** Writing to `self.storage`
+first makes that function's own `if self.sv.saved == nil` test see a non-empty
+table and skip creating the world entirely — the same no-world-at-all failure the
+`baseGameContent` experiment produced. A check enforces the ordering.
+
+### Custom item icons
+
+`"custom_icons": true` in `description.json`, plus `Gui/IconMap.xml` and
+`Gui/IconMap.png`. Format taken from the corpus: 31 Workshop items ship icons and
+every one uses this exact pair; `2809564171` "Portal Gun" is a Custom Game
+precedent. Vanilla's own is `Data/Gui/IconMap.xml`, a 2048x1024 atlas on a 96x96
+grid — the creative lift's icon is at `1056,768`.
+
+Two traps. **An XML comment may not contain two consecutive hyphens**, which the
+Lua files use as dashes everywhere; a header written that way is rejected outright
+and the game says nothing. And every corpus mod points its `Empty` index at tile
+`0 0` *and* puts a real icon there — ours leaves `0 0` transparent instead,
+because what the engine asks `Empty` for is a guess and the cost of being wrong is
+a crossed-out lift appearing wherever it asks.
+
+`dev/check_uuids.py` checks all of it: the flag, that each index uuid is a tool we
+actually add, and that each frame lands inside the png.
 
 ### Litter must never become permanent, and it takes three rules to guarantee it
 
@@ -448,6 +666,55 @@ bar and **silently drops the caption**, which reads as a broken widget rather
 than as a styling mistake. `StyledButtonLarge` and `SecondaryButton` both draw
 their text.
 
+### A clickable colour swatch is two vanilla facts put together
+
+Needed for the city style picker -- *"use the color pallete selection of paint
+tool for the city part color selection"* -- and neither half is invented:
+
+| what | where |
+|---|---|
+| a **Button** may use skin `WhiteSkin` | `Data/Gui/EditorSkin.xml:27` -- `<Widget type="Button" skin="WhiteSkin">` |
+| a **Button** may carry `Colour` | `Data/Gui/JsonGuis/DigitalSign.gui` -- all eight colour-option buttons set `Colour` **and** `onClick` |
+
+`WhiteSkin` is a 2x2 **white** patch with only a `normal` state
+(`MyGUI_BlackOrangeSkins.xml:778`), so it has no hover art -- and because the
+source texel is white, `Colour` multiplies straight through and the widget is
+exactly the colour asked for. That is already how every panel background in this
+mod is drawn; the only new part is putting it on a `Button` instead of a
+`Widget`.
+
+`StyleGui` draws each swatch **twice** -- a `fill()` first, then the Button on
+top -- so that if the Button half ever draws nothing the grid still shows the
+right colours and still takes clicks. Forty extra widgets on a panel built once
+per click is not a cost worth caring about.
+
+Hex to widget colour is `Palette.GuiColour`, which is pure and therefore checked
+outside the game: `dev/test_logic.py` reads the colour back off every swatch,
+converts it to hex again and compares it against the run out of the executable.
+
+### The city style is picked, not stepped
+
+The ten style settings used to be ten rows on the settings panel, each one
+button that advanced to the next value. REPORTED: *"make it not a slider like.
+but like a list so its easier to select."* Twenty-five blocks and forty colours
+behind one button each is not a selection -- reaching `wood2` from `concrete` was
+sixteen clicks, each one a server round trip, and at no point could you see what
+you were choosing between.
+
+`StyleGui` is one screen: the five pieces of the city down the left, all
+twenty-five blocks as a list, all forty colours as the paint tool's own 4x10
+grid, and the six whole-city styles that used to be reachable only through
+`/citystyle`. Reached from the settings nav, from the city panel, and from
+`/citystyle` with no argument; `back` is carried through every hop so BACK
+returns to whichever of the two opened it.
+
+**The trap when a tab stops being a tab.** `SettingsGui.RowsFor("other")` sweeps
+up every schema row no group claims, so deleting the `style` group would put all
+ten straight back as steppers under OTHER. The group entry stays and still lists
+its keys -- it just carries `panel = "style"`, which makes its nav button open
+the picker instead of selecting a tab. A check asserts no key ending in `block`
+or `colour` is a stepper row under **any** group, OTHER included.
+
 ### The compass is available and is per-player
 
 `CreativeGame.client_onCreate` calls `sm.gui.createCompassHudGui()` and stores it
@@ -473,6 +740,131 @@ ships is 33x33; the one vanilla call that passes a width — `RaidManager.lua:11
 Copying that call for a square icon stretches it. `LostItems.lua:91` is the
 precedent to follow: `compassAddIcon( name, icon )`, name and file and nothing
 else, and the engine draws it at its own size.
+
+### A CHARACTER SCRIPT'S GLOBALS ARE SHARED, AND ITS INSTANCES ARE NOT ON ONE THREAD
+
+**This cost two versions and the first diagnosis was wrong**, which is the part
+worth keeping.
+
+The crowd bot's wardrobe was a global table. Every bot threw:
+
+    ERROR: ...BotCharacter.lua:525: attempt to call field 'Name' (a nil value)
+         [Logic Task:25332]   [Logic Task:4764]   [Logic Task:22328]
+
+REPORTED as *"BOTS WORK! just without the skins stuff"* -- exactly right, because
+the unit half is server-side and never touched the wardrobe, so the bots spawned,
+walked and collided perfectly while wearing the characterset's fallback.
+
+**Round one blamed `dofile`.** The wardrobe was its own `Scripts/Wardrobe.lua`,
+and twelve vanilla character scripts all `dofile` `$SURVIVAL_DATA` paths and
+never mod content -- a tidy story, and wrong. Moving the whole table INTO
+`BotCharacter.lua`, four hundred lines above its only caller, produced the
+identical error.
+
+**That second measurement is what settles it.** The chunk plainly ran past the
+definitions: `BotCharacter` itself is declared a hundred lines BELOW them and the
+engine found it. And `Wardrobe` was still a *table* when it was indexed, or Lua
+would have said "index a nil value" rather than "call field". So the table
+existed and was EMPTY.
+
+The thread ids are the tell -- they differ between bursts, and the bursts share a
+timestamp. **The engine instantiates a character script per character, on its own
+logic task, and `Wardrobe = {}` at the top of one instance's chunk blanks the
+shared global that another instance's callback is halfway through reading.**
+Twenty bots spawning at once is twenty chunks racing one assignment.
+
+**The rule: in a character or unit script, anything shared between the chunk and
+its callbacks must be an upvalue, never a global.** Assigning a global is fine --
+the engine finds the class that way, and `dev/test_logic.py` reaches the wardrobe
+that way -- but *reading one back* is the bug. A field on the class table is the
+same mistake wearing a hat: one table, every instance.
+
+`dev/test_logic.py` now enforces it over every script a characterset names, and
+reverting the `local` fails it.
+
+Two smaller things from the same session:
+
+- **A `pcall` around the wrong half proves nothing.** The appearance call *was*
+  guarded and logged-once. The line that threw was one line above the guard.
+- **`dev/sync_mod.py` now PRUNES.** A script deleted from the repo used to stay
+  in the Mods folder forever and the engine compiles every `.lua` it finds there,
+  so the orphaned `Wardrobe.lua` was still being loaded after it was removed from
+  the project. Same class as the stale `Cache/`. Pruning skips `Cache/`,
+  `Snapshots/` and the root-level json the game writes.
+
+### The dofile question, answered and set aside
+
+Worth recording only so nobody re-runs the experiment. Round one of the bug above
+blamed `dofile`: `BotCharacter.lua` loaded its wardrobe with
+`dofile( "$CONTENT_DATA/Scripts/Wardrobe.lua" )`, and it is true that **twelve
+vanilla character scripts call `dofile` and every one of them loads a
+`$SURVIVAL_DATA` path -- not one loads mod content**.
+
+But the engine's own log shows our file being found and compiled:
+
+    Raw cache miss! Path: '$CONTENT_<uuid>/Scripts/BotCharacter.lua'
+    Raw cache miss! Path: '$CONTENT_<uuid>/Scripts/Wardrobe.lua'
+
+and inlining the whole table into the calling file reproduced the error exactly.
+So **`dofile` of mod content from a character script works**, and the tidy story
+about vanilla never doing it was a correlation, not the cause. The cause is the
+shared global, above.
+
+The lesson is the method, not the fact: a plausible explanation that matches the
+evidence is not the same as the one that survives being tested against a second
+measurement.
+
+### A 50/50 SPLIT IS NOT THE SAME THING AS RANDOM
+
+REPORTED: *"make sure gender is random too"* -- about a generator that was
+already producing exactly 50% male over 200 bots and passing a ratio check.
+
+The sequence over consecutive character ids was:
+
+    M f M f M f M f M f M f M f M f M f f M
+
+Perfect alternation. Two bots standing next to each other could never be the same
+sex, which is what you notice in a crowd of five, and the ratio test could not
+see it because the ratio was right.
+
+**The cause is structural.** An LCG is affine over 2^32, so for adjacent seeds
+the state moves in lockstep -- and asking for `n = 2` uses exactly one bit. More
+LCG rounds do not help: a composition of affine maps is affine. Breaking it needs
+one step that is not affine over the integers, and Lua 5.1 has no bitwise
+operators, so the cheapest is **exchanging the 16-bit halves** -- a bit
+permutation, linear over GF(2) but not over Z, so composed with the LCG neither
+structure survives.
+
+MEASURED over the same 24 seeds: 11 runs instead of 23, where a fair coin
+averages 12. Within one generator, 22 runs in 40. Buckets stay flat for n = 2, 3,
+5 and 10 and the percentage gates land within 0.2 points.
+
+The general rule, which is the part worth keeping: **a distribution check cannot
+see a pattern.** Test the SEQUENCE -- count runs -- whenever a small-n choice is
+derived from consecutive seeds. `dev/test_logic.py` does, and reverting the
+half-swap fails it.
+
+### There is no skin-colour channel -- the HEAD is the skin
+
+Asked for as *"make the skin colours beards and others randomizable too"*. Beards
+already were (ten, male, rolled at 55%); skin needs the correction.
+
+There is nothing to tint. A head renderable carries its own skin: open
+`char_male_head02.rend` and the `skin` submesh points at
+`char_male_head02_dif.tga` -- its own texture, its own tone. **So picking a head
+at random IS picking a skin at random**, and there are fifteen (7 male, 8 female)
+plus two more in the classic set. The only tint binding on a character is
+`setColor`, which is what makes a totebot red; on a human it would tint the whole
+model, and it is not a skin channel.
+
+The real lever for variety is a second ART SET, not a colour. `Data/Character/Char_Classic`
+is the original mechanic -- seven renderables that replace the whole body at once
+(head, chest, hands, feet, legs, hair, backpack; no jacket/pants/shoes, because
+the chest and legs already are those). It is also what
+`Data/Character/CharacterSets/default.json` dresses the **player** in, so a
+classic bot wears exactly what a real player's character is built from. Roughly
+one bot in four is classic, and `dev/check_uuids.py` resolves all 98 renderable
+paths against the install on every build.
 
 ### A body on the lift is REAL, and it is flagged as a ghost
 
@@ -881,6 +1273,118 @@ There is no Lua profiler binding — but the game log is one. Every line is stam
 `HH:MM:SS (tick/frame)`: the first counter advances at the simulation rate, the second at
 the render rate, so dividing each by wall-clock recovers server tick rate and client FPS
 for **any session already played**. `dev/session_stats.py` does it. No test group required.
+(`wrap_Profiler.cpp` *is* in the binary, and exposes **zero** bindings — the string
+run after its marker belongs to `wrap_Storage.cpp`. The claim above is confirmed,
+not assumed.)
+
+### The engine hands over ONE multiplayer number, and it needs exactly one guest
+
+    WARNING: NetworkServer.cpp:231 Skip sending unreliable network data
+             to client 76561199070209586 Budget is currently: -280930
+
+The host giving up on sending a client its state for that tick, because that
+client's send budget is exhausted. One line is one tick a player never received.
+It is the only "the server cannot keep up with this player" signal that exists,
+and unlike tick rate it is **per client**.
+
+**MEASURED** over all 150 `game-*.log` in this install:
+
+- It only ever names a **remote** client — never the host's own loopback id, not
+  once. So a solo session cannot produce one, and neither can a crowd of bots.
+- The budget is per client and **independent**, so **one guest measures it as
+  well as twenty would.** Twenty multiplies the *host's* upload, which is
+  arithmetic on a measured per-client rate, not a second measurement.
+- A budget of exactly `0` in the first seconds is the uninitialised counter, not
+  a drop. Only negative values are data being lost.
+
+**And it already points somewhere.** `game-20260710-192923.log` is five players,
+tick rate a median **39.8** against a healthy 40 — the simulation was fine, just
+as it was in the 19-player session below. In that same session **three clients
+were starved 371 times, one of them 856 KB over budget.** That is the first
+thing this project has measured that degrades *before* the tick rate does, and it
+agrees with the one real event on record, where client frame rate slid while the
+player count stayed flat. What caused it — content, count, or what was being
+built — is **not** established. `dev/session_stats.py` now reports it per client.
+
+### Emulating players: `/crowd`, and what it can and cannot stand in for
+
+**The whole argument is in [`docs/CROWD.md`](docs/CROWD.md).** Read it before
+trusting any number that came out of a bot session.
+
+The short version. `/crowd N` puts N human-model bots on the city — named,
+randomly dressed, wandering, optionally claiming plots and placing and removing
+blocks. They are real characters at real positions, handed to
+`Plots.sv_updateOccupancy` as real occupants, so the per-player Lua does its true
+work against true geometry rather than against a fabricated player list.
+
+What that covers: physics per capsule, character replication, body churn, and
+every per-player code path in this mod. What it **cannot** cover, ever: a real
+client connection with its own network budget, and a second machine's rendering.
+Those two are why one guest joining once is still required, and why `/crowd` is
+not a substitute for it.
+
+**`/bench start` runs the whole experiment for you** -- it walks the crowd up in
+steps, holds each size still, and records frame rate, tick rate, shape and body
+count per step to chat, to the log and to `$CONTENT_DATA/Bench.json`
+(`dev/bench_report.py` reads it). One thing about it is worth knowing before
+touching it, because getting it wrong produces a benchmark that reports perfect
+health under any load:
+
+**There is no clock in this engine's Lua.** `os` does not exist, and
+`sm.game.getCurrentTick()` is the simulation counter -- the very thing being
+measured, so it cannot also be the reference. The only real-time quantity Lua can
+see is the `dt` passed to `client_onUpdate`, which is wall-clock seconds (proven
+by `timeOfDay + dt / DAYCYCLE_TIME`, `CreativeGame.lua:208`). So the **host's
+client is the stopwatch**, reporting frames, seconds and ticks once a second, all
+three as **deltas over the same interval**. Sending the absolute tick and
+differencing the window's ends instead loses one interval in N: a clean 40 Hz
+server reported **36**, and nothing about 36 looks wrong. `dev/test_logic.py`
+found it and now guards it.
+
+Three leads were ruled out getting there, recorded so nobody spends a day on them
+twice: **`setParallelLimit` is not a threading knob** (it is in
+`wrap_Interactable.cpp`, next to `setInteractableCondition` — pipe logic);
+**`sm.character.createCharacter` takes a *player*** and is not a route to a
+free-standing puppet; and **`unit_mechanic` is the null uuid**, used by vanilla
+only as a type test and never passed to `createUnit`.
+
+**The executable has a command-line parser, and one flag in it is worth a test.**
+`Main.cpp` parses `-open <path>` `-builtin_mods_only` `-dedicated_server`
+`-console` `-dev` `-window` `-fps` `--ugc` `-last_save` `-tileeditor`
+`-no_popcnt` `-no_profiler` `-max_threads` `-use_null_driver`
+`-select_custom_gpu` `-enable_flip_discard`, plus `-connect_steam_id <id>`.
+**Untested.** `-dedicated_server` is a bare flag with no supporting strings
+anywhere in the binary — no `DedicatedServer.cpp`, only `ListenServer.cpp` — so
+it is plausibly a dead dev stub. `-use_null_driver` is the interesting partner: a
+renderer-less client would be cheap to run several of. Two minutes to find out;
+nobody has spent them.
+
+### The biggest city this mod can lay out does not dent the tick rate
+
+**MEASURED, 2026-08-25**, from `dev/session_stats.py` over
+`Logs/game-20260825-204149.log`, after the owner deliberately tried the largest
+city setting available:
+
+    [ServerWorks] city built: 384 plots, 0 failed        20:50:56
+
+    tick/s   median 39.9   (healthy = 40)
+    frame/s  median 58.9
+
+    20:50  tick 39.7  frame 58.3     <- the minute the 384-plot city was built
+    20:52  tick 39.9  frame 58.9
+
+The one window below target in that whole session is `20:42, tick 8.3` -- which
+is the WORLD LOAD, forty seconds before the game state even starts, not the city
+build. Building 384 plots cost 0.2 Hz of a 40 Hz tick and nothing measurable in
+frame rate, and nothing failed.
+
+That is the first direct evidence for goal 1 that comes from this mod's own city
+rather than from a vanilla event, and it points the same way the 2026-08-22
+session did: **the simulation is not where this project's headroom goes.** Note
+what it does NOT say -- this was one player on an empty city. Twenty people
+building on 384 plots is still unmeasured, and client frame rate degrading with
+accumulated content remains the thing that actually got worse in the only real
+event on record.
 
 ### What that measurement actually said
 
@@ -913,7 +1417,9 @@ credit it with fixing the thing that actually degraded.
 ## What exists
 
     mod/description.json        Custom Game, version 1, allow_add_mods
-    mod/config.json             baseGameContent "Survival" (for survival parts in creative)
+    mod/config.json             baseGameContent "Survival" -- the ONLY value that
+                                works; "Creative" registers no scriptable objects
+                                and CreativeGame then never creates a world
     mod/Scripts/Game.lua        class(CreativeGame); commands; timers; grief alarm
     mod/Scripts/Player.lua      class(CreativePlayer)
     mod/Scripts/World.lua       class(CreativeFlatWorld); stops explosion cratering
@@ -930,26 +1436,66 @@ credit it with fixing the thing that actually degraded.
     mod/Scripts/ConfirmGui.lua  two doors in front of anything destructive
     mod/Scripts/EventHud.lua    top-right timer + handover to the warehouse timer
     mod/Scripts/RosterHud.lua   top-left: who is online, and how many residents
+    mod/Scripts/StyleGui.lua    what the city is made of: block list + paint palette
     mod/Scripts/MyPlotGui.lua   the panel players use: claim, find, team, leave
     mod/Scripts/PlotMarker.lua  "find my plot", on the game's own compass HUD
                                 driven from Player.lua -- compassSetIconWorldPosition
                                 is world-dependent and Game.lua has no world
 
+    mod/Scripts/Crowd.lua       /crowd -- a lobby of bots, when there is no lobby
+    mod/Scripts/Bench.lua       /bench -- walk the crowd up, record fps and tick
+    mod/Scripts/BotUnit.lua     one bot's server half: where it walks
+    mod/Scripts/BotCharacter.lua its client half: name tag, clothes, wardrobe
+                                98 renderables and 960 names, all in ONE file --
+                                see "a character script cannot dofile mod content"
+    mod/Characters/Database/    the crowd bot's character set. No Workshop mod
+                                ships one of these; the template is the only prior art
+
     mod/Scripts/GuiProbe.lua    /guitest -- the button experiment, client only
     mod/Scripts/CleanerTool.lua the only thing that can delete a carryable prop
+    mod/Scripts/NotLift.lua     NOTlift -- imports a saved creation. Host only
+    mod/Gui/IconMap.xml/.png    custom menu icons (NOTlift, Cleaner)
 
     dev/check_all.py            all four checks below; --sync installs afterwards
     dev/check_lua.py            compiles every mod script through a real Lua parser
     dev/check_uuids.py          every uuid the mod names, against the install
     dev/test_layout.py          runs Layout.lua and proves the city is a partition
-    dev/test_logic.py           runs the mod's rules and panel layouts (91 checks)
+    dev/test_logic.py           runs the mod's rules and panel layouts (110 checks)
     dev/sync_mod.py             repo -> game Mods folder (preserves live BanList.json)
-    dev/session_stats.py        tick/FPS reconstruction from any game log
+    dev/session_stats.py        tick/FPS reconstruction from any game log,
+                                plus the per-client network budget skips
+    dev/bench_report.py         the table /bench wrote, out of Bench.json
     dev/dump_api.py             per-module Lua bindings out of the executable
+
+### Three tools, and why there are not more
+
+`nugdupS` (the stale-mod canary), `NOTlift` (imports a creation) and the
+`Cleaner` (deletes anything, including lifts and carryable props). Both real
+tools carry a custom icon, because both would otherwise be indistinguishable
+from something else in the menu -- NOTlift draws the lift's preview renderable
+and the Cleaner IS a sledgehammer subclass. The Cleaner is also tinted red in the
+hand (`setTpColor`/`setFpColor`), since a held model cannot be crossed out
+without new 3D content.
+
+**Two lifts were added and both have been removed.** `5cc12f03`, the creative
+lift, was added because `baseGameContent: "Survival"` never loads the creative
+tool index -- and it worked, but survival's own `8f190ce2` is the same tool for
+every purpose that survives here (`SurvivalLift` is `class( Lift )` with one live
+method), so it only ever put a second identical lift in the menu. `4c893da9`,
+the Import Lift, was a workaround for a creations menu that no lift in this game
+opens. NOTlift does the importing now.
+
+What is left is survival's lift, which is base content and cannot be removed. It
+is host-gated by `hostlift`.
 
 Commands, all host-only: `/lockdown` `/unlock` `/protection` `/buildtime` `/autosave`
 `/snapshot` `/snapshots` `/restore` `/players` `/ban` `/unban` `/banlist` `/kick`
-`/citystyle`. `/budget` and `/players` are open to everyone.
+`/citystyle` `/nolift` `/crowd` `/bench`. `/budget` and `/players` are open to
+everyone.
+
+Diagnostics, kept because they settle questions in one command rather than
+an argument: `/guitest` (json GUI buttons), `/bptest` and `/bptest2` (can we read a
+blueprint, will the browser open), `/tool` (what is in your hand and what gates it).
 
 Three things run without the host watching, because the grief that started this project
 landed two minutes before an event ended and no amount of watching catches that:
@@ -989,31 +1535,18 @@ two-step — it deletes the world, so a fat-fingered restore mid-event beats the
 (`dev/check_lua.py`) and installs; none of it has been run. Ranked by what is most likely
 to be wrong:
 
-1. **`baseGameContent: "Survival"` + a `CreativeGame` subclass.** No Workshop Custom Game
-   pairs those (they use Survival+SurvivalGame, or Creative+own class). If it misbehaves,
-   flip to `"Creative"` — and survival parts go away with it.
+1. **`baseGameContent: "Survival"` + a `CreativeGame` subclass.** No Workshop
+   Custom Game pairs those (they use Survival+SurvivalGame, or Creative+own
+   class). **Do not "fix" that by flipping to `"Creative"` — it cannot create a
+   world.** See the `baseGameContent` section above; `dev/check_uuids.py` now
+   fails the build if anyone tries.
 
-   **It has misbehaved once, and the fix was small.** Survival content wins any uuid
-   the two modes share, so you get the *survival* version of a shared tool:
-   `Sledgehammer.lua` reads `clientPublicData.perks`, which `SurvivalPlayer` sets and
-   `CreativePlayer` does not, and threw once per client frame → fixed by two
+   **It has misbehaved once, and the fix was small.** Survival content wins any
+   uuid the two modes share, so you get the *survival* version of a shared tool:
+   `Sledgehammer.lua` reads `clientPublicData.perks`, which `SurvivalPlayer` sets
+   and `CreativePlayer` does not, and threw once per client frame → fixed by two
    overrides in `Player.lua`.
 
-   The pattern to remember: **when a creative feature silently does nothing, check
-   whether survival owns that uuid** — and then fix it in Lua, by overriding the
-   method that broke, the way `Player.lua` does. **Not by re-declaring the uuid in
-   our toolset: that does not work.** See "A Custom Game's toolset can ADD a tool"
-   above.
-
-   **And the counter-example, which cost a whole version.** uuid `8f190ce2` is the
-   lift, and survival does own it — `Survival/Tools/ToolSets/tools.json:44` maps it
-   to `SurvivalLift`. That looked like the same bug and it was not:
-   `SurvivalLift = class( Lift )` has exactly one live method (`client_onUpdate`,
-   calling `setBlockSprint`) and the whole rest of that file sits inside a
-   `--[[ ]]` block. It inherits every piece of blueprint handling there is. V19
-   swapped a working class for an identical one and changed nothing.
-   **Survival owning a uuid is not the same as survival breaking it — read the
-   subclass before blaming it.**
 2. **`sm.creation.importFromString`'s last two arguments.** Vanilla passes `true, true`
    in `BuilderWorld` and only five arguments in `MenuWorld`; the meaning is not documented
    anywhere and was not derivable from the binding names.
@@ -1103,8 +1636,18 @@ suspensions **combined** per plot -- and none of it has been exercised in game.
 
 - Does this project stay in `E:\Projects\Server Works\server-works`? There is no git repo
   here yet.
-- Is there a group available for the phase-0 load test? If not, phase 0 needs a different
-  design and that should be settled before phase 1.
+- ~~Is there a group available for the phase-0 load test?~~ **ANSWERED 2026-08-25: no.**
+  The owner has no lobby of their own. The 19-player session that this file cites was
+  **somebody else's server, joined as a guest** -- the log loads City Building MMO, not
+  this mod. So phase 0 as written cannot run, and no multi-player number can come from a
+  real lobby. What is still reachable solo: content/simulation load (which is where this
+  mod's own overhead lives), and the per-client network budget warnings the engine
+  already logs. ~~Emulating players is being researched separately.~~
+  **ANSWERED: `/crowd`, and it goes only so far.** See
+  [`docs/CROWD.md`](docs/CROWD.md). The important correction to the sentence
+  above is that **the per-client network budget is NOT reachable solo** -- the
+  engine only computes one for a remote client, measured over every log here. It
+  needs one guest, and one guest is enough, because the budget is per client.
 - How much of vanilla creative survives? `CreativeGame` brings tapebots (`UnitManager`,
   `aggroCreations = true`), weather and water managers by default, and they cost real CPU on
   an event server.

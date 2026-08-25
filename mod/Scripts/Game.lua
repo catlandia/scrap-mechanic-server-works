@@ -7,6 +7,7 @@ dofile( "$CONTENT_DATA/Scripts/Settings.lua" )
 dofile( "$CONTENT_DATA/Scripts/Identity.lua" )
 dofile( "$CONTENT_DATA/Scripts/SettingsGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/PlotsGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/StyleGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/GuardedTools.lua" )
 dofile( "$CONTENT_DATA/Scripts/MenuGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/Event.lua" )
@@ -16,6 +17,7 @@ dofile( "$CONTENT_DATA/Scripts/EventGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/ConfirmGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/MyPlotGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/GuiProbe.lua" )
+dofile( "$CONTENT_DATA/Scripts/NotLift.lua" )
 -- IndexWidgets and friends. BasePlayer pulls this in too, but relying on load
 -- order for a global is how you get a nil at the worst moment.
 dofile( "$SURVIVAL_DATA/Scripts/util.lua" )
@@ -50,12 +52,14 @@ local TOOL_CHECK_TICKS = 2
 -- Commands that need a world. Forwarded rather than handled here.
 local WORLD_COMMANDS = {
 	["/lockdown"] = true, ["/unlock"] = true, ["/protection"] = true,
+	["/nolift"] = true,
 	["/buildtime"] = true, ["/snapshot"] = true, ["/snapshots"] = true,
 	["/restore"] = true, ["/purge"] = true, ["/plot"] = true,
 	["/plots"] = true, ["/plotgrid"] = true, ["/home"] = true,
 	["/plotbuild"] = true, ["/plotclear"] = true, ["/why"] = true,
 	["/budget"] = true,
 	["/plotapply"] = true,
+	["/crowd"] = true, ["/bench"] = true,
 }
 
 -- Commands a guest may use. Everything else is host-only.
@@ -126,6 +130,33 @@ function Game.server_onCreate( self )
 		sm.log.warning( "[ServerWorks] g_unitManager is nil after base create -- collisions will error" )
 	end
 
+	-- A NEW WORLD MUST NOT INHERIT THE LAST ONE'S STATE.
+	--
+	-- REPORTED: "every time I create a new world. and fix something you havent
+	-- updated yet in a long time."
+	--
+	-- Every state file this mod writes lives in $CONTENT_DATA -- one folder for
+	-- the whole MOD, not per world. Settings.json, Plots.json and Event.json are
+	-- shared by every world ever created from it, and nothing here has ever used
+	-- per-world storage at all. So a brand new world starts with the previous
+	-- world's protection mode, its buildopen flag, its plot claims and its event
+	-- phase.
+	--
+	-- What that looks like from the outside: a fresh world comes up LOCKED, with
+	-- claims on plots that do not exist yet and an event that already ended.
+	-- Every time. It is also what was misread this morning as "one test event
+	-- left it locked" -- it was never a leftover, it is structural.
+	--
+	-- self.storage IS per world (CreativeGame keeps self.sv.saved in it), so a
+	-- stamp written there and mirrored into Settings.json says whether the files
+	-- on disk belong to THIS world.
+	--
+	-- Deliberately AFTER the base call: writing to self.storage before it would
+	-- make CreativeGame's own `if self.sv.saved == nil` test see a non-empty
+	-- table and skip creating the world entirely -- which is exactly the
+	-- no-world-at-all failure that came out of the baseGameContent experiment.
+	self:sv_newWorldReset()
+
 	self.sv.kickQueue = {}
 	self.sv.nextToolCheck = 0
 	self.sv.nextBanReload = 0
@@ -155,7 +186,71 @@ function Game.server_onCreate( self )
 			sm.log.info( "[ServerWorks]   nothing can be placed or removed until "
 				.. "the clock reaches build, or /event stop" )
 		end
+	else
+		-- A WORLD THAT COMES UP SHUT USED TO COME UP SILENT, and that silence is
+		-- most of why "I cant use the lift" outlived a dozen versions.
+		--
+		-- `ended` is terminal: sv_running() is false for it, so the branch above
+		-- never ran, and the two settings the ended phase persisted -- protection
+		-- "locked" and buildopen false -- were simply re-read at load with no log
+		-- line, no chat, and nothing on the HUD to connect them to a clock that
+		-- finished days ago. Every session after one finished event started in a
+		-- world where the lift hovers nothing, selects nothing and places
+		-- nothing, because every body is on the locked profile with liftable
+		-- false (Lift.lua:127 needs isLiftable() to do any of the three).
+		--
+		-- So say it, at load, with the command that fixes it.
+		local mode = Settings.Get( "protection" )
+		local shut = ( Settings.Get( "buildopen" ) == false ) or ( mode ~= "open" )
+		if shut then
+			sm.log.info( string.format(
+				"[ServerWorks] world is SHUT at load: protection %s, buildopen %s",
+				tostring( mode ), tostring( Settings.Get( "buildopen" ) ) ) )
+			sm.log.info( "[ServerWorks]   no building, no erasing, and the lift "
+				.. "cannot pick up or place anything. /unlock reopens it." )
+			self.sv.warnShutAtLoad = true
+		end
 	end
+end
+
+-- See the note in server_onCreate. Returns true if this world was new to us.
+function Game.sv_newWorldReset( self )
+	local saved = self.sv and self.sv.saved
+	if type( saved ) ~= "table" then return false end
+
+	local stamp = saved.swWorldStamp
+	if stamp == nil then
+		-- os.time alone is not enough: two worlds made in the same second would
+		-- share a stamp. The tick counter restarts per session, so the pair is
+		-- unique in practice for the one thing it has to distinguish.
+		stamp = string.format( "%d-%d", os.time(), sm.game.getCurrentTick() )
+		saved.swWorldStamp = stamp
+		pcall( function() self.storage:save( saved ) end )
+	end
+
+	if Settings.Get( "worldstamp" ) == stamp then
+		return false                      -- same world as the files on disk
+	end
+
+	-- The files belong to a different world. Reset what describes a world and
+	-- keep what describes the HOST.
+	Settings.Sv_ResetWorldState( stamp )
+	Plots.Sv_ResetFile()
+	Event.Sv_ResetFile()
+
+	sm.log.info( "[ServerWorks] NEW WORLD -- protection, building, plot claims "
+		.. "and the event clock reset. Tool settings, bans and snapshots kept." )
+	-- Snapshots are the host's own data and belong to the world they were taken
+	-- in, so they are NOT deleted -- silently throwing away somebody's backups
+	-- would be a far worse bug than a stale index. They just will not match this
+	-- world's city.
+	local ok, index = pcall( sm.json.open, Snapshots.INDEX )
+	if ok and type( index ) == "table" and next( index ) ~= nil then
+		sm.log.info( "[ServerWorks]   NOTE: existing snapshots were taken in a "
+			.. "different world. /snapshots still lists them; restoring one here "
+			.. "will rebuild that world's creations." )
+	end
+	return true
 end
 
 -- CreativeGame drops new players at 16,16, which with a centred city is somebody
@@ -217,6 +312,34 @@ function Game.sv_e_swBuildTime( self, params )
 	end
 	Event.Sv_SaveFile( g_swEvent )
 	self:sv_pushEvent()
+end
+
+-- The other half of /unlock. World.lua sets the protection MODE; this sets the
+-- `buildopen` blanket, and clears a stale `ended` clock so nothing puts it back.
+--
+-- Kept here rather than in World because the event clock and the settings live
+-- on this side, and because sv_pushEvent has to run afterwards -- the client's
+-- canBuild flag is what Game.cl_warnIfBuildingIsShut reads, and leaving it stale
+-- would have every lift in the lobby still announcing that builds are locked
+-- seconds after they were unlocked.
+--
+-- Deliberately NOT sv_applyEventPhase( "off" ): that broadcasts "The event clock
+-- has been stopped" to everyone, which is a lie when no clock was running. The
+-- two writes it would make are made here directly.
+function Game.sv_e_swOpenBuilding( self, params )
+	-- `ended` is a terminal phase -- sv_advance returns nil once the deadline is
+	-- gone -- so it sits in Event.json forever and is re-read on every load. It
+	-- writes nothing by itself, but leaving it there means the HUD keeps saying
+	-- ENDED / builds are locked over a world that is now open, and the next
+	-- /event start would be the only thing that ever cleared it.
+	if g_swEvent ~= nil and g_swEvent.phase == "ended" then
+		g_swEvent:sv_stop()
+		Event.Sv_SaveFile( g_swEvent )
+	end
+	Settings.Sv_SetQuiet( "buildopen", true )
+	self.sv.warnShutAtLoad = nil        -- said once; it is not true any more
+	self:sv_pushEvent()
+	sm.log.info( "[ServerWorks] building reopened: buildopen true, protection open" )
 end
 
 function Game.sv_e_swToolsChanged( self, params )
@@ -577,6 +700,20 @@ function Game.server_onPlayerJoined( self, player, newPlayer )
 			self.network:sendToClient( player, "client_showMessage",
 				"  /menu -> EVENT CLOCK -> STOP THE EVENT gives you the controls back." )
 		end
+
+	-- THE SAME MESSAGE FOR THE CASE NOBODY WAS TOLD ABOUT: shut with no clock
+	-- running. The branch above only fires while sv_running() is true, and
+	-- `ended` is not running -- so the state that actually persists between
+	-- events, and across restarts, was the one state that said nothing.
+	--
+	-- Host only. A guest can do nothing about it and "the world is locked" is
+	-- already on the HUD; the host is the one holding the command.
+	elseif self.sv.warnShutAtLoad and player == sm.player.getHostPlayer() then
+		self.network:sendToClient( player, "client_showMessage",
+			"Building is CLOSED on this world -- nothing places, nothing erases, "
+			.. "and the lift will not pick up or place anything." )
+		self.network:sendToClient( player, "client_showMessage",
+			"  /unlock reopens it. (Left over from an event that ended.)" )
 	end
 
 	-- If they already own a plot from a previous session, put it back on their
@@ -679,10 +816,31 @@ end
 
 -- Rendered only when the numbers change or the panel does not exist yet. There
 -- is no clock in it, so there is nothing to redraw on a timer.
+-- ON AT ALL TIMES, which is not what "redraw when it changes" gives you.
+--
+-- REPORTED: "where is the player and citizen counter? it shall be on for now at
+-- all times." It rendered only when self.cl.rosterDirty was set, and that flag
+-- is only set when the SERVER pushes -- and the server only pushes when a number
+-- actually moves, which on a single-player world is once, at join, and never
+-- again. So there was exactly one render, at the one moment the HUD was least
+-- likely to exist yet, and nothing to put it back afterwards.
+--
+-- Two changes, and the second is the one that makes it robust: the panel starts
+-- with a state of its own so it draws before the server has ever spoken, and it
+-- re-renders once a second whatever happens, so anything that takes the widget
+-- away -- a graphics reload, another GUI, a world rebuild -- gets it back within
+-- a second instead of never.
+--
+-- Once a second is not a cost worth avoiding: it is two numbers on a Wallpaper
+-- layer, which is what the event clock already does beside it.
 function Game.cl_updateRosterHud( self )
 	local r = self.cl.roster
-	if r == nil or not self.cl.rosterDirty then return end
+	if r == nil then return end
+
+	local tick = sm.game.getCurrentTick()
+	if not self.cl.rosterDirty and tick < ( self.cl.rosterNext or 0 ) then return end
 	self.cl.rosterDirty = false
+	self.cl.rosterNext = tick + 40
 
 	if self.cl.rosterHud == nil or not sm.exists( self.cl.rosterHud ) then
 		-- The same four flags NotificationManager uses for its own timer, and
@@ -826,6 +984,77 @@ function Game.client_onFixedUpdate( self, dt )
 	end
 end
 
+--[[ the frame-rate probe ]]
+--
+-- THE ONLY WALL CLOCK IN THIS ENGINE'S LUA.
+--
+-- `os` does not exist in the sandbox, and sm.game.getCurrentTick() is the
+-- simulation counter -- which is the very thing /bench is trying to measure, so
+-- it cannot also be the reference. Drop to 20 Hz and a stage timed in ticks
+-- silently takes twice as long and reports 40 Hz anyway.
+--
+-- client_onUpdate's `dt` is real seconds. Proven by what vanilla does with it:
+-- CreativeGame.lua:208 advances the day with `timeOfDay + dt / DAYCYCLE_TIME`,
+-- which would drift against the sun if it were anything else.
+--
+-- So this is the stopwatch, and it is also the only place frame rate is visible
+-- at all -- client_onFixedUpdate runs at the simulation rate and would report 40
+-- on a machine drawing 12.
+--
+-- ARMED, NOT ALWAYS ON. One message per client per second is nothing next to
+-- what a crowd of bots costs, but it is not nothing, and a probe that ran during
+-- an event would be adding traffic to the thing it exists to measure. The server
+-- turns it on for the length of a run and off again (sv_e_swBenchArm).
+function Game.client_onUpdate( self, dt )
+	CreativeGame.client_onUpdate( self, dt )
+
+	local s = self.cl and self.cl.bench
+	if s == nil or not s.armed then return end
+
+	s.frames = s.frames + 1
+	s.secs = s.secs + dt
+	if s.secs < 1.0 then return end
+
+	-- A tick DELTA, not a tick. The delta and the wall-clock delta then cover
+	-- exactly the same interval, which absolute ticks do not: N samples span N
+	-- seconds but only N-1 gaps between their timestamps, so a ten-second window
+	-- reported 36 Hz on a server running a clean 40. Caught by
+	-- dev/test_logic.py, which is the whole reason that check exists -- a
+	-- benchmark reading 10% low is entirely plausible and would have been
+	-- believed.
+	--
+	-- Measured here rather than on the server for a second reason: reading the
+	-- tick when the message LANDS puts a packet's latency between the two
+	-- quantities, which at 40 Hz is another whole percent.
+	-- Note what is NOT in here: whether this client is the host. That is an
+	-- identity, and an identity in a payload is a claim -- the server works it
+	-- out from the sender instead. It matters more than it looks: the host's
+	-- sample is the one the stage timer and the whole tick-rate column are built
+	-- on, so a guest able to say "I am the host" could drive the run.
+	local now = sm.game.getCurrentTick()
+	self.network:sendToServer( "sv_n_benchSample", {
+		frames = s.frames,
+		secs = s.secs,
+		ticks = now - ( s.tick0 or now ),
+	} )
+	s.frames, s.secs, s.tick0 = 0, 0, now
+end
+
+function Game.cl_n_benchArm( self, params )
+	if self.cl == nil then return end
+	self.cl.bench = { armed = params and params.on == true, frames = 0, secs = 0,
+		tick0 = sm.game.getCurrentTick() }
+	if self.cl.bench.armed then
+		sm.gui.chatMessage( "#dfbf00Frame-rate probe on. Stand still until the bench finishes." )
+	end
+end
+
+-- From the world, which is where Bench lives (it needs the crowd and the shape
+-- census). A world script has no network of its own, hence the hop.
+function Game.sv_e_swBenchArm( self, params )
+	self.network:sendToClients( "cl_n_benchArm", { on = params and params.on == true } )
+end
+
 -- THE LIFT IS NOT BROKEN, THE WORLD IS SHUT.
 --
 -- REPORTED over and over as "the lift is still fuc-SAD", and the screenshot that
@@ -836,10 +1065,10 @@ end
 --
 -- It is not something to fix -- a locked world SHOULD refuse new creations, that
 -- is what locked means. It is something to SAY.
+-- One entry, because there is one lift. The creative lift and the Import Lift
+-- were both removed from the toolset once NOTlift took over importing.
 local LIFT_UUIDS = {
-	["5cc12f03-275e-4c8e-b013-79fc0f913e1b"] = true,   -- the creative lift
-	["8f190ce2-3a59-423e-8483-a7aa67bd5bc0"] = true,   -- the survival one
-	["4c893da9-484d-495b-a013-87beed81c148"] = true,   -- our Import Lift
+	["8f190ce2-3a59-423e-8483-a7aa67bd5bc0"] = true,
 }
 
 function Game.cl_warnIfBuildingIsShut( self, uuid )
@@ -883,6 +1112,17 @@ end
 
 function Game.client_onCreate( self )
 	CreativeGame.client_onCreate( self )
+
+	-- Disarmed until the server says otherwise. client_onUpdate runs every frame
+	-- and reads this, so it has to exist before the first one.
+	self.cl = self.cl or {}
+	self.cl.bench = { armed = false, frames = 0, secs = 0, tick0 = 0 }
+
+	-- A state of its own, so the counter is on screen from the first frame
+	-- rather than waiting for a server push that may already have happened. The
+	-- real numbers overwrite it the moment they arrive.
+	self.cl.roster = self.cl.roster or { online = 1, residents = 0 }
+	self.cl.rosterDirty = true
 
 	-- NOT "/help". The engine reserves it -- measured, first run:
 	--   ERROR: Command name '/help' is reserved
@@ -938,6 +1178,11 @@ function Game.client_onCreate( self )
 		"Open the Server Works menu" )
 	-- Client only, no server hop. Four combinations of who owns the callback and
 	-- where the widget tree came from; see GuiProbe.lua.
+	sm.game.bindChatCommand( "/bptest", { { "string", "blueprintUuid", true } },
+		"cl_onBpTest",
+		"Probe Q1: can we read a blueprint file? Reads only, changes nothing" )
+	sm.game.bindChatCommand( "/bptest2", {}, "cl_onBpTest2",
+		"Probe Q2: will the blueprint browser open? Run /bptest first -- may crash" )
 	sm.game.bindChatCommand( "/guitest", {}, "cl_onGuiTest",
 		"Diagnostic: does a GUI button work here? Run it four times." )
 	sm.game.bindChatCommand( "/plotmenu", {}, "cl_onAdminCommand",
@@ -961,6 +1206,22 @@ function Game.client_onCreate( self )
 	sm.game.bindChatCommand( "/lockdown", { { "string", "mode", true, { "strict", "display" } } },
 		"cl_onAdminCommand", "Host: lock every build. strict also blocks seats and controllers" )
 	sm.game.bindChatCommand( "/unlock", {}, "cl_onAdminCommand", "Host: reopen building" )
+	-- Host only, and a load-test tool rather than an event one. Two trailing
+	-- optional strings because the sub-commands take a word each -- the parser
+	-- splits on spaces and has no quoting, so "churn on" is two params.
+	sm.game.bindChatCommand( "/crowd",
+		{ { "string", "n|off|churn|claim", true }, { "string", "on|off", true } },
+		"cl_onAdminCommand",
+		"Host: stand in a lobby of bots to load-test the server" )
+
+	sm.game.bindChatCommand( "/bench",
+		{ { "string", "start|stop|results", true },
+		  { "number", "step", true }, { "number", "seconds", true } },
+		"cl_onAdminCommand",
+		"Host: walk the crowd up in steps and record fps and tick rate" )
+
+	sm.game.bindChatCommand( "/nolift", {}, "cl_onAdminCommand",
+		"Host: clear every lift in the world and drop what is on them" )
 	sm.game.bindChatCommand( "/protection", {}, "cl_onAdminCommand",
 		"Host: protection state, shape count, running jobs" )
 	sm.game.bindChatCommand( "/buildtime", { { "number", "minutes", false } }, "cl_onAdminCommand",
@@ -1094,6 +1355,15 @@ function Game.cl_onSettingsGuiClick( self, widgetName, data )
 		return
 	end
 
+	-- CITY STYLE is a panel of its own now rather than a tab of ten steppers:
+	-- twenty-five blocks and forty colours behind one button each is not a
+	-- selection, it is a slot machine. See StyleGui.lua.
+	if data.action == "style" then
+		self.network:sendToServer( "sv_n_openPanel",
+			{ panel = "style", back = "settings" } )
+		return
+	end
+
 	-- Switching tab or page is pure presentation, so it re-renders locally
 	-- instead of round-tripping to the server. Only a value change needs the
 	-- server, because only the server decides what the settings are.
@@ -1126,6 +1396,114 @@ end
 
 function Game.cl_onSettingsGuiClose( self, widgetName )
 	self:cl_forgetPanel()
+end
+
+
+--[[ city style panel ]]
+
+-- Split out of the settings panel, where the ten style settings used to be ten
+-- stepper rows. REPORTED: "make it not a slider like. but like a list so its
+-- easier to select. and use the color pallete selection of paint tool for the
+-- city part color selection." See StyleGui.lua.
+--
+-- Same shape as every other panel here: the server owns the values, the client
+-- owns the presentation, and a click that changes something round-trips so a
+-- guest's client is never the authority on what the city is made of.
+--
+-- `back` is carried through every hop because this panel is reached from two
+-- places -- the settings nav and the city layout panel -- and BACK that always
+-- went to the same one would be wrong from whichever place it was not.
+function Game.sv_openStyleGui( self, player, piece, status, back )
+	local style = {}
+	for _, p in ipairs( Palette.PIECES ) do
+		style[p.key] = {
+			block = Settings.Get( p.key .. "block" ),
+			colour = Settings.Get( p.key .. "colour" ),
+		}
+	end
+	self.network:sendToClient( player, "client_openStyleGui", {
+		style = style, piece = piece or "pad",
+		status = status, back = back or "menu",
+	} )
+end
+
+function Game.client_openStyleGui( self, state )
+	if self.cl == nil then self.cl = {} end
+	self.cl.styleState = state
+	self:cl_showPanel( "style", StyleGui.Build( state ) )
+end
+
+function Game.cl_onStyleGuiClick( self, widgetName, data )
+	if type( data ) ~= "table" or self.cl == nil then return end
+	local st = self.cl.styleState
+	if st == nil then return end
+
+	if data.action == "close" then
+		self:cl_closeLater( "panel" )
+		return
+	end
+	if data.action == "back" then
+		-- No close: whatever we go back to renders into this same GUI a moment
+		-- from now, and a queued close would land on top of it.
+		if st.back == nil or st.back == "menu" then
+			self.network:sendToServer( "sv_n_openMenu", {} )
+		else
+			self.network:sendToServer( "sv_n_openPanel", { panel = st.back } )
+		end
+		return
+	end
+	-- Which piece is being styled is pure presentation, so it re-renders locally
+	-- rather than asking the server what it already told us.
+	if data.action == "piece" then
+		st.piece = data.piece
+		st.status = nil
+		self:cl_renderLater( "style", StyleGui.Build( st ) )
+		return
+	end
+	self.network:sendToServer( "sv_n_styleGuiClick", {
+		action = data.action, value = data.value, preset = data.preset,
+		piece = st.piece, back = st.back,
+	} )
+end
+
+function Game.cl_onStyleGuiClose( self, widgetName )
+	self:cl_forgetPanel()
+end
+
+function Game.sv_n_styleGuiClick( self, data, player )
+	if player ~= sm.player.getHostPlayer() then return end
+	if type( data ) ~= "table" then return end
+
+	local piece = tostring( data.piece or "pad" )
+	local status = nil
+
+	if data.action == "block" or data.action == "colour" then
+		-- The key is built from the piece, so a client that sent a piece name
+		-- that is not one of the five gets a key Sv_Set does not know and is
+		-- refused there. Nothing here has to trust it.
+		local key = piece .. ( ( data.action == "block" ) and "block" or "colour" )
+		local ok, detail = Settings.Sv_Set( key, tostring( data.value ) )
+		status = detail
+		if ok then
+			self:sv_toWorld( "/settingschanged", {}, player )
+		end
+
+	elseif data.action == "stylepreset" then
+		local name = string.lower( tostring( data.preset or "" ) )
+		local style = Palette.STYLES[name]
+		if style == nil then
+			status = "no style called '" .. name .. "'"
+		else
+			for key, value in pairs( style ) do
+				Settings.Sv_Set( key, value )
+			end
+			self:sv_toWorld( "/settingschanged", {}, player )
+			status = "style: " .. name .. " -- BUILD CITY to apply it"
+			self:sv_broadcast( "City style: " .. name .. " -- BUILD CITY to apply it." )
+		end
+	end
+
+	self:sv_openStyleGui( player, piece, status, data.back )
 end
 
 
@@ -1282,6 +1660,186 @@ end
 
 
 --[[ the button probe ]]
+
+--[[ NOTLIFT -- the blueprint importer ]]
+
+-- The chain, and every hop in it is one this mod already does elsewhere:
+--
+--   NotLift click  -> tool server  -> sv_e_swOpenImport (here)
+--                  -> client_openImport (here)  -> the engine's browser
+--   player picks   -> cl_onNotLiftPick (here)   -> sv_n_swImport (here)
+--                  -> World.sv_e_swImportCreation, which does the import
+--
+-- It is long because the callback is only PROVEN to land on a Game script. See
+-- the header of NotLift.lua for the measurement.
+function Game.sv_e_swOpenImport( self, params )
+	local player = params and params.player
+	if player == nil or not sm.exists( player ) then return end
+	self.network:sendToClient( player, "client_openImport", {} )
+end
+
+function Game.client_openImport( self, data )
+	if self.cl == nil then self.cl = {} end
+	-- Remember who asked, so a stale callback from some other source cannot be
+	-- mistaken for this one.
+	self.cl.importArmed = true
+	local ok, err = pcall( function()
+		sm.gui.openGarageImportGui()
+		sm.gui.setGarageButtonCallback( "cl_onNotLiftPick" )
+		sm.gui.setGarageErrorCallback( "cl_onNotLiftError" )
+	end )
+	if not ok then
+		self.cl.importArmed = nil
+		sm.gui.chatMessage( "The creations browser refused to open: " .. tostring( err ) )
+		sm.log.warning( "[ServerWorks] NOTlift browser refused: " .. tostring( err ) )
+	end
+end
+
+-- ( self, path, name ) -- vanilla's own signature
+-- (GarageConsole.cl_e_trackBlueprint), and MEASURED to arrive here.
+--
+-- THIS HANDLER MUST NOT TOUCH A GUI. The browser widget is alive and this
+-- callback is on its stack; closing or redrawing from inside a callback is the
+-- one bug that accounted for every "the buttons dont work" report in this
+-- project, and with a focused widget it crashed the game outright. Send, and
+-- let the browser be dismissed with Escape.
+function Game.cl_onNotLiftPick( self, path, name )
+	if self.cl == nil then self.cl = {} end
+	if not self.cl.importArmed then return end
+	self.cl.importArmed = nil
+
+	if type( path ) ~= "string" or path == "" then
+		sm.gui.chatMessage( "That creation has no file behind it (Workshop item not "
+			.. "downloaded?)." )
+		return
+	end
+	self.network:sendToServer( "sv_n_swImport",
+		{ path = path, name = tostring( name or "creation" ) } )
+end
+
+function Game.cl_onNotLiftError( self, err )
+	sm.log.warning( "[ServerWorks] NOTlift browser error: " .. tostring( err ) )
+end
+
+function Game.sv_n_swImport( self, data, player )
+	if type( data ) ~= "table" or player == nil then return end
+	local world = self:sv_world()
+	if world == nil or not sm.exists( world ) then
+		self:sv_e_swReply( { player = player, text = "The world is not ready yet." } )
+		return
+	end
+	sm.event.sendToWorld( world, "sv_e_swImportCreation",
+		{ player = player, path = data.path, name = data.name } )
+end
+
+-- /bptest -- the NOTlift probe. See the NOTLIFT PROBE block in GuiProbe.lua.
+--
+-- Client only, everything pcall'd, and it changes nothing: it reads and it asks
+-- the engine to open its own browser. Nothing is imported, nothing is spawned,
+-- no body is touched. Safe to run mid-event.
+function Game.cl_onBpTest( self, params )
+	if self.cl == nil then self.cl = {} end
+	local uuid = ( type( params ) == "table" and type( params[2] ) == "string" )
+		and params[2] or nil
+
+	sm.gui.chatMessage( "-- Q1: can we read a blueprint file, and in what form? --" )
+	sm.log.info( "[ServerWorks] bptest Q1: sm.json path forms" )
+	for _, row in ipairs( GuiProbe.BlueprintPaths( uuid ) ) do
+		local label, path = row[1], row[2]
+
+		-- fileExists returns a bool and does not raise, so it is safe to ask
+		-- about a path the sandbox may hate. open() DOES raise, hence the pcall.
+		local okE, exists = pcall( sm.json.fileExists, path )
+		local verdict
+		if not okE then
+			verdict = "fileExists RAISED: " .. tostring( exists )
+		elseif exists ~= true then
+			verdict = "no such file"
+		else
+			local okO, data = pcall( sm.json.open, path )
+			if not okO then
+				verdict = "EXISTS but open RAISED: " .. tostring( data )
+			else
+				-- A blueprint has a `bodies` array. Saying so proves we read the
+				-- real thing rather than an empty table.
+				local bodies = ( type( data ) == "table" ) and data.bodies or nil
+				verdict = ( bodies ~= nil ) and "READABLE, it has bodies"
+					or "READABLE (no bodies field -- not a blueprint?)"
+			end
+		end
+		sm.gui.chatMessage( string.format( "  %-22s %s", label, verdict ) )
+		sm.log.info( string.format( "[ServerWorks] bptest   %-22s %s", label, verdict ) )
+	end
+
+	sm.gui.chatMessage( "Q1 done. /bptest2 runs Q2 -- read the warning it prints." )
+end
+
+-- Q2 IS A SEPARATE COMMAND BECAUSE IT MIGHT TAKE THE GAME DOWN.
+--
+-- GarageConsole never calls openGarageImportGui() without calling
+-- setGarageImportGuiStorage( containers ) first, and it returns early when the
+-- containers are missing rather than opening anyway (GarageConsole.lua:455-460).
+-- We have no containers to give it. Whether the engine copes with that or
+-- dereferences nothing is exactly the kind of thing that has crashed this game
+-- twice already -- and a pcall does not catch a native crash.
+--
+-- So Q1 runs, prints and LOGS on its own command, and is safely on disk before
+-- this one is ever typed. If this crashes, the useful half is already saved.
+function Game.cl_onBpTest2( self, params )
+	if self.cl == nil then self.cl = {} end
+	self.cl.bpPicked = nil
+
+	sm.gui.chatMessage( "-- Q2: will the game's own blueprint browser open? --" )
+	sm.gui.chatMessage( "  If the game dies here, that IS the answer -- say so." )
+	sm.log.info( "[ServerWorks] bptest Q2: about to call openGarageImportGui "
+		.. "with no storage set. A crash after this line is the result." )
+
+	local ok, err = pcall( function()
+		sm.gui.openGarageImportGui()
+		sm.gui.setGarageButtonCallback( "cl_onBpPick" )
+		sm.gui.setGarageErrorCallback( "cl_onBpError" )
+	end )
+	if ok then
+		sm.gui.chatMessage( "  it did not raise. If a list of your creations is on" )
+		sm.gui.chatMessage( "  screen, PICK ONE -- the path it hands back is the answer." )
+		sm.log.info( "[ServerWorks] bptest Q2: openGarageImportGui did not raise" )
+	else
+		sm.gui.chatMessage( "  REFUSED: " .. tostring( err ) )
+		sm.log.info( "[ServerWorks] bptest Q2 refused: " .. tostring( err ) )
+	end
+end
+
+-- The callback the browser is told to use. Signature copied from vanilla's own
+-- ( GarageConsole.cl_e_trackBlueprint( self, path, name ) ) -- a real filesystem
+-- path and the creation's name.
+--
+-- THIS FIRING AT ALL IS THE RESULT. It would mean the engine dispatches that
+-- callback to a Game script, which is the thing no vanilla code does and which
+-- decides whether NOTlift can borrow the browser.
+function Game.cl_onBpPick( self, path, name )
+	if self.cl == nil then self.cl = {} end
+	self.cl.bpPicked = path
+	sm.gui.chatMessage( "  CALLBACK FIRED -- the browser reaches a Game script." )
+	sm.gui.chatMessage( "    name: " .. tostring( name ) )
+	sm.gui.chatMessage( "    path: " .. tostring( path ) )
+	sm.log.info( string.format( "[ServerWorks] bptest PICK name=%s path=%s",
+		tostring( name ), tostring( path ) ) )
+
+	-- And immediately: is that path one WE can read? That is the whole of Q1,
+	-- answered with the engine's own path instead of a guessed one.
+	local okE, exists = pcall( sm.json.fileExists, path )
+	sm.gui.chatMessage( "    fileExists: " .. tostring( okE and exists or "RAISED" ) )
+	local okO, data = pcall( sm.json.open, path )
+	local shape = okO and ( type( data ) == "table" and data.bodies ~= nil
+		and "READABLE, it has bodies" or "READABLE" ) or ( "open RAISED: " .. tostring( data ) )
+	sm.gui.chatMessage( "    " .. shape )
+	sm.log.info( "[ServerWorks] bptest PICK read: " .. shape )
+end
+
+function Game.cl_onBpError( self, err )
+	sm.gui.chatMessage( "  browser error callback: " .. tostring( err ) )
+	sm.log.info( "[ServerWorks] bptest browser error: " .. tostring( err ) )
+end
 
 -- /guitest. See GuiProbe.lua for why this exists: three versions of "the
 -- buttons dont work", three real bugs found and fixed, and they still do not
@@ -1809,16 +2367,33 @@ function Game.sv_n_confirmed( self, data, player )
 end
 
 -- Reopen a named panel. Used by BACK and by a cancelled confirmation.
+--
+-- HOST GATED, and it was not always. A json GUI is opened by the SERVER onto a
+-- named client, so a modified client that sent this message itself got the
+-- host's panels drawn on its own screen -- the city panel, the event clock, the
+-- whole settings tree. Nothing could be CHANGED that way, because every action
+-- handler behind those panels tests the sender; what leaked was the READING --
+-- the server's settings, the event state, the city configuration.
+--
+-- myplot is the one panel a guest is entitled to, so it answers before the gate.
 function Game.sv_n_openPanel( self, data, player )
 	if type( data ) ~= "table" then return end
+
+	if data.panel == "myplot" then
+		self:sv_toWorld( "/myplot", {}, player )
+		return
+	end
+
+	if player ~= sm.player.getHostPlayer() then return end
+
 	if data.panel == "city" then
 		self:sv_openPlotsGui( player, "nothing was deleted" )
 	elseif data.panel == "event" then
 		self:sv_openEventGui( player )
 	elseif data.panel == "settings" then
 		self:sv_openSettingsGui( player, "safety", 1 )
-	elseif data.panel == "myplot" then
-		self:sv_toWorld( "/myplot", {}, player )
+	elseif data.panel == "style" then
+		self:sv_openStyleGui( player, nil, nil, data.back )
 	end
 end
 
@@ -1843,6 +2418,12 @@ function Game.cl_onPlotsGuiClick( self, widgetName, data )
 			claimed = cfg.claimed or {}, mine = cfg.mine, team = cfg.team,
 			status = "reset to the defaults -- nothing is built until you press BUILD" }
 		self:cl_renderLater( "city", PlotsGui.Build( self.cl.plotCfg ) )
+		return
+	end
+	if data.action == "style" then
+		-- What the city is MADE of, next to what it is shaped like. BACK comes
+		-- back here rather than to the hub.
+		self.network:sendToServer( "sv_n_openPanel", { panel = "style", back = "city" } )
 		return
 	end
 	if data.action == "close" then
@@ -1879,6 +2460,34 @@ end
 
 
 --[[ command dispatch ]]
+
+-- One second of one client's frames, on its way to Bench in the world script.
+--
+-- GUEST REACHABLE ON PURPOSE, and it is the only handler in this mod for which
+-- that is the whole point rather than a tolerance: what /bench most wants to
+-- know is what the frame rate is on OTHER PEOPLE'S machines, and only their
+-- machine can say. The one real event on record degraded in exactly that number
+-- while the server's own tick rate never moved.
+--
+-- Safe to leave open because nothing here is authority. The sender is taken from
+-- the third argument, never from the payload; a guest cannot claim to be the
+-- host and so cannot drive the run; the numbers are validated as arithmetic in
+-- Bench.sv_sample; and a client that lies only spoils the row labelled with its
+-- own name. It also does nothing at all unless a bench is running.
+function Game.sv_n_benchSample( self, data, player )
+	if type( data ) ~= "table" or not sm.exists( player ) then return end
+	local world = self:sv_world()
+	if world == nil or not sm.exists( world ) then return end
+
+	sm.event.sendToWorld( world, "sv_e_swBenchSample", {
+		-- The NAME is the server's answer to who sent this, not the client's.
+		name = player:getName(),
+		isHost = ( player == sm.player.getHostPlayer() ),
+		frames = data.frames,
+		secs = data.secs,
+		ticks = data.ticks,
+	} )
+end
 
 function Game.sv_n_adminCommand( self, params, player )
 	local function reply( text )
@@ -1936,7 +2545,7 @@ function Game.sv_n_adminCommand( self, params, player )
 			reply( "  /settings           open the settings panel" )
 			reply( "  /settingslist  /set <name> <value>" )
 			reply( "  /plotmenu           lay the city out, then build it" )
-			reply( "  /citystyle          which blocks and colours the city is made of" )
+			reply( "  /citystyle          pick the blocks and colours the city is made of" )
 			reply( "  /plots on|off  /plotbuild  /plotclear" )
 			reply( "  /plotgrid <plot> <gap> <cols> <rows>" )
 			reply( "  /event start <prep> <build>   minutes. Prep = claim only, no building" )
@@ -1950,6 +2559,11 @@ function Game.sv_n_adminCommand( self, params, player )
 			reply( "  /why                point at a build, ask why it is locked" )
 			reply( "  /ban <who>  /unban <who>  /banlist  /known  /kick <who>" )
 			reply( "  /allow <who>  /unallow <who>  /allowlist" )
+			reply( "LOAD TESTING -- not for a live event" )
+			reply( "  /crowd <n>          stand n bots on the city, one per plot" )
+			reply( "  /crowd churn on     have them place and remove blocks" )
+			reply( "  /bench start        walk the crowd up, record fps and tick rate" )
+			reply( "  /bench results      the table from the last run" )
 		end
 
 	elseif cmd == "/rules" then
@@ -1994,12 +2608,17 @@ function Game.sv_n_adminCommand( self, params, player )
 	elseif cmd == "/citystyle" then
 		local name = params[2]
 		if name == nil or name == "" then
-			reply( "city style -- /citystyle <name>, or /set <key> <value>" )
+			-- The panel is the answer to this question now; the lines below are
+			-- still printed because a host who typed a command is looking at the
+			-- chat log, and "a window opened somewhere" is not a reply.
+			self:sv_openStyleGui( player, "pad", nil, "menu" )
+			reply( "city style -- opened the picker. /citystyle <name> also works." )
 			for _, line in ipairs( ( Plots and Plots.StyleLines ) and Plots.StyleLines() or {} ) do
 				reply( line )
 			end
 			reply( "  styles: " .. table.concat( Palette.STYLE_ORDER, "  " ) )
 			reply( "  /citystyle blocks   /citystyle colours   for the full lists" )
+			reply( "  the picker is also on the city panel: CITY STYLE" )
 			reply( "  Nothing changes until you BUILD CITY again -- the city is blueprints." )
 			return
 		end
@@ -2075,15 +2694,18 @@ function Game.sv_n_adminCommand( self, params, player )
 		end
 		local id = tostring( uuid )
 		reply( "holding: " .. id )
+		-- TWO ENTRIES HERE HAD LOST THEIR KEYS and were array items 1 and 2, so
+		-- /tool -- the command whose whole job is "say exactly which item is in
+		-- your hand" -- silently could not name the Import Lift or the Cleaner,
+		-- the two tools most likely to be asked about. No Lua error: a table
+		-- constructor is happy to mix keyed and positional entries.
 		local KNOWN = {
-			["5cc12f03-275e-4c8e-b013-79fc0f913e1b"] =
-				"the CREATIVE lift -- this is the one that opens the creations menu",
 			["8f190ce2-3a59-423e-8483-a7aa67bd5bc0"] =
-				"the SURVIVAL lift -- it carries and raises, but has no creations menu",
+				"the lift -- it carries and raises. NOTHING in this game opens a "
+					.. "creations menu from a lift; NOTlift imports instead",
 			["748b6656-84b2-440f-8f4c-8cc7deeba63c"] =
 				"nugdupS, the stale-mod canary. Mod content is reaching the game",
-				"Import Lift -- the creative lift under our own uuid, so nothing "
-					.. "can take it. E opens the creations menu.",
+			["bbbb0cc8-5dd0-46e1-9299-8080c3cc80db"] =
 				"Cleaner -- point and click to delete, hold F for the whole "
 					.. "creation. Host only.",
 		}

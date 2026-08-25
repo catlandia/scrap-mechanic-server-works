@@ -211,3 +211,70 @@ function GuiProbe.CanvasLine()
 	parts[#parts + 1] = "host " .. tostring( sm.isHost )
 	return table.concat( parts, "   " )
 end
+
+
+--[[ NOTLIFT PROBE ]]
+
+-- Two questions decide whether NOTlift can exist, and neither is answerable by
+-- reading the executable. This is the same discipline as the button probe above:
+-- stop reasoning, measure, one command.
+--
+-- "every creation you have in blue prints. will be aviable to import. via the
+-- new tool called NOTlift"
+--
+-- The tool half of that is already proven -- a new uuid is an ADDITION and
+-- resolves (nugdupS, CleanerTool), a tool is the only script handed key state,
+-- and sm.creation.importFromFile/importFromString both exist. What is NOT known
+-- is how NOTlift would ever learn what blueprints you have, because:
+--
+--   MEASURED, over the executable's whole string table:
+--     listFiles 0   getFiles 0   readDirectory 0   directoryExists 0
+--
+-- There is no directory listing binding. 982 folders named by random uuid, and
+-- Lua can only open a path it was already told. So one of two things has to
+-- work, and this probe asks both.
+--
+--   Q1  Can we read a blueprint file at all, and in what path form?
+--       sm.json carries '%s' is not located in the same content id as the
+--       caller, which would stop a mod reading the user's Blueprints folder --
+--       except GarageConsole.lua:275 does sm.json.open( path ) on exactly such a
+--       path, so there is an allowance somewhere. Which form it wants is the
+--       question.
+--
+--   Q2  Will the game's own blueprint browser open for us?
+--       sm.gui.openGarageImportGui() + setGarageButtonCallback is how the
+--       survival garage picks a creation (GarageConsole.lua:468-470), and the
+--       callback signature is ( self, path, name ) -- a real path and a real
+--       name. If that opens outside the garage, NOTlift gets a live, complete,
+--       per-player list for free AND the answer to Q1's path format.
+--
+-- Q2 answering yes makes Q1 mostly moot, which is why both run in one command.
+
+-- A BLUEPRINT uuid -- a folder under the player's own Blueprints directory, so
+-- it is "not game content" and dev/check_uuids.py skips the line rather than
+-- reporting a uuid the install has never heard of. "teleporter", real, saved on
+-- this machine. Override it with /bptest <uuid> if it is ever deleted.
+GuiProbe.BP_UUID = "009d9686-c13e-4cb4-b01a-a74eda26b3fb"  -- not game content
+
+-- Every path form worth trying, plus a CONTROL that must come back true.
+--
+-- The control is the whole reason this is trustworthy: without it, "everything
+-- returned false" is indistinguishable from "fileExists does not work the way I
+-- think". Our own Settings.json is written by the game itself, so if the control
+-- is false the probe is broken and no other row means anything.
+function GuiProbe.BlueprintPaths( uuid )
+	uuid = uuid or GuiProbe.BP_UUID
+	local user = "C:/Users/CyberSlime2077/AppData/Roaming/Axolot Games/Scrap Mechanic/User/User_76561198845810186"
+	return {
+		{ "CONTROL our own file", "$CONTENT_DATA/Settings.json" },
+		{ "absolute, forward /",  user .. "/Blueprints/" .. uuid .. "/blueprint.json" },
+		{ "absolute, back \\",    ( user .. "/Blueprints/" .. uuid .. "/blueprint.json" ):gsub( "/", "\\" ) },
+		{ "$BLUEPRINT_DATA",      "$BLUEPRINT_DATA/" .. uuid .. "/blueprint.json" },
+		{ "$USER_DATA",           "$USER_DATA/Blueprints/" .. uuid .. "/blueprint.json" },
+		{ "$CONTENT_DATA reach",  "$CONTENT_DATA/../../Blueprints/" .. uuid .. "/blueprint.json" },
+		-- Vanilla's own, and the one path form importFromFile is PROVEN to take
+		-- (SurvivalGame.lua:1120). If even this is unreadable by sm.json then the
+		-- sandbox is on sm.json specifically, not on the path.
+		{ "$SURVIVAL_DATA sample", "$SURVIVAL_DATA/LocalBlueprints/craftbot.blueprint" },
+	}
+end

@@ -9,3 +9,6 @@ __pycache__/
 
 # local Claude Code tooling, not part of the mod
 .claude/
+mod/Bench.json
+mod/Event.json
+mod/Plots.json

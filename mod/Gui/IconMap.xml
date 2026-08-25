@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Custom item icons, and the one thing a Custom Game must switch on for them:
+    "custom_icons": true in description.json. Without that flag this file is
+    never read, and NOTlift falls back to a render of its previewRenderable,
+    which is the LIFT's. It would look exactly like the thing it replaces.
+
+    Format taken from the corpus rather than guessed: 31 Workshop items ship
+    custom_icons and every one is a Gui/IconMap.xml plus Gui/IconMap.png pair in
+    this exact shape. 2809564171 "Portal Gun [Game Mode]" is the closest
+    precedent, being a Custom Game like this one. Vanilla's own is
+    Data/Gui/IconMap.xml, a 2048x1024 atlas on the same 96x96 grid.
+
+    NOTE FOR ANYONE EDITING THIS FILE: an XML comment may not contain two
+    hyphens in a row. The first draft of this header used them as dashes the way
+    the Lua files do, and the result was a file the parser rejected outright.
+    dev/check_uuids.py caught it on its first run; the game would not have said
+    anything at all.
+
+    THE ATLAS IS 384x128 AND TILE 0,0 IS DELIBERATELY EMPTY.
+
+    Every mod in the corpus declares an "Empty" index pointing at 0 0, and every
+    one also puts its first real icon there, so "Empty" resolves to a picture.
+    That is probably harmless, but it is a guess about what the engine asks
+    "Empty" for, and the cost of being wrong is a crossed out lift turning up
+    wherever it asks. Vanilla's own tile at 0,0 is a wood block, which suggests
+    "Empty" is a name that happens to sit there rather than the blank slot
+    graphic.
+
+    So the index is declared, because 20 of 20 files declare it, and it points
+    at a genuinely transparent tile. The icon lives at 96 0. One extra 96 pixels
+    of texture buys not having to be right about it.
+-->
+<MyGUI type="Resource" version="1.1">
+    <Resource type="ResourceImageSet" name="ItemIconsSet0">
+        <Group name="ItemIcons" texture="IconMap.png" size="96 96">
+            <Index name="Empty">
+                <Frame point="0 0"/>
+            </Index>
+            <!-- NOTlift: the creative lift's own icon, crossed out. It is the
+                 lift menu you want and it is not a lift, and the icon says both
+                 at a glance. Cropped from Data/Gui/IconMap.png at 1056,768,
+                 which is where that file maps uuid 5cc12f03. -->
+            <Index name="7b3d5c91-4a2e-4f88-9c17-2e6d0b5a13ff">
+                <Frame point="96 0"/>
+            </Index>
+            <!-- The Cleaner: survival's sledgehammer icon, crossed out. It IS a
+                 sledgehammer subclass and it looks like one in the hand, so
+                 without this it is indistinguishable from the real hammer in the
+                 menu. Cropped from Survival/Gui/IconMapSurvival.png at
+                 1728,2496, where that file maps uuid bb641a4f. -->
+            <Index name="bbbb0cc8-5dd0-46e1-9299-8080c3cc80db">
+                <Frame point="192 0"/>
+            </Index>
+        </Group>
+    </Resource>
+</MyGUI>

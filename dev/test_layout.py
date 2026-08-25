@@ -92,6 +92,8 @@ def check(cfg, lua):
     plaza = grid["plaza"]
     ncells = int(c["plazacells"])
 
+    roads_are_never_crossed_by_a_seam(L, lua, cfg, grid)
+
     # ---- 1. integers only ---------------------------------------------------
     for axis, segs in (("x", cols), ("y", rows)):
         for s in segs:
@@ -237,6 +239,49 @@ def check(cfg, lua):
         span=f"{x1 - x0}x{y1 - y0}",
         metres=f"{(x1 - x0) * 0.25:.1f}x{(y1 - y0) * 0.25:.1f}m",
     )
+
+
+def roads_are_never_crossed_by_a_seam(L, lua, cfg, grid):
+    """A road band must be road all the way across, on both axes.
+
+    REPORTED: "the road is crosed by frame that it shoudlnt be", and then "still
+    line on one of the axis".
+
+    Every non-plot COLUMN used to be emitted as one full-height strip, while
+    horizontal seams were only emitted across plot COLUMNS. So a one-block seam
+    between two plots ran the whole height of the city, straight through every
+    horizontal road, wearing its own `filler` kind -- a thin line of the wrong
+    material across each road, on ONE axis only, because the reverse never
+    happened.
+
+    The partition was intact throughout, which is exactly why the overlap and gap
+    checks never caught it: the ground was covered once, just by the wrong piece.
+    """
+    bands = {"a road row": [], "a road column": []}
+    for i in range(1, len(grid["rows"]) + 1):
+        r = grid["rows"][i]
+        if r["kind"] == "road":
+            bands["a road row"].append(("y", r["start"], r["start"] + r["size"]))
+    for i in range(1, len(grid["cols"]) + 1):
+        c = grid["cols"][i]
+        if c["kind"] == "road":
+            bands["a road column"].append(("x", c["start"], c["start"] + c["size"]))
+
+    pieces = L.deckPieces(grid)
+    for i in range(1, len(pieces) + 1):
+        p = pieces[i]
+        if p["kind"] != "filler":
+            continue
+        for what, spans in bands.items():
+            for axis, lo, hi in spans:
+                a0 = p["y"] if axis == "y" else p["x"]
+                a1 = a0 + (p["h"] if axis == "y" else p["w"])
+                if a0 < hi and lo < a1:
+                    raise Fail(
+                        f"a seam piece at ({p['x']},{p['y']}) {p['w']}x{p['h']} "
+                        f"sits inside {what} -- the road gets a line of the wrong "
+                        "material across it, and the city is BUILT that way, not "
+                        "just drawn that way")
 
 
 def main():

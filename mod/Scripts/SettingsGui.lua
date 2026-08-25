@@ -66,9 +66,17 @@ SettingsGui.GROUPS = {
 		"maxjoints", "maxbots", "maxlights" } },
 	{ key = "event", title = "EVENT", keys = {
 		"allowlist", "alarmlock", "alarmdrop", "autosave" } },
-	-- Ten rows exactly, which is one page: five pieces of the city, each a
-	-- block and a colour, block first so a row and its colour sit together.
-	{ key = "style", title = "CITY STYLE", keys = {
+	-- `panel` means this entry is not a tab at all: it opens StyleGui instead.
+	--
+	-- These ten used to be ten stepper rows right here, and they were the wrong
+	-- shape for the data -- twenty-five blocks and forty colours behind one
+	-- button each, none of them visible until you had clicked past them.
+	--
+	-- The keys stay listed even though no row is drawn for them, because
+	-- RowsFor("other") sweeps up everything in the schema that no group claims.
+	-- Drop them from here and all ten reappear as steppers under OTHER, which is
+	-- exactly the thing being removed.
+	{ key = "style", title = "CITY STYLE", panel = "style", keys = {
 		"padblock", "padcolour", "borderblock", "bordercolour",
 		"roadblock", "roadcolour", "plazablock", "plazacolour",
 		"standblock", "standcolour" } },
@@ -136,7 +144,7 @@ function SettingsGui.RowsFor( groupKey )
 		return out
 	end
 	for _, g in ipairs( SettingsGui.GROUPS ) do
-		if g.key == groupKey then
+		if g.key == groupKey and not g.panel then
 			for _, k in ipairs( g.keys ) do
 				if byKey[k] then out[#out + 1] = byKey[k] end
 			end
@@ -181,14 +189,15 @@ function SettingsGui.Build( values, group, page, status )
 	kids[#kids + 1] = fill( "NavBG", 0, 70, NAV_W, SettingsGui.H - 70, PANEL, 0.04 )
 	local ny = 92
 	for _, g in ipairs( SettingsGui.GROUPS ) do
-		local on = ( g.key == group )
+		local on = ( g.key == group ) and not g.panel
 		if on then
 			kids[#kids + 1] = fill( "NavSel" .. g.key, 0, ny - 6, NAV_W, 40, ACCENT, 0.18 )
 			kids[#kids + 1] = fill( "NavBar" .. g.key, 0, ny - 6, 4, 40, ACCENT, 1 )
 		end
 		kids[#kids + 1] = button( "Nav" .. g.key, g.title, 14, ny, NAV_W - 28, 30,
 			on and "StyledButtonLarge" or "SecondaryButton",
-			{ action = "group", group = g.key }, "SM_ButtonLarge" )
+			g.panel and { action = g.panel } or { action = "group", group = g.key },
+			"SM_ButtonLarge" )
 		ny = ny + 44
 	end
 	if SettingsGui.HasOther() then
