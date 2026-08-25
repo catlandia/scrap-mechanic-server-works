@@ -186,6 +186,37 @@ function Crowd.sv_plotIndices( self )
 	for i = 1, layout.cfg.cols * layout.cfg.rows do
 		if Layout.plotExists( layout, i ) then out[#out + 1] = i end
 	end
+
+	-- SHUFFLED, AND NOT FOR NEATNESS.
+	--
+	-- Plot indices run row by row, so taking the first N in order put all twenty
+	-- bots on plots 1..20 -- which is the first two rows, along one edge of the
+	-- city. REPORTED with a screenshot of the whole crowd strung out in a line
+	-- to the horizon: "theyre evolving! just side ways..."
+	--
+	-- It is not only that it looks wrong. Twenty builders packed into one corner
+	-- concentrates every cost this thing exists to measure -- draw calls, cell
+	-- streaming, contact pairs, the patrol's locality -- into one part of the
+	-- map, while a real lobby spreads over the whole of it. The measurement
+	-- would have been of a corner, not of a city.
+	--
+	-- Shuffled ONCE per layout, deterministically, rather than strided: a bot
+	-- must keep its plot as the crowd grows, and /bench grows it 0 -> 5 -> 10.
+	-- A stride would renumber everyone at every stage.
+	--
+	-- Its own generator, not math.random, for the reason the wardrobe has one:
+	-- the city draws from the global sequence and a shuffle here must not move
+	-- it.
+	local s = 0x5EED
+	local function step()
+		s = ( s * 1664525 + 1013904223 ) % 4294967296
+		return math.floor( s / 65536 )
+	end
+	for i = #out, 2, -1 do
+		local j = ( step() % i ) + 1
+		out[i], out[j] = out[j], out[i]
+	end
+
 	self.indices, self.indicesFor = out, layout
 	return out
 end

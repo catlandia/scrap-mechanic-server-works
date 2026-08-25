@@ -792,6 +792,40 @@ Two smaller things from the same session:
   the project. Same class as the stale `Cache/`. Pruning skips `Cache/`,
   `Snapshots/` and the root-level json the game writes.
 
+### `setmetatable` DOES NOT EXIST IN A CHARACTER SCRIPT'S CALLBACK
+
+MEASURED, and it is the third thing in a row that vanilla's own practice would
+have told us. The crowd bot's random generator was an ordinary metatable class:
+
+    return setmetatable( { s = s }, Rng )
+
+and every bot threw, at callback time:
+
+    ERROR: ...BotCharacter.lua:410: attempt to call global 'setmetatable'
+           (a nil value)
+
+Note WHERE. It was reached from `client_onCreate`, long after the chunk had
+finished -- and `class( nil )` sits ten lines below the failing call and works.
+**So the name is available while the file is being executed and gone by the time
+a callback runs.** A character script's callback environment is not its chunk
+environment.
+
+**Zero of the character scripts under `Survival/Scripts/game/characters/` call
+`setmetatable`.** Not one, out of every one of them. That is the same shape of
+tell as the `dofile` one, and this time it is the real cause.
+
+Use **closures**: the state is an upvalue of the functions returned, which needs
+nothing from the global environment at all. `dev/test_logic.py` forbids
+`setmetatable`, `getmetatable`, `rawset`, `rawget`, `loadstring` and `require` in
+any script a characterset names -- the first is measured, the rest are its family
+and are refused as a precaution rather than on evidence.
+
+**This was the SECOND bug hiding behind the first.** The wardrobe-as-shared-global
+fix above was necessary and correct, and it only exposed this one -- the same
+stacking as the "buttons dont work" saga, where four separate faults each looked
+like the whole story. Two rounds of "still without skins" were two different
+causes, and the fix for the first was not wrong for having not been the last.
+
 ### The dofile question, answered and set aside
 
 Worth recording only so nobody re-runs the experiment. Round one of the bug above

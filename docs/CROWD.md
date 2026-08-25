@@ -135,6 +135,12 @@ Three guard rails, because this writes to real, persisted state:
 
 - **A bot never takes a plot off a person.** The claim is allowed to fail and is
   simply skipped.
+- **Plots are handed out SHUFFLED, not in index order.** Indices run row by row,
+  so the first version put twenty bots on plots 1..20 — one edge of the city,
+  reported as *"theyre evolving! just side ways..."*. Twenty builders in one
+  corner concentrate every cost this exists to measure into one part of the map.
+  Shuffled once per layout, deterministically, so a bot keeps its plot as
+  `/bench` grows the crowd.
 - **Bot permas are prefixed `crowdbot:`** and swept at world create and on
   `/crowd off`. A crashed test cannot leave a plot owned by a perma nobody can
   ever log in as — which would be unclaimable, locked to everyone, with no way to

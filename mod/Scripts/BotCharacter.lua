@@ -398,33 +398,58 @@ local function step( x )
 	return ( x % 65536 ) * 65536 + math.floor( x / 65536 )
 end
 
-local Rng = {}
-Rng.__index = Rng
-
+-- NO METATABLES. `setmetatable` DOES NOT EXIST IN THIS SANDBOX.
+--
+-- MEASURED. The generator was a metatable-based class -- `setmetatable( { s = s },
+-- Rng )`, the ordinary Lua idiom -- and every bot threw at callback time:
+--
+--     ERROR: ...BotCharacter.lua:410: attempt to call global 'setmetatable'
+--            (a nil value)
+--
+-- Note WHERE: inside W.Rng, reached from client_onCreate. The chunk itself loads
+-- fine and `class( nil )` on the line below works, so the name is available while
+-- the file is being executed and gone by the time a callback runs. A character
+-- script's callback environment is not its chunk environment.
+--
+-- And the tell was in vanilla again, for the third time this feature:
+-- **zero of the character scripts under Survival/Scripts/game/characters/ call
+-- setmetatable.** Not one. That is not a coincidence, and by this project's own
+-- rule -- verify against the game, not against memory -- reaching for the
+-- standard Lua idiom here was a guess.
+--
+-- Closures instead. `s` is an upvalue of the three functions returned, which is
+-- the same trick the wardrobe itself uses one screen up, and needs nothing from
+-- the global environment at all.
+--
+-- Called with a DOT, not a colon: r.next( n ), because there is no self.
 function W.Rng( seed )
 	-- Three rounds before first use. One is not enough: adjacent seeds differ
 	-- only in their low bits, and this is the point where a whole crowd's worth
 	-- of generators are created from consecutive character ids.
 	local s = ( seed or 0 ) % 4294967296
 	for _ = 1, 3 do s = step( s ) end
-	return setmetatable( { s = s }, Rng )
-end
 
--- Returns 0 .. n-1, off the high half. The low bits of an LCG are its worst and
--- the half-swap is what stops "the high half" meaning the same thing every time.
-function Rng.next( self, n )
-	self.s = step( self.s )
-	if n == nil or n <= 0 then return 0 end
-	return math.floor( self.s / 65536 ) % n
-end
+	local r = {}
 
-function Rng.pick( self, list )
-	if list == nil or #list == 0 then return nil end
-	return list[ self:next( #list ) + 1 ]
-end
+	-- Returns 0 .. n-1, off the high half. The low bits of an LCG are its worst,
+	-- and the half-swap is what stops "the high half" meaning the same thing
+	-- every time.
+	function r.next( n )
+		s = step( s )
+		if n == nil or n <= 0 then return 0 end
+		return math.floor( s / 65536 ) % n
+	end
 
-function Rng.chance( self, percent )
-	return self:next( 100 ) < percent
+	function r.pick( list )
+		if list == nil or #list == 0 then return nil end
+		return list[ r.next( #list ) + 1 ]
+	end
+
+	function r.chance( percent )
+		return r.next( 100 ) < percent
+	end
+
+	return r
 end
 
 --------------------------------------------------------------------------------
@@ -433,13 +458,13 @@ end
 
 function W.Name( seed )
 	local rng = W.Rng( ( seed or 0 ) + 7777 )   -- a different stream to the outfit
-	local first = rng:pick( W.FIRST )
-	local last = rng:pick( W.LAST )
-	return first .. last .. "_" .. tostring( rng:next( 90 ) + 10 )
+	local first = rng.pick( W.FIRST )
+	local last = rng.pick( W.LAST )
+	return first .. last .. "_" .. tostring( rng.next( 90 ) + 10 )
 end
 
 function W.Sex( seed )
-	return W.Rng( ( seed or 0 ) + 31 ):next( 2 ) == 0 and "male" or "female"
+	return W.Rng( ( seed or 0 ) + 31 ).next( 2 ) == 0 and "male" or "female"
 end
 
 --------------------------------------------------------------------------------
@@ -512,7 +537,7 @@ function W.Look( seed )
 	-- cannot shuffle every modern bot's outfit as a side effect. A crowd whose
 	-- appearance changes wholesale on an unrelated edit is a crowd you cannot
 	-- compare two runs of.
-	if W.Rng( ( seed or 0 ) + 4241 ):chance( CLASSIC_CHANCE ) then
+	if W.Rng( ( seed or 0 ) + 4241 ).chance( CLASSIC_CHANCE ) then
 		chosen.style = "classic"
 		local list = {}
 		for _, r in ipairs( W.BASE ) do list[#list + 1] = r end
@@ -530,13 +555,13 @@ function W.Look( seed )
 			-- through the hat. A bare head always gets hair.
 			want = ( chosen.hat == nil )
 		elseif W.OPTIONAL[slot] then
-			want = rng:chance( CHANCE[slot] or 50 )
+			want = rng.chance( CHANCE[slot] or 50 )
 		else
 			want = true
 		end
 
 		if want then
-			chosen[slot] = rng:pick( W.PIECES[slot][sex] )
+			chosen[slot] = rng.pick( W.PIECES[slot][sex] )
 		end
 	end
 

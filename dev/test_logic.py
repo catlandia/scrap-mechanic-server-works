@@ -4595,6 +4595,31 @@ def a_character_script_never_reads_a_shared_global():
         assert not stashes, (
             f"{name} stores state on the shared class table: {stashes[0][:70]!r}")
 
+        # THE CALLBACK SANDBOX IS SMALLER THAN THE CHUNK'S.
+        #
+        # MEASURED: setmetatable is available while the file is being executed
+        # -- `class( nil )` on the next line works -- and GONE by the time a
+        # callback runs:
+        #
+        #     ERROR: BotCharacter.lua:410: attempt to call global
+        #            'setmetatable' (a nil value)
+        #
+        # It was reached from client_onCreate, so the chunk had long finished.
+        # The tell, for the third time in this feature, was vanilla: ZERO of the
+        # character scripts under Survival/Scripts/game/characters/ call
+        # setmetatable. Closures do the same job and need nothing global.
+        #
+        # The others here are the same family and are NOT separately measured --
+        # they are forbidden as a precaution, and if one is ever needed the way
+        # to find out is a probe in game, not an assumption.
+        for banned in ("setmetatable", "getmetatable", "rawset", "rawget",
+                       "loadstring", "require"):
+            used = [l.strip() for l in lines if re.search(r"\b" + banned + r"\s*\(", l)]
+            assert not used, (
+                f"{name} calls {banned}() -- the callback sandbox in a character "
+                f"script does not have it (setmetatable is measured missing; the "
+                f"rest are its family). Use a closure. First: {used[0][:60]!r}")
+
 
 def a_crowd_is_random_not_merely_balanced():
     """A perfect 50/50 split can still be perfectly predictable.
@@ -4628,8 +4653,10 @@ def a_crowd_is_random_not_merely_balanced():
             + "".join("M" if s == "male" else "f" for s in seq))
 
     # Within one bot: the same generator drawn from repeatedly.
+    # Dot, not colon: the generator is closures, because the callback sandbox
+    # in a character script has no setmetatable.
     rng = W.Rng(12345)
-    seq = [rng.next(rng, 2) for _ in range(60)]
+    seq = [rng.next(2) for _ in range(60)]
     r = runs(seq)
     assert 18 <= r <= 45, f"one generator gave {r} runs of 60: {seq}"
 
@@ -4782,6 +4809,45 @@ def a_bot_only_ever_builds_on_its_own_plot():
             assert pad["y"] <= y < pad["y"] + pad["h"], (
                 f"bot on plot {bot['plot']} placed a block at y={y}, outside its pad")
             assert z >= P.DECK_Z + 1, f"a block was placed at z={z}, inside the deck"
+
+
+def a_crowd_spreads_over_the_whole_city():
+    """'theyre evolving! just side ways...'
+
+    Plot indices run row by row, so taking the first N in order put every bot on
+    plots 1..N -- the first couple of rows, along one edge. The screenshot was
+    the whole crowd strung out in a line to the horizon.
+
+    It is not a cosmetic problem. Twenty builders in one corner concentrate
+    every cost this exists to measure -- draw calls, cell streaming, contact
+    pairs, the patrol's locality -- into one part of the map, while a real lobby
+    spreads over all of it.
+
+    Measured as the SPAN of the columns and rows the crowd occupies, against
+    what the whole city offers.
+    """
+    lua, crowd, plots = _crowd(bots=20)
+    g = lua.globals()
+    L = g.Layout
+    layout = plots.layout
+
+    cols, rows = [], []
+    for i in range(len(crowd.bots)):
+        c, r = L.plotColRow(layout, crowd.bots[i + 1]["plot"])
+        cols.append(c)
+        rows.append(r)
+
+    span_c = max(cols) - min(cols) + 1
+    span_r = max(rows) - min(rows) + 1
+    assert span_c >= layout.cfg.cols * 0.6 and span_r >= layout.cfg.rows * 0.6, (
+        f"20 bots cover {span_c}x{span_r} of a {layout.cfg.cols}x{layout.cfg.rows} "
+        f"city -- they are bunched into a corner, not spread over it")
+
+    # And a bot must KEEP its plot as the crowd grows, or /bench renumbers
+    # everyone at every stage and no two rows are comparable.
+    first_five = [crowd.sv_placeFor(crowd, n)[1] for n in range(1, 6)]
+    again = [crowd.sv_placeFor(crowd, n)[1] for n in range(1, 6)]
+    assert first_five == again, "plot assignment is not stable across calls"
 
 
 def bots_own_their_plots_through_the_real_system():
@@ -5320,6 +5386,8 @@ def main():
 
     check("crowd: a bot only ever builds on its own plot",
           a_bot_only_ever_builds_on_its_own_plot)
+    check("crowd: a crowd spreads over the whole city",
+          a_crowd_spreads_over_the_whole_city)
     check("crowd: bots own their plots through the real system",
           bots_own_their_plots_through_the_real_system)
     check("crowd: a cleared crowd leaves no claims behind",
