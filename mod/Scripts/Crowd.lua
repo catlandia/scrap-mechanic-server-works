@@ -40,10 +40,30 @@
 
 Crowd = class( nil )
 
--- The character we ship. Declared in
--- mod/Characters/Database/CharacterSets/serverworks.characterset; see that file
--- for why it is our own rather than one of vanilla's human NPCs.
-Crowd.BOT_UUID = "d465d7f2-c705-481d-8010-d3455839beed"
+-- ONE UUID PER LOOK, and that is how the variety is done now.
+--
+-- It used to be one entry dressed at runtime with overrideRenderableList, which
+-- MEASURED at 60 fps empty, 15 fps at ten bots and 8 fps at twenty -- against 30
+-- fps for ninety-five bots in a run where that code was throwing and every bot
+-- shared the fallback outfit. A fixed renderable list on a characterset entry is
+-- loaded once and shared; a bespoke list per character cannot be batched.
+--
+-- Generated, with the characterset, by dev/gen_characterset.py: ten are
+-- vanilla's own in-game NPC mechanics and the eleventh is the classic mechanic
+-- the game dresses the PLAYER in.
+Crowd.BOT_UUIDS = {
+	"d465d7f2-c705-481d-8010-d3455839beed",   -- mechanicmale1
+	"b1f0a3c6-9d24-4e57-8a11-6c3f2b7d4e80",   -- mechanicmale2
+	"c72e8d15-4b60-49af-93d2-1e5a8f06b7c3",   -- mechanicmale3
+	"e3a95b48-7c11-4d26-8f70-2b6d9c4a5e17",   -- mechanicmale4
+	"f0c41d97-2e83-4b15-9a6c-7d38e5b120f4",   -- mechanicmale5
+	"a58b62e0-1f74-4c93-8d25-9e0a3b7c6d81",   -- mechanicfemale1
+	"9c17e4b3-6a58-4f02-b7d9-3e81c5a24f60",   -- mechanicfemale2
+	"84d3f0a7-5c92-4e61-8b03-7a1d6f95c2e8",   -- mechanicfemale3
+	"7b2c9e56-3d81-4a70-95f2-8c04b1e7d36a",   -- mechanicfemale4
+	"6e05a1d4-8f37-4c28-b619-2d7e93f5a04b",   -- mechanicfemale5
+	"5a94c3f8-7e20-4b61-8d53-1f68a0c92b37",   -- classic, what a player wears
+}
 
 -- A ceiling that is not a taste call: 384 plots is the largest city this mod can
 -- lay out, and a bot per plot past that would be measuring the crowd rather than
@@ -255,8 +275,14 @@ function Crowd.sv_spawnOne( self, n )
 	local at, index = self:sv_placeFor( n )
 	if at == nil then return nil end
 
+	-- The look, chosen here rather than on the client. Spread across the list so
+	-- a crowd of five is five different people and a crowd of twenty repeats
+	-- each look about twice -- which is also what a real lobby looks like, since
+	-- plenty of players never change their outfit.
+	local look = Crowd.BOT_UUIDS[ ( ( n - 1 ) % #Crowd.BOT_UUIDS ) + 1 ]
+
 	local ok, unit = pcall( sm.unit.createUnit,
-		sm.uuid.new( Crowd.BOT_UUID ), at, 0,
+		sm.uuid.new( look ), at, 0,
 		{ home = at, roam = 2.5 } )
 
 	if not ok or unit == nil then
@@ -266,7 +292,7 @@ function Crowd.sv_spawnOne( self, n )
 			-- character set not being loaded at all, in which case every one of
 			-- them fails identically and twenty lines say nothing extra.
 			sm.log.warning( "[ServerWorks] crowd spawn failed (character "
-				.. Crowd.BOT_UUID .. "): " .. tostring( unit ) )
+				.. look .. "): " .. tostring( unit ) )
 		end
 		return nil
 	end

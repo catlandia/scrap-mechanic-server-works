@@ -1168,8 +1168,12 @@ end
 function World.sv_e_swBenchSample( self, params )
 	if params == nil then return end
 	pcall( function()
+		-- params.ticks, PLURAL. It was params.tick for one build, which is nil,
+		-- and the whole tick-rate column read 0.0 -- a benchmark reporting that
+		-- the server does not tick at all. Nothing errored, because nil simply
+		-- fell through the type check in sv_sample and added zero.
 		g_swBench:sv_sample( params.name, params.isHost == true,
-			params.frames, params.secs, params.tick )
+			params.frames, params.secs, params.ticks )
 	end )
 end
 

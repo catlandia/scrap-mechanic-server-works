@@ -309,10 +309,13 @@ def mod_charactersets():
 
 
 def wardrobe_renderables():
-    """Every .rend path a bot can wear, as (path, line).
+    """Kept as a guard, and it should now find nothing.
 
-    Lives in BotCharacter.lua: a character script cannot dofile mod content --
-    measured, and the note at the top of that file has the log line.
+    The looks used to be assembled in Lua and applied with
+    overrideRenderableList -- 60 fps empty, 8 fps at twenty bots. They live in
+    the characterset now, one fixed list per entry, which is how vanilla does it
+    and is checked entry by entry above. A .rend path reappearing in a script
+    means somebody has started rebuilding the runtime costume system.
     """
     src = ROOT / "mod" / "Scripts" / "BotCharacter.lua"
     if not src.is_file():

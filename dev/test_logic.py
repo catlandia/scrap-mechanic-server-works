@@ -19,6 +19,7 @@ the things that still have to be exercised in game.
 Usage: python dev/test_logic.py
 """
 import io
+import json
 import pathlib
 import re
 import sys
@@ -4392,145 +4393,142 @@ def no_handler_trusts_an_identity_from_its_payload():
 
 SEEDS = list(range(1, 201))
 
-# The wardrobe lives in BotCharacter.lua, not a file of its own: a character
-# script cannot dofile mod content. Measured -- every bot threw "attempt to
-# call field 'Name' (a nil value)" and walked around in the characterset's
-# fallback outfit. The note at the top of that file has the log line.
+
+def _charset():
+    """Every entry of the generated characterset, parsed the way the game does."""
+    import glob
+    out = []
+    for path in glob.glob(str(ROOT / "mod" / "Characters" / "Database" /
+                              "CharacterSets" / "*.characterset")):
+        text = io.open(path, encoding="utf-8-sig").read()
+        text = re.sub(r"//[^\n]*", "", text)
+        text = re.sub(r",(\s*[}\]])", r"\1", text)
+        out.extend(json.loads(text)["characters"])
+    return out
 
 
-def _look(lua, seed):
-    """(list, sex, chosen) for one seed, as plain Python."""
-    W = lua.globals().Wardrobe
-    lst, sex, chosen = W.Look(seed)
-    return [lst[i] for i in range(1, len(lst) + 1)], sex, dict(chosen)
+def the_crowd_has_a_look_for_every_uuid_it_spawns():
+    """The variety lives in the characterset, not in a runtime costume system.
+
+    MEASURED cost of doing it the other way -- one entry, dressed per bot with
+    overrideRenderableList:
+
+        0 bots  60.0 fps     10 bots  15.0 fps     20 bots  8 fps
+
+    against 30 fps for NINETY-FIVE bots in an earlier run where that code was
+    throwing and every bot silently shared the fallback outfit. A fixed
+    renderable list on an entry is loaded once and shared; a bespoke list per
+    character cannot be batched. Vanilla agrees twice over:
+    overrideRenderableList has exactly one caller in the whole game, and
+    vanilla's ten different-looking mechanics are ten characterset entries.
+
+    So: every uuid Crowd spawns must be an entry, and no entry may be orphaned.
+    """
+    lua = fresh("Crowd.lua")
+    spawn = {str(u) for u in lua.globals().Crowd.BOT_UUIDS.values()}
+    declared = {str(c["uuid"]).lower() for c in _charset()}
+
+    assert spawn, "Crowd.BOT_UUIDS is empty"
+    missing = spawn - declared
+    assert not missing, (
+        f"Crowd spawns {sorted(missing)}, which the characterset does not "
+        f"declare -- those bots would fail to spawn at all")
+    orphan = declared - spawn
+    assert not orphan, (
+        f"the characterset declares {sorted(orphan)} and nothing spawns them")
+    assert len(spawn) >= 8, (
+        f"only {len(spawn)} looks -- a crowd of twenty would be four of each")
 
 
-def every_bot_is_dressed_and_named():
+def no_bot_wears_something_a_player_cannot():
+    """'this cosmetic isnt even in the game. it is in the files yes. but not
+    accesible.'
+
+    The hand-built wardrobe pulled in every .rend on disk. Every path resolved,
+    which proved the wrong thing -- a bot turned up in a backpack big enough to
+    hide its torso. The renderables now come verbatim from characters that exist
+    in the game, so this checks they still do rather than trusting the generator.
+    """
+    game_sets = []
+    for rel in ("Survival/Character/CharacterSets/npc_mechanics.json",
+                "Data/Character/CharacterSets/default.json"):
+        text = io.open(GAME / rel, encoding="utf-8-sig").read()
+        text = re.sub(r"//[^\n]*", "", text)
+        text = re.sub(r",(\s*[}\]])", r"\1", text)
+        game_sets.extend(json.loads(text)["characters"])
+    allowed = {r for c in game_sets for r in c.get("renderables", [])}
+    assert allowed, "found no vanilla renderables -- the scan is broken"
+
+    for c in _charset():
+        for r in c.get("renderables", []):
+            assert r in allowed, (
+                f"{c['name']} wears {r.rsplit('/', 1)[-1]}, which no in-game "
+                f"character wears -- it may be on disk and unobtainable")
+
+
+def every_look_is_complete_and_resolves():
+    """A missing piece is not an error, it is a character with a hole in it."""
+    entries = _charset()
+    assert entries, "no characterset entries at all"
+
+    for c in entries:
+        rends = c.get("renderables", [])
+        leaves = [r.rsplit("/", 1)[-1] for r in rends]
+
+        for r in rends:
+            p = str(r).replace("$GAME_DATA", "Data").replace("$SURVIVAL_DATA", "Survival")
+            assert (GAME / p).is_file(), f"{c['name']}: missing {r}"
+
+        assert any("_tp.rend" in l for l in leaves), f"{c['name']}: no animation rend"
+        assert any("head" in l for l in leaves), f"{c['name']}: no head"
+        # Either a modern outfit (jacket+legs) or the classic body (chest+legs).
+        torso = any(("jacket" in l or "chest" in l) for l in leaves)
+        legs = any(("pants" in l or "legs" in l) for l in leaves)
+        assert torso, f"{c['name']}: nothing covering the torso"
+        assert legs, f"{c['name']}: nothing covering the legs"
+
+        for key in ("ragdoll",):
+            v = str(c[key]).replace("$GAME_DATA", "Data").replace("$SURVIVAL_DATA", "Survival")
+            assert (GAME / v).is_file(), f"{c['name']}: missing {key}"
+
+        # A stand-in for a player has to move like one. Vanilla's NPC mechanics
+        # sprint at 8.0, which is twice a player.
+        assert abs(c["movement"]["sprintSpeed"] - 4.0) < 0.01, (
+            f"{c['name']} sprints at {c['movement']['sprintSpeed']}, not a player's 4.0")
+
+
+def a_crowd_shows_both_sexes():
+    """Reported as "make sure gender is random too". With looks in the
+    characterset it is a property of the LIST, not of a generator."""
+    entries = {c["name"]: c for c in _charset()}
+    female = [n for n in entries if "female" in n]
+    male = [n for n in entries if "female" not in n]
+    assert len(female) >= 3 and len(male) >= 3, (
+        f"{len(male)} male and {len(female)} female looks -- a crowd would "
+        f"read as one sex")
+
+    # And the crowd must not hand them out so that a small crowd is all one sex.
+    lua = fresh("Crowd.lua")
+    order = [str(u) for u in lua.globals().Crowd.BOT_UUIDS.values()]
+    by_uuid = {str(c["uuid"]).lower(): c["name"] for c in _charset()}
+    first_six = [by_uuid[u] for u in order[:6]]
+    assert any("female" in n for n in first_six), (
+        f"the first six looks handed out are all male: {first_six}")
+
+
+def bots_are_named_and_the_names_are_varied():
     lua = fresh("BotCharacter.lua")
     W = lua.globals().Wardrobe
-    for seed in SEEDS:
-        items, sex, chosen = _look(lua, seed)
-        assert sex in ("male", "female"), f"seed {seed}: sex {sex!r}"
-
-        if chosen.get("style") == "classic":
-            # The classic set replaces the whole body at once -- head, chest,
-            # hands, feet, legs, hair, backpack -- so it fills no slots and
-            # must arrive complete or the bot is missing a limb.
-            expect = set(W.CLASSIC[sex].values())
-            missing = expect - set(items)
-            assert not missing, (
-                f"seed {seed}: classic {sex} bot is missing "
-                f"{[q.rsplit('/', 1)[-1] for q in missing]}")
-        else:
-            # The slots with no bare-skin alternative for BOTH sexes. Female
-            # has no char_female_body_pants / _jacket / _shoes at all, so a
-            # bot missing one is a hole in the model.
-            for slot in ("head", "jacket", "gloves", "pants", "shoes"):
-                assert chosen.get(slot), f"seed {seed} ({sex}): no {slot}"
-
-            # THE ONE COMBINATION RULE: a hat renderable carries Hathair_mat,
-            # so a hat over hair draws hair through the hat.
-            assert not (chosen.get("hat") and chosen.get("hair")), (
-                f"seed {seed}: wearing a hat AND hair")
-            # ...and the other half of it: a bare head is never bald.
-            assert chosen.get("hat") or chosen.get("hair"), (
-                f"seed {seed}: neither hat nor hair")
-
-        assert len(items) == len(set(items)), f"seed {seed}: a renderable twice"
-        assert len(items) >= len(W.BASE) + 6, f"seed {seed}: only {len(items)} pieces"
-
-        name = W.Name(seed)
-        assert 3 <= len(name) <= 24, f"seed {seed}: name {name!r} is {len(name)} chars"
-        assert " " not in name, f"seed {seed}: {name!r} has a space in it"
-
-
-def a_bot_looks_the_same_every_time():
-    """The seed IS the network protocol -- see BotCharacter.lua.
-
-    A bot's appearance is never sent anywhere: the server and every client each
-    derive it from character.id. So if Look were not a pure function of its seed
-    -- if it drew from math.random, or from table order -- every client would see
-    a different crowd, and the bug would only ever appear with two people
-    watching.
-    """
-    a, b = fresh("BotCharacter.lua"), fresh("BotCharacter.lua")
-    for seed in SEEDS[:40]:
-        assert _look(a, seed) == _look(b, seed), \
-            f"seed {seed} dresses differently in a fresh Lua state"
-        # ...and twice running in the SAME state, which catches a generator that
-        # keeps state between calls.
-        assert _look(a, seed) == _look(a, seed), f"seed {seed} is not stable"
-
-
-def dressing_a_crowd_never_moves_math_random():
-    """math.random is global, and the city draws from it.
-
-    Layout and the plot shuffler both use math.random. If dressing a bot advanced
-    that sequence, the city you got would depend on how many bots had been
-    spawned first -- a genuinely horrible bug to find, and a silent one, because
-    both cities would look perfectly plausible.
-    """
-    lua = fresh("BotCharacter.lua")
-    lua.execute("math.randomseed( 12345 )")
-    before = [lua.eval("math.random( 1, 1000000 )") for _ in range(5)]
-
-    lua.execute("math.randomseed( 12345 )")
-    for seed in range(1, 60):
-        lua.globals().Wardrobe.Look(seed)
-        lua.globals().Wardrobe.Name(seed)
-    after = [lua.eval("math.random( 1, 1000000 )") for _ in range(5)]
-
-    assert before == after, ("dressing bots advanced math.random -- the city "
-                            "would come out differently depending on the crowd")
-
-
-def a_crowd_does_not_come_out_in_uniform():
-    """The failure mode of a bad LCG is not randomness, it is lockstep.
-
-    Consecutive seeds differ only in their low bits and an LCG's low bits are its
-    worst, so bots 1..20 -- which is exactly the range /crowd uses -- are where a
-    naive generator collapses. Sampled over the crowd sizes the host will
-    actually type.
-    """
-    lua = fresh("BotCharacter.lua")
-    for n in (10, 20, 50):
-        seeds = list(range(1, n + 1))
-        # MODERN bots only, for the outfit count. The classic set is a whole
-        # body with no slots, so it has exactly two looks -- one per sex -- and
-        # counting those as duplicates would be counting a feature as a bug.
-        # Every name is still expected to be unique, classic or not.
-        modern = [s for s in seeds if _look(lua, s)[2].get("style") == "modern"]
-        looks = {tuple(_look(lua, s)[0]) for s in modern}
-        names = {lua.globals().Wardrobe.Name(s) for s in seeds}
-        assert len(looks) >= len(modern) * 0.9, (
-            f"{len(modern)} modern bots produced only {len(looks)} distinct outfits")
-        assert len(names) == n, f"{n} bots produced only {len(names)} distinct names"
-
-    # Both sexes turn up, and neither dominates. A 50/50 split that came out
-    # 48/2 would still pass every check above.
-    # Both art paths turn up. The classic set is a different directory tree
-    # and a different texture convention, which is the half of this that
-    # actually tests "handling of extra assets".
-    styles = [_look(lua, s)[2].get("style") for s in SEEDS]
-    assert "classic" in styles and "modern" in styles, (
-        f"only one body style across {len(SEEDS)} bots: {set(styles)}")
-    classic = styles.count("classic")
-    assert 0.1 < classic / len(styles) < 0.45, (
-        f"{classic}/{len(styles)} classic -- the style roll is lopsided")
-
-    sexes = [_look(lua, s)[1] for s in SEEDS]
-    males = sexes.count("male")
-    assert 0.3 < males / len(sexes) < 0.7, \
-        f"{males}/{len(sexes)} male -- the sex bit is not doing its job"
-
-    # And the optional slots are genuinely optional, in both directions.
-    # Only modern bots have slots at all; a classic body fills none.
-    modern = [s for s in SEEDS if _look(lua, s)[2].get("style") == "modern"]
-    for slot in ("facial", "backpack", "hat"):
-        worn = sum(1 for s in modern if _look(lua, s)[2].get(slot))
-        assert 0 < worn < len(modern), (
-            f"{slot} is worn by {worn}/{len(modern)} modern bots -- "
-            f"it is not optional at all")
+    names = [W.Name(i) for i in SEEDS]
+    for n in names:
+        assert 3 <= len(n) <= 24, f"name {n!r} is {len(n)} chars"
+        assert " " not in n, f"name {n!r} has a space"
+    assert len(set(names)) >= len(names) * 0.9, (
+        f"{len(set(names))} distinct names out of {len(names)}")
+    # Same seed, same name, in a fresh state -- the name is derived on each
+    # client independently and they have to agree.
+    other = fresh("BotCharacter.lua")
+    assert [other.globals().Wardrobe.Name(i) for i in SEEDS[:30]] == names[:30]
 
 
 def a_character_script_never_reads_a_shared_global():
@@ -4621,86 +4619,16 @@ def a_character_script_never_reads_a_shared_global():
                 f"rest are its family). Use a closure. First: {used[0][:60]!r}")
 
 
-def a_crowd_is_random_not_merely_balanced():
-    """A perfect 50/50 split can still be perfectly predictable.
-
-    The first generator produced exactly this over ids 1..20:
-
-        M f M f M f M f M f M f M f M f M f f M
-
-    Fifty per cent male, and two bots side by side could never be the same sex.
-    The ratio check above passed it without complaint, which is the whole point
-    of this one existing separately. REPORTED as "make sure gender is random
-    too".
-
-    Counted as RUNS -- maximal stretches of the same value. A fair coin over n
-    flips averages about n/2 runs; strict alternation gives n. The bound is wide
-    because a real coin is noisy, and it only has to catch lockstep.
-    """
+def naming_a_crowd_never_moves_math_random():
+    """math.random is global and the city draws from it."""
     lua = fresh("BotCharacter.lua")
-    W = lua.globals().Wardrobe
-
-    def runs(seq):
-        return 1 + sum(1 for a, b in zip(seq, seq[1:]) if a != b)
-
-    # Across bots: consecutive character ids, which is what a crowd actually is.
-    for base in (1, 100, 5000):
-        seq = [W.Sex(base + i) for i in range(40)]
-        r = runs(seq)
-        assert 12 <= r <= 30, (
-            f"ids {base}..+40 gave {r} runs of 40 -- "
-            f"{'lockstep' if r > 30 else 'sticky'}: "
-            + "".join("M" if s == "male" else "f" for s in seq))
-
-    # Within one bot: the same generator drawn from repeatedly.
-    # Dot, not colon: the generator is closures, because the callback sandbox
-    # in a character script has no setmetatable.
-    rng = W.Rng(12345)
-    seq = [rng.next(2) for _ in range(60)]
-    r = runs(seq)
-    assert 18 <= r <= 45, f"one generator gave {r} runs of 60: {seq}"
-
-    # And the body style, the other two-way roll a crowd shows off at a glance.
-    styles = [_look(lua, i)[2].get("style") for i in range(1, 41)]
-    assert runs(styles) >= 8, (
-        f"body style alternates in lockstep: {''.join(s[0] for s in styles)}")
-
-
-def no_bot_wears_the_other_sex():
-    """Female garments live in the Char_Male tree, so the split is by FILENAME.
-
-    char_male_ / char_female_ / char_shared_ is the only thing separating them,
-    which makes a copy-paste in the table completely invisible until a bot is
-    standing in front of you wearing half a female outfit.
-
-    Hair is the deliberate exception: vanilla's own mechanicmale1 wears
-    char_female_hair_07, so the hair pool is shared on purpose.
-    """
-    lua = fresh("BotCharacter.lua")
-    base = set(lua.globals().Wardrobe.BASE.values())
-    for seed in SEEDS:
-        items, sex, chosen = _look(lua, seed)
-        wrong = "char_female_" if sex == "male" else "char_male_"
-        # The classic set is checked over the whole renderable list, since it
-        # fills no slots -- and it is the easier of the two to get wrong,
-        # because male and female differ only by a directory name.
-        for r in items:
-            leaf = r.rsplit("/", 1)[-1]
-            if r in base or not leaf.startswith("char_classic_"):
-                continue
-            other = "female" if sex == "male" else "male"
-            assert not leaf.startswith("char_classic_" + other), (
-                f"seed {seed}: a {sex} classic bot is wearing {leaf}")
-        for slot, path in chosen.items():
-            if slot in ("style", "hair") or path in base:
-                continue
-            leaf = path.rsplit("/", 1)[-1]
-            assert not leaf.startswith(wrong), \
-                f"seed {seed}: a {sex} bot is wearing {leaf} in the {slot} slot"
-        # The skeleton and its animations are char_male_ for everybody -- that is
-        # the rig, not a garment, and vanilla's female NPCs use it too.
-        for r in base:
-            assert r in items, f"seed {seed}: missing base renderable {r}"
+    lua.execute("math.randomseed( 12345 )")
+    before = [lua.eval("math.random( 1, 1000000 )") for _ in range(5)]
+    lua.execute("math.randomseed( 12345 )")
+    for seed in range(1, 60):
+        lua.globals().Wardrobe.Name(seed)
+    after = [lua.eval("math.random( 1, 1000000 )") for _ in range(5)]
+    assert before == after, "naming bots advanced math.random"
 
 
 # --------------------------------------------------------------- crowd work ---
@@ -5458,6 +5386,57 @@ def a_guest_cannot_drive_the_run():
     assert "HOST" in names, "the host is missing from the per-client rows"
 
 
+def every_key_sent_across_the_bridge_is_read_on_the_far_side():
+    """A world script has no network, so every client message hops
+    client -> Game (sv_n_) -> sm.event.sendToWorld -> World (sv_e_).
+
+    A key renamed on one side and not the other is silent: the far side reads
+    nil, and nil falls through whatever type check is there and contributes
+    nothing. MEASURED: Game sent `ticks` while World read `params.tick`, and the
+    benchmark's whole tick-rate column reported 0.0 -- a server that does not
+    tick at all -- with no error anywhere.
+
+    Matches the keys of each sendToWorld table against what the handler it names
+    actually reads out of params.
+    """
+    game = io.open(SCRIPTS / "Game.lua", encoding="utf-8").read()
+    world = io.open(SCRIPTS / "World.lua", encoding="utf-8").read()
+
+    # [^{}]* so the payload cannot run past its own closing brace into the next
+    # table. The greedy version swept a one-line payload up into a later block
+    # and reported keys that were never sent -- a check that cries wolf gets
+    # switched off, which is worse than not having it.
+    sends = re.findall(
+        r'sendToWorld\(\s*\w+\s*,\s*"(sv_e_\w+)"\s*,\s*\{([^{}]*)\}\s*\)',
+        game, re.S)
+    assert sends, "no sendToWorld payloads found -- the scan is broken"
+
+    checked = 0
+    for handler, payload in sends:
+        keys = set(re.findall(r"^\s*(\w+)\s*=", payload, re.M))
+        # cmd/args/player are the generic command envelope, read via locals.
+        keys -= {"cmd", "args", "player"}
+        if not keys:
+            continue
+        m = re.search(r"function World\." + handler + r"\b.*?(?=\nfunction )",
+                      world, re.S)
+        if m is None:
+            continue          # covered by every_world_command_has_a_branch
+        body = m.group(0)
+        read = set(re.findall(r"params\.(\w+)", body))
+        # A handler may forward params wholesale rather than by key.
+        if re.search(r"\bparams\s*\)", body) and not read:
+            continue
+        for k in sorted(keys):
+            assert k in read, (
+                f"Game sends {k!r} to {handler} and World never reads "
+                f"params.{k} -- it reads {sorted(read)}. A renamed key is "
+                f"silent: the far side just gets nil.")
+        checked += 1
+
+    assert checked, "matched no payloads to handlers -- the scan is broken"
+
+
 def every_world_command_has_a_branch():
     """A chat command routed to the world with nothing to answer it is silent.
 
@@ -5520,17 +5499,19 @@ def main():
     check("style: the settings panel no longer steps through the style",
           the_settings_panel_no_longer_steps_through_the_style)
 
-    check("crowd: every bot is dressed and named", every_bot_is_dressed_and_named)
-    check("crowd: a bot looks the same to everybody", a_bot_looks_the_same_every_time)
-    check("crowd: dressing a crowd never moves math.random",
-          dressing_a_crowd_never_moves_math_random)
-    check("crowd: a crowd does not come out in uniform",
-          a_crowd_does_not_come_out_in_uniform)
+    check("crowd: a look for every uuid the crowd spawns",
+          the_crowd_has_a_look_for_every_uuid_it_spawns)
+    check("crowd: no bot wears something a player cannot",
+          no_bot_wears_something_a_player_cannot)
+    check("crowd: every look is complete and resolves",
+          every_look_is_complete_and_resolves)
+    check("crowd: a crowd shows both sexes", a_crowd_shows_both_sexes)
+    check("crowd: bots are named, and the names vary",
+          bots_are_named_and_the_names_are_varied)
+    check("crowd: naming a crowd never moves math.random",
+          naming_a_crowd_never_moves_math_random)
     check("crowd: a character script never reads a shared global",
           a_character_script_never_reads_a_shared_global)
-    check("crowd: a crowd is random, not merely balanced",
-          a_crowd_is_random_not_merely_balanced)
-    check("crowd: no bot wears the other sex", no_bot_wears_the_other_sex)
 
     check("bench: reports the frame rate it was given",
           the_bench_reports_the_frame_rate_it_was_given)
@@ -5543,6 +5524,8 @@ def main():
     check("bench: results survive a restart", the_results_survive_a_restart)
     check("bench: a guest cannot drive the run", a_guest_cannot_drive_the_run)
     check("plumbing: every world command has a branch", every_world_command_has_a_branch)
+    check("plumbing: every key sent across the bridge is read",
+          every_key_sent_across_the_bridge_is_read_on_the_far_side)
 
     check("crowd: a bot only ever builds on its own plot",
           a_bot_only_ever_builds_on_its_own_plot)
