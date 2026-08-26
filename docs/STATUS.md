@@ -29,6 +29,20 @@ Nothing in `dev/` has ever created a body, equipped a tool, or sent a packet.
 
 ---
 
+## The V55 summary, before the ledger
+
+Three things are now measured and are not going to change without new evidence:
+
+- **The server does not die.** 128 characters, 2,102 bodies, tick rate never left
+  40 Hz. Player count was never the risk.
+- **One character costs ~24 shapes of frame time.** Twenty players' characters
+  are ~2.7 fps. Content is the thing to budget, not people.
+- **The per-client network budget is the real hazard** -- up to 6.8 seconds of a
+  client receiving nothing, measured from logs already on disk.
+
+And one thing has not changed at all: **goal 2 has still never been run in a real
+event.** The freeze is the core of it. Everything below section C is the list.
+
 ## A. Seen working in game
 
 The owner has watched these happen. Each line names how it was confirmed.
