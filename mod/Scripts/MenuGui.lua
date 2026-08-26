@@ -15,7 +15,10 @@ MenuGui.W = 460
 -- Seven entries plus the HOST header. The layout check computes whether this is
 -- enough rather than trusting the eye -- it caught this exact panel overflowing
 -- the moment the EVENT CLOCK entry was added.
-MenuGui.H = 600
+-- Eight entries plus the HOST header. The layout check computes whether this
+-- is enough rather than trusting the eye -- it caught this exact panel
+-- overflowing the moment the EVENT CLOCK entry was added.
+MenuGui.H = 660
 
 local BG = "0.055 0.062 0.078 1"
 local PANEL = "1 1 1 1"
@@ -72,6 +75,8 @@ MenuGui.ENTRIES = {
 	  help = "everything you can type", host = false },
 	{ action = "event", label = "EVENT CLOCK", panel = true,
 	  help = "prep, build and buffer times -- start it here", host = true },
+	{ action = "focus", label = "FOCUS PLAYER", panel = true,
+	  help = "mark one person so the whole lobby can find them", host = true },
 	{ action = "city", label = "CITY LAYOUT", panel = true,
 	  help = "plots, roads and plaza, with a live map", host = true },
 	{ action = "settings", label = "SERVER SETTINGS", panel = true,

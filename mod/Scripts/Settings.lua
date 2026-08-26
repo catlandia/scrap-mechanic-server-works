@@ -69,6 +69,22 @@ local HOST_ONLY = {
 	cleaner = "hostcleaner",
 	lift    = "hostlift",
 	notlift = "hostnotlift",
+	-- TRUE, NOT A SETTING NAME. This is the one host tool with no way to open
+	-- it up, and the difference is deliberate.
+	--
+	-- The other three gate a tool that changes the WORLD, so a host may
+	-- reasonably want to hand one to somebody they trust -- and if they do, the
+	-- server-side rules on that tool still apply. Focus does not change the
+	-- world; it writes on everybody else's SCREEN. There is no half of that to
+	-- delegate, and a guest able to stick a marker over anyone they liked has a
+	-- toy for annoying people.
+	--
+	-- It also has to match the rest of the feature. The panel and /focus are
+	-- gated on sm.player.getHostPlayer() outright, with no setting in the path,
+	-- so a `hostfocus` that opened the tool alone would have produced a guest
+	-- who could mark people with a tool but not with the panel that does the
+	-- same thing. `focus` in the schema still removes the tool from everyone.
+	focus   = true,
 }
 
 local TOOLS = {
@@ -147,6 +163,11 @@ local TOOLS = {
 	-- picks up instead of erasing and which nothing else in the game can get rid
 	-- of.
 	cleaner = { sm.uuid.new( "bbbb0cc8-5dd0-46e1-9299-8080c3cc80db" ) },
+	-- Ours. See FocusTool.lua: point at a player and everybody in the world
+	-- gets a marker over them. It changes nothing about the world and cannot
+	-- destroy anything, so it is the mildest of the three host tools -- but it
+	-- writes on everyone's screen, so it is gated all the same.
+	focus = { sm.uuid.new( "f0c5a11e-7d3b-4c6a-9e21-5b8a4d0f9c33" ) },
 }
 
 -- Every setting is { key, kind, default, help, apply }. Adding one means adding
@@ -213,6 +234,24 @@ Settings.SCHEMA = {
 	  help = "allow the Server Works cleaner (deletes anything you point at)" },
 	{ key = "hostcleaner", kind = "bool", default = true,
 	  help = "only the host may use the cleaner -- leave this on" },
+
+	-- THE FOCUS TOOL. Point at a player and everybody sees a marker over them,
+	-- for showing off one person's build mid-event. It creates nothing and
+	-- deletes nothing; what makes it host-only is that it draws on every other
+	-- player's screen.
+	-- There is no `hostfocus`. Focusing is host only with no switch at all --
+	-- see the note on HOST_ONLY. This one removes the tool from EVERYBODY,
+	-- host included, the way `lift` does.
+	{ key = "focus", kind = "bool", default = true,
+	  help = "allow the focus tool at all (host only either way; off removes it "
+	         .. "from the host too)" },
+	-- The name is drawn as world text beside the marker, and world text comes
+	-- out of the same limited glyph atlas as GUI text -- see the font note in
+	-- CLAUDE.md. SM_Header is a full-character-set font so this should be fine;
+	-- the switch exists because "should" is not "measured", and a name that
+	-- draws as hollow boxes is worse than no name.
+	{ key = "focusname", kind = "bool", default = true,
+	  help = "draw the focused player's name in the world under their marker" },
 
 	{ key = "lift", kind = "bool", default = true,
 	  help = "allow the lift at all (off removes it from the host too)" },
@@ -676,7 +715,9 @@ end
 function Settings.Sv_HostOnlyTools()
 	local blocked = {}
 	for name, gate in pairs( HOST_ONLY ) do
-		if Settings.Get( gate ) == true then
+		-- gate == true means "always host only, there is no switch". See the
+		-- note on HOST_ONLY.
+		if gate == true or Settings.Get( gate ) == true then
 			for _, uuid in ipairs( TOOLS[name] or {} ) do
 				blocked[tostring( uuid )] = name
 			end

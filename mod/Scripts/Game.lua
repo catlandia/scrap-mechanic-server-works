@@ -16,6 +16,7 @@ dofile( "$CONTENT_DATA/Scripts/RosterHud.lua" )
 dofile( "$CONTENT_DATA/Scripts/EventGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/ConfirmGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/MyPlotGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/FocusGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/GuiProbe.lua" )
 dofile( "$CONTENT_DATA/Scripts/NotLift.lua" )
 -- IndexWidgets and friends. BasePlayer pulls this in too, but relying on load
@@ -164,6 +165,12 @@ function Game.server_onCreate( self )
 	self.sv.hazardTools = Settings.Sv_HazardTools()
 	self.sv.hostOnlyTools = Settings.Sv_HostOnlyTools()
 	self.sv.pendingRestore = nil
+
+	-- Who the lobby is being asked to look at. Deliberately NOT persisted: a
+	-- focus is a thing a host does for thirty seconds, and a world that came
+	-- back up still pointing at somebody who left last week is exactly the kind
+	-- of stale state sv_newWorldReset exists to kill.
+	self.sv.focus = nil
 
 	-- The event clock. Loaded from its own file rather than the Game script's
 	-- storage, for the same reason Plots is: it has to be readable the instant
@@ -368,7 +375,25 @@ function Game.server_onFixedUpdate( self, dt )
 	-- Once a second, and it only sends when a number actually moved.
 	if tick >= ( self.sv.nextRoster or 0 ) then
 		self.sv.nextRoster = tick + TICKS_PER_SECOND
+		-- A marker over somebody who has left would hang in the air until a
+		-- host noticed and cleared it by hand. This class has no player-left
+		-- callback, so the focus is validated on the same beat the roster is --
+		-- one sm.exists call a second, and only while somebody is focused.
+		pcall( function() self:sv_checkFocusAlive() end )
 		pcall( function() self:sv_pushRoster() end )
+	end
+
+	-- A CLIENT THAT JOINED MID-FOCUS HAS NEVER BEEN TOLD. The marker is pushed
+	-- when it CHANGES, so somebody walking in two minutes later would be the
+	-- one person in the world who cannot see who everybody is looking at.
+	--
+	-- Two seconds after the join rather than during it: the world script on
+	-- that client is still being built while server_onPlayerJoined runs, and
+	-- sendToClients into a client with no world script yet is a message with
+	-- nowhere to land.
+	if self.sv.focusRepush ~= nil and tick >= self.sv.focusRepush then
+		self.sv.focusRepush = nil
+		pcall( function() self:sv_pushFocus() end )
 	end
 
 	-- Re-read the ban file so a tool outside the game can push a ban mid-event.
@@ -498,7 +523,14 @@ end
 
 function Game.sv_pushRoster( self, player )
 	local online, residents, bots = self:sv_rosterCounts()
-	local state = { online = online, residents = residents, bots = bots }
+	-- The focused player's NAME rides along on the roster rather than getting a
+	-- push of its own. The roster HUD is already the top-left panel, it already
+	-- re-renders once a second, and it is already only sent when something
+	-- moves -- so a third line on it costs one string in a message that was
+	-- being sent anyway, instead of a second HUD with its own widget, its own
+	-- position arithmetic and its own redraw timer.
+	local state = { online = online, residents = residents, bots = bots,
+		focus = self.sv.focus and self.sv.focus.name or nil }
 	if player then
 		self.network:sendToClient( player, "client_setRoster", state )
 		return
@@ -508,7 +540,8 @@ function Game.sv_pushRoster( self, player )
 	-- every client, forever, for a number that changes a handful of times a day.
 	if self.sv.roster and self.sv.roster.online == online
 		and self.sv.roster.residents == residents
-		and self.sv.roster.bots == bots then
+		and self.sv.roster.bots == bots
+		and self.sv.roster.focus == state.focus then
 		return
 	end
 	self.sv.roster = state
@@ -694,6 +727,12 @@ function Game.server_onPlayerJoined( self, player, newPlayer )
 		-- keeping them out rather than us.
 		table.insert( self.sv.kickQueue, { player = player, ban = true } )
 		return
+	end
+
+	-- See server_onFixedUpdate: the actual push is deferred, because this
+	-- client's world script does not exist yet.
+	if self.sv.focus ~= nil then
+		self.sv.focusRepush = sm.game.getCurrentTick() + 2 * TICKS_PER_SECOND
 	end
 
 	self.network:sendToClient( player, "client_setBlockedTools", self:sv_toolPayload() )
@@ -1195,6 +1234,13 @@ function Game.client_onCreate( self )
 		"cl_onAdminCommand", "Host: change a setting, e.g. /set fire off" )
 	sm.game.bindChatCommand( "/plots", { { "string", "onoff", true, { "on", "off" } } },
 		"cl_onAdminCommand", "Host: shortcut for /set plots on|off" )
+	-- nameParams() rather than one string: bindChatCommand splits on spaces and
+	-- has no quoting, so "June Carya" would otherwise arrive as two arguments
+	-- and be unreachable. Same fix /kick and /ban already use.
+	sm.game.bindChatCommand( "/focus", nameParams(), "cl_onAdminCommand",
+		"Host: mark a player so everyone can see them -- /focus off to clear" )
+	sm.game.bindChatCommand( "/unfocus", {}, "cl_onAdminCommand",
+		"Host: clear the focus marker" )
 	sm.game.bindChatCommand( "/menu", {}, "cl_onAdminCommand",
 		"Open the Server Works menu" )
 	-- Client only, no server hop. Four combinations of who owns the callback and
@@ -2045,6 +2091,8 @@ function Game.sv_n_menuOpen( self, data, player )
 		self:sv_openPlotsGui( player )
 	elseif what == "event" then
 		self:sv_openEventGui( player )
+	elseif what == "focus" and isHost then
+		self:sv_openFocusGui( player )
 	elseif what == "myplot" then
 		self:sv_toWorld( "/myplot", {}, player )
 	elseif what == "rules" then
@@ -2330,6 +2378,305 @@ end
 
 -- Anything that destroys work goes through here twice. See ConfirmGui.lua for
 -- why the buttons swap sides between the two steps.
+--[[ FOCUS -- one person, marked so the whole lobby can find them ]]
+
+-- Asked for as: "an admin tool. with the tool you can search for nicknames that
+-- are curently on the server. and when selected it will highlight them. so
+-- people can see the focus person. usefull for event stuff."
+--
+-- Three pieces, and this file owns only the middle one:
+--
+--   FocusTool.lua   point at somebody, or hold F to clear. The only thing in
+--                   the mod that can see a key press.
+--   HERE            who is focused, who is allowed to say so, and the panel
+--   Focus.lua       what a marked player looks like, on every client, driven
+--                   from World.lua because the compass needs a world
+--
+-- ONE AT A TIME, on purpose. "the focus person" is a single subject the lobby
+-- is being pointed at, so focusing somebody replaces whoever was focused
+-- before and there is no way to leave three stale markers across the city.
+
+-- Everyone online, in the shape FocusGui draws. Sorted by name, because the
+-- panel is something a host scans with their eyes under time pressure and join
+-- order is not an order anybody can search.
+--
+-- Crowd bots are NOT in here. They are units, not players -- getAllPlayers does
+-- not return one, and Focus.Cl_Set needs a Player to find a character through
+-- -- so the panel says how many there are rather than leaving a host wondering
+-- where 128 names went.
+function Game.sv_focusRoster( self )
+	local out = {}
+	for _, p in ipairs( sm.player.getAllPlayers() ) do
+		local perma = Identity.Sv_PermaOf( p )
+		local plot = nil
+		if g_swPlots ~= nil and perma ~= nil then
+			-- g_swPlots lives in the world and may not exist yet while one is
+			-- still coming up. A missing plot number is a missing line of
+			-- detail; it must never cost the host the whole panel.
+			local ok, index = pcall( function() return g_swPlots:sv_plotOf( perma ) end )
+			if ok then plot = index end
+		end
+		out[#out + 1] = { id = p.id, name = p.name, perma = perma, plot = plot }
+	end
+	table.sort( out, function( a, b )
+		return string.lower( a.name ) < string.lower( b.name )
+	end )
+	return out
+end
+
+function Game.sv_focusPlayerById( self, id )
+	if id == nil then return nil end
+	for _, p in ipairs( sm.player.getAllPlayers() ) do
+		if p.id == id then return p end
+	end
+	return nil
+end
+
+-- THE ONE PLACE THAT CHANGES WHO IS FOCUSED. The tool, the panel and the chat
+-- command all end up here, so there is exactly one thing to read when the
+-- markers are wrong.
+function Game.sv_setFocus( self, target, by )
+	if target ~= nil and not sm.exists( target ) then target = nil end
+
+	local wasName = self.sv.focus and self.sv.focus.name or nil
+	self.sv.focus = target and { player = target, name = target.name } or nil
+
+	self:sv_pushFocus()
+	-- The top-left HUD line rides on the roster message; see sv_pushRoster.
+	pcall( function() self:sv_pushRoster() end )
+
+	-- SAID OUT LOUD, TO EVERYONE. A marker appearing over somebody with no
+	-- explanation reads as a bug the first time it happens, and half the value
+	-- of the feature is the lobby knowing to go and look.
+	if target ~= nil then
+		self:sv_broadcast( string.format( "Look at %s -- follow the marker.",
+			tostring( target.name ) ) )
+		sm.log.info( string.format( "[ServerWorks] focus: %s (by %s)",
+			tostring( target.name ), by and tostring( by.name ) or "server" ) )
+	elseif wasName ~= nil then
+		self:sv_broadcast( "Focus cleared." )
+		sm.log.info( "[ServerWorks] focus cleared" )
+	end
+	return true
+end
+
+-- Markers are drawn from the WORLD's client, not from here. The compass turns a
+-- position into a bearing and therefore needs a world, and a Game script has
+-- none -- MEASURED, and it is the whole reason PlotMarker moved:
+--
+--   WARNING: compass marker unavailable: PlotMarker.lua:72:
+--            Calling world dependent functions in a no world script!
+function Game.sv_pushFocus( self )
+	local world = self:sv_world()
+	if world == nil or not sm.exists( world ) then return end
+	local f = self.sv.focus
+	pcall( sm.event.sendToWorld, world, "sv_e_swFocusPush", {
+		target = f and f.player or nil,
+		name = f and f.name or nil,
+		-- Decided HERE, not on each client. Settings is a server-side table, so
+		-- a client reading `focusname` would get the schema default whatever the
+		-- host had chosen -- which would make the switch do nothing for anybody
+		-- but the host, on a feature whose whole point is what everyone else
+		-- sees.
+		showName = ( Settings.Get( "focusname" ) ~= false ),
+	} )
+end
+
+-- Called once a second beside the roster push. Cheap: one comparison unless
+-- somebody is actually focused.
+function Game.sv_checkFocusAlive( self )
+	local f = self.sv.focus
+	if f == nil then return end
+	if f.player ~= nil and sm.exists( f.player ) then return end
+	sm.log.info( "[ServerWorks] focus cleared -- " .. tostring( f.name ) .. " has left" )
+	self.sv.focus = nil
+	self:sv_pushFocus()
+	pcall( function() self:sv_pushRoster() end )
+	self:sv_broadcast( string.format( "%s has left -- focus cleared.", tostring( f.name ) ) )
+end
+
+-- The bridge from FocusTool. A tool script has no route to the Game class, so
+-- it goes through sm.event.sendToGame, the same way CleanerTool sends its
+-- replies.
+--
+-- HOST GATED AGAIN, HERE. The tool checks too, and that is not redundant: an
+-- event is reachable by anything sharing this Lua environment, so the class
+-- that owns the state has to be the class that decides.
+--
+-- AND THERE IS NO SETTING IN THE WAY. Every other host tool in this mod can be
+-- handed to a guest by a host who wants to -- `hostcleaner`, `hostlift`,
+-- `hostnotlift` -- because each of those changes the WORLD and the server-side
+-- rules on it still apply. This one changes what is drawn on everybody else's
+-- SCREEN, which is not a thing to delegate, so the test is the same one the
+-- panel and /focus use and nothing can relax it. See HOST_ONLY in Settings.lua.
+function Game.sv_e_swFocus( self, params )
+	if type( params ) ~= "table" then return end
+	local by = params.player
+	if by == nil or not sm.exists( by ) then return end
+
+	local function reply( text )
+		self.network:sendToClient( by, "client_showMessage", text )
+	end
+
+	if by ~= sm.player.getHostPlayer() then
+		reply( "Focusing a player is host only." )
+		return
+	end
+
+	if params.panel then
+		self:sv_openFocusGui( by )
+		return
+	end
+	if params.clear then
+		if self.sv.focus == nil then
+			reply( "Nobody is focused." )
+			return
+		end
+		self:sv_setFocus( nil, by )
+		return
+	end
+	if params.target == nil or not sm.exists( params.target ) then
+		reply( "That player is not here any more." )
+		return
+	end
+	self:sv_setFocus( params.target, by )
+end
+
+
+--[[ the focus panel ]]
+
+function Game.sv_openFocusGui( self, player, status, query, page )
+	if player ~= sm.player.getHostPlayer() then return end
+
+	local f = self.sv.focus
+	local focus = nil
+	if f ~= nil and f.player ~= nil and sm.exists( f.player ) then
+		focus = { id = f.player.id, name = f.name }
+	end
+
+	self.network:sendToClient( player, "client_openFocusGui", {
+		players = self:sv_focusRoster(),
+		bots = self.sv.crowdCount or 0,
+		query = query,
+		page = page,
+		focus = focus,
+		status = status,
+	} )
+end
+
+function Game.client_openFocusGui( self, state )
+	if self.cl == nil then self.cl = {} end
+	self.cl.focusState = state
+	self:cl_showPanel( "focus", FocusGui.Build( state ) )
+end
+
+function Game.cl_onFocusGuiClose( self )
+	self:cl_forgetPanel()
+	if self.cl then self.cl.focusState = nil end
+end
+
+-- ONLY CLOSE AND BACK CLOSE THE PANEL. Everything else runs and the panel stays
+-- put with a status line saying what happened -- see the note in CLAUDE.md
+-- about a panel that closes on every click being indistinguishable from a
+-- broken one.
+--
+-- And nothing in here calls cl_showPanel or a closer directly: close() destroys
+-- the widget whose callback is on the Lua stack. dev/test_logic.py asserts it.
+function Game.cl_onFocusGuiClick( self, widgetName, data )
+	if type( data ) ~= "table" or self.cl == nil then return end
+	local state = self.cl.focusState
+	if state == nil then return end
+
+	if data.action == "close" then
+		self:cl_closeLater( "panel" )
+		return
+	end
+	if data.action == "back" then
+		-- Send FIRST. The hub renders into this same one GUI, so queueing a
+		-- close here would race the panel that is about to arrive.
+		self.network:sendToServer( "sv_n_openMenu", {} )
+		return
+	end
+	if data.action == "page" then
+		-- Local, because paging changes nothing on the server and a round trip
+		-- for it would be a visible stutter. cl_renderLater, never a direct
+		-- render: ConfirmGui does exactly this from its own click handler.
+		state.page = data.page
+		self:cl_renderLater( "focus", FocusGui.Build( state ) )
+		return
+	end
+
+	self.network:sendToServer( "sv_n_focusGuiAction", {
+		action = data.action, id = data.id,
+		query = state.query, page = state.page } )
+end
+
+-- A typed search. ( self, widgetName, text ) -- a text event carries no
+-- onClickData, so the widget NAME is the only thing that says which box it was.
+-- Signature from DigitalSign.lua:157.
+--
+-- IT DRAWS NOTHING. Not a render, not a deferred render, not a close. The event
+-- clock crashed the game twice over exactly this, and the second crash was
+-- AFTER the redraw had already been deferred by a tick, so deferring is not
+-- known to be enough. Sending IS safe -- cl_onMenuClick sends from inside a
+-- click callback and that is the ordering vanilla itself uses -- so the search
+-- is a round trip, and the panel is rebuilt by client_openFocusGui, which is a
+-- network callback rather than this widget's own.
+function Game.cl_onFocusSearchTyped( self, widgetName, text )
+	local ok, err = pcall( function()
+		if self.cl == nil or self.cl.focusState == nil then return end
+		if widgetName ~= FocusGui.SEARCH_BOX then return end
+		local query = tostring( text or "" )
+		self.cl.focusState.query = query
+		self.cl.focusState.page = 1
+		self.network:sendToServer( "sv_n_focusGuiAction",
+			{ action = "search", query = query, page = 1 } )
+	end )
+	if not ok and not ( self.cl and self.cl.focusSearchFaulted ) then
+		if self.cl then self.cl.focusSearchFaulted = true end
+		sm.log.warning( "[ServerWorks] focus search failed: " .. tostring( err ) )
+	end
+end
+
+function Game.sv_n_focusGuiAction( self, data, player )
+	if type( data ) ~= "table" then return end
+	if player ~= sm.player.getHostPlayer() then return end
+
+	local status = nil
+	local query, page = data.query, data.page
+
+	if data.action == "focus" then
+		local target = self:sv_focusPlayerById( tonumber( data.id ) )
+		if target == nil then
+			status = "that player has left"
+		else
+			self:sv_setFocus( target, player )
+			status = string.format( "focusing %s -- everyone can see the marker",
+				tostring( target.name ) )
+		end
+
+	elseif data.action == "clear" then
+		if self.sv.focus == nil then
+			status = "nobody was focused"
+		else
+			local was = self.sv.focus.name
+			self:sv_setFocus( nil, player )
+			status = string.format( "cleared -- %s is no longer marked", tostring( was ) )
+		end
+
+	elseif data.action == "search" then
+		local matched = FocusGui.Filter( self:sv_focusRoster(), query )
+		status = ( tostring( query or "" ) == "" )
+			and "showing everyone"
+			or string.format( "%d name%s matched", #matched,
+				#matched == 1 and "" or "s" )
+		page = 1
+	end
+
+	self:sv_openFocusGui( player, status, query, page )
+end
+
+
 function Game.sv_askConfirm( self, player, what, title, lines, back )
 	self.network:sendToClient( player, "client_openConfirm",
 		{ step = 1, what = what, title = title, lines = lines, back = back } )
@@ -2415,6 +2762,8 @@ function Game.sv_n_openPanel( self, data, player )
 		self:sv_openSettingsGui( player, "safety", 1 )
 	elseif data.panel == "style" then
 		self:sv_openStyleGui( player, nil, nil, data.back )
+	elseif data.panel == "focus" then
+		self:sv_openFocusGui( player )
 	end
 end
 
@@ -2578,6 +2927,8 @@ function Game.sv_n_adminCommand( self, params, player )
 			reply( "  /purge carry        destroy whatever you picked up" )
 			reply( "  /purge here <m> | /purge plot <n>" )
 			reply( "  /why                point at a build, ask why it is locked" )
+			reply( "  /focus <who>        mark them so the whole lobby can find them" )
+			reply( "  /unfocus            take the marker off again" )
 			reply( "  /ban <who>  /unban <who>  /banlist  /known  /kick <who>" )
 			reply( "  /allow <who>  /unallow <who>  /allowlist" )
 			reply( "LOAD TESTING -- not for a live event" )
@@ -2759,6 +3110,33 @@ function Game.sv_n_adminCommand( self, params, player )
 		end
 		if hostPlayer == nil then
 			reply( "  no host player -- host-only commands will refuse everyone" )
+		end
+
+	elseif cmd == "/focus" then
+		local token = joinName( params, 2 )
+		-- "off" and "none" clear, because that is what somebody types before
+		-- they remember /unfocus exists.
+		local lowered = string.lower( token )
+		if lowered == "off" or lowered == "none" or lowered == "clear" then
+			if self.sv.focus == nil then
+				reply( "Nobody is focused." )
+			else
+				self:sv_setFocus( nil, player )
+			end
+			return
+		end
+		local target = resolveTarget( token )
+		if target == nil or not sm.exists( target ) then
+			reply( string.format( "'%s' is not here -- try /players", token ) )
+			return
+		end
+		self:sv_setFocus( target, player )
+
+	elseif cmd == "/unfocus" then
+		if self.sv.focus == nil then
+			reply( "Nobody is focused." )
+		else
+			self:sv_setFocus( nil, player )
 		end
 
 	elseif cmd == "/known" then

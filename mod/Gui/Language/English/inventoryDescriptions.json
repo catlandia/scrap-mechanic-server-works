@@ -13,5 +13,10 @@
 		"title": "Cleaner",
 		"upperCaseTitle": "CLEANER",
 		"description": "Point at anything and click to delete it. Hold F to delete the whole creation. It is the only thing that can remove a craftbot, a gem or a crate, because the remove tool picks those up instead of erasing them. Host only. It will not touch the city floor."
+	},
+	"f0c5a11e-7d3b-4c6a-9e21-5b8a4d0f9c33": {
+		"title": "Focus",
+		"upperCaseTitle": "FOCUS",
+		"description": "Point at a player and click: everybody in the world gets a marker over them, drawn through walls at any distance, with their name under it and an icon on the compass. Point at nothing and click to open the searchable player list instead. Hold F to clear. For showing the lobby whose build you are talking about. HOST ONLY, and there is no setting that opens it up -- unlike the Cleaner and NOTlift, this one writes on everybody else's screen rather than changing the world. It changes nothing in the world itself."
 	}
 }

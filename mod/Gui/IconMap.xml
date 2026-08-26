@@ -52,6 +52,15 @@
             <Index name="bbbb0cc8-5dd0-46e1-9299-8080c3cc80db">
                 <Frame point="192 0"/>
             </Index>
+            <!-- The Focus tool: the very marker it puts over a player, which is
+                 $GAME_DATA/Gui/QuestMarker/icon_questmarker.png scaled to the
+                 grid. It is a Sledgehammer subclass like the Cleaner and draws
+                 the sledgehammer preview, so without this the two would be
+                 indistinguishable in the menu, and both would look like the
+                 real hammer. -->
+            <Index name="f0c5a11e-7d3b-4c6a-9e21-5b8a4d0f9c33">
+                <Frame point="288 0"/>
+            </Index>
         </Group>
     </Resource>
 </MyGUI>

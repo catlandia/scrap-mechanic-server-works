@@ -42,7 +42,26 @@ UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 
 def strip_comments(text):
-    return re.sub(r"//[^\n]*", "", text)
+    """Make one of the game's own data files readable by a strict JSON parser.
+
+    The engine's parser is not strict, and its own content relies on that in
+    three ways. All three are in files this script has to read:
+
+      // velocity 0-1        Survival/.../claygun.effectset:176
+      /* ... */              Data/.../crystal.effectset:2 -- a whole block
+      },                     Data/.../tools.effectset:500 -- a trailing comma
+      }
+
+    Five of the game's own effectsets use one of the three. Refusing them would
+    mean reporting an effect that plainly exists as missing, so this reads them
+    the way the engine does rather than the way json.load would like to.
+
+    Block comments go first: one of them has a trailing comma inside it, and
+    stripping commas first would leave the comment behind to be parsed.
+    """
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    text = re.sub(r"//[^\n]*", "", text)
+    return re.sub(r",(\s*[}\]])", r"\1", text)
 
 
 def load_json(path):
@@ -534,6 +553,138 @@ def report_icons(declared):
     return bad
 
 
+def loaded_effectsets(base_content):
+    """Every .effectset the game will read, ours included, in load order.
+
+    Effects are named by STRING, not by uuid -- sm.effect.createEffect takes
+    "QuestMarker_Far" -- so they are invisible to the uuid scan above and would
+    otherwise be the one kind of content this script cannot see. And a name the
+    engine does not know does not return nil: it THROWS, which is why Focus.lua
+    treats the pcall as the existence test.
+
+    Data/Effects/Database/effectsets.json is always read. Survival's is read
+    when baseGameContent is "Survival", which is the only value that works here
+    -- see the config.json note in CLAUDE.md.
+    """
+    indexes = [GAME / "Data" / "Effects" / "Database" / "effectsets.json"]
+    if base_content == "Survival":
+        indexes.append(GAME / "Survival" / "Effects" / "Database" / "effectsets.json")
+
+    out = []
+    for index in indexes:
+        data = load_json(index) or {}
+        for entry in data.get("effectSetList", []):
+            path = GAME / resolve(entry.get("path", ""))
+            if path.is_file():
+                out.append(path)
+
+    # Ours last, the same order the game loads mod content in.
+    ours = ROOT / "mod" / "Effects" / "Database" / "effectsets.effectdb"
+    if ours.is_file():
+        data = load_json(ours) or {}
+        for entry in data.get("effectSetList", []):
+            rel = entry.get("path", "").replace("$CONTENT_DATA/", "")
+            path = ROOT / "mod" / rel
+            out.append(path)          # may not exist -- that is the point
+    return out
+
+
+def report_effects(base_content):
+    """The focus marker's effects, and every asset they name.
+
+    Returns the number of problems found.
+
+    This is the first effectset this mod has ever shipped. 87 Workshop items
+    ship one and the Empty Custom Game template includes the folder, so the
+    mechanism is real -- but nothing here has run one, and an effect that fails
+    to create is a marker that never appears with no error anybody would notice.
+    """
+    print()
+    wanted = {}
+    focus = ROOT / "mod" / "Scripts" / "Focus.lua"
+    if not focus.is_file():
+        print("  effects: no Focus.lua, nothing to check")
+        return 0
+
+    text = io.open(focus, encoding="utf-8").read()
+    for match in re.finditer(r'Focus\.(MARKER_EFFECTS|NAME_EFFECT)\s*=\s*(.+)', text):
+        for name in re.findall(r'"([^"]+)"', match.group(2)):
+            wanted[name] = match.group(1)
+
+    declared, bad = {}, 0
+    for path in loaded_effectsets(base_content):
+        if not path.is_file():
+            print(f"  EFFECTS: {path} is named by an effectdb and is not there")
+            bad += 1
+            continue
+        data = load_json(path)
+        if data is None:
+            print(f"  EFFECTS: {path.name} will not parse")
+            bad += 1
+            continue
+        for name in data:
+            declared.setdefault(name, path)
+
+    if not wanted:
+        print("  effects: Focus.lua names none")
+        return bad
+
+    for name, field in sorted(wanted.items()):
+        where = declared.get(name)
+        if where is None:
+            print(f"  EFFECTS: {name!r} ({field}) is declared by no effectset "
+                  f"the game loads -- createEffect on it THROWS")
+            bad += 1
+            continue
+        try:
+            rel = where.relative_to(GAME).as_posix()
+        except ValueError:
+            rel = "OURS: " + where.relative_to(ROOT).as_posix()
+        print(f"  ok    effect      {name:<26}  {rel}")
+
+    # Every texture and renderable OUR effectset names has to exist, because a
+    # billboard pointing at a missing png is an effect that creates cleanly and
+    # draws nothing -- the worst failure mode there is, since the pcall fallback
+    # never fires.
+    for path in loaded_effectsets(base_content):
+        if GAME in path.parents or not path.is_file():
+            continue
+        data = load_json(path) or {}
+        for name, effect in data.items():
+            for element in effect.get("effectList", []):
+                assets = element.get("billboardTexture", [])
+                if isinstance(assets, str):
+                    assets = [assets]
+                if element.get("name"):
+                    assets = list(assets) + [element["name"]]
+                for asset in assets:
+                    target = GAME / resolve(asset)
+                    if target.is_file():
+                        print(f"  ok    asset       {pathlib.Path(asset).name:<26}"
+                              f"  {name}")
+                    else:
+                        print(f"  EFFECTS: {name} names {asset}, which is not in "
+                              "the install")
+                        bad += 1
+
+    # The compass icon, which is a plain file lookup and has bitten this project
+    # before -- PlotMarker's icon had to be found in the Compass folder rather
+    # than guessed.
+    icon = re.search(r'Focus\.COMPASS_ICON\s*=\s*"([^"]+)"', text)
+    if icon:
+        found = list((GAME / "Data" / "Gui" / "Resolutions").glob(
+            "*/Compass/" + icon.group(1)))
+        if found:
+            print(f"  ok    compass     {icon.group(1):<26}  "
+                  f"{len(found)} resolution(s)")
+        else:
+            print(f"  EFFECTS: compass icon {icon.group(1)!r} is in no "
+                  "Data/Gui/Resolutions/*/Compass/ folder")
+            bad += 1
+
+    return bad
+
+
 def main():
     declared = []
     if not GAME.is_dir():
@@ -631,6 +782,9 @@ def main():
     # because the uuid that was missing was a scriptable object type and nothing
     # here had ever looked at those.
     bad_sobs = report_scriptable_objects(base_content)
+    # EFFECTS ARE NAMED BY STRING, so nothing above can see them. See
+    # report_effects: this is the first effectset the mod has ever shipped.
+    bad_effects = report_effects(base_content)
     bad_icons = report_icons(declared)
 
     print()
@@ -643,7 +797,7 @@ def main():
         print("  appear in the creative menu with no name and no description.")
         for _, u in unnamed:
             print(f"        {u}")
-    if bad_sobs or bad_icons or bad_characters:
+    if bad_sobs or bad_icons or bad_characters or bad_effects:
         return 1
     if missing:
         print("a uuid the game does not know is a silent no-op, not an error")

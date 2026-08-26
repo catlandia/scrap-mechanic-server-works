@@ -2742,7 +2742,8 @@ def every_button_reaches_a_branch():
     import re
     game = read("Game.lua")
     panels = ["MenuGui.lua", "PlotsGui.lua", "SettingsGui.lua",
-              "EventGui.lua", "MyPlotGui.lua", "ConfirmGui.lua", "StyleGui.lua"]
+              "EventGui.lua", "MyPlotGui.lua", "ConfirmGui.lua", "StyleGui.lua",
+              "FocusGui.lua"]
     orphans = []
     for name in panels:
         for action in sorted(set(re.findall(r'action = "([^"]+)"', read(name)))):
@@ -2894,9 +2895,34 @@ def every_caption_can_be_drawn():
     # The top-left roster. Two states, because a four digit resident count is
     # a different string from a one digit one and a glyph-limited font can
     # fail on one and not the other.
-    for state in ({"online": 0, "residents": 0}, {"online": 12, "residents": 3407}):
+    for state in ({"online": 0, "residents": 0},
+                  {"online": 12, "residents": 3407},
+                  # and with the FOCUS strip up, which is a third row of
+                  # captions that only exists while somebody is marked
+                  {"online": 12, "residents": 3407, "focus": "JuneCarya"}):
         collect("rosterhud", lua.globals().RosterHud.Build(
             lua.table_from(state), 1920, 1080))
+
+    # The focus panel, in the four states it has: nobody online, a list, a
+    # search that matched nothing, and somebody focused.
+    FOCUS_ROSTER = [{"id": 1, "name": "JuneCarya", "perma": "SW-0001", "plot": 14},
+                    {"id": 2, "name": "Quintuple X", "perma": "SW-0002"},
+                    {"id": 3, "name": "zeb", "perma": "SW-0003", "plot": 2}]
+    for label, state in (
+            ("empty", {}),
+            ("list", {"players": FOCUS_ROSTER, "bots": 40}),
+            ("nomatch", {"players": FOCUS_ROSTER, "query": "qqq"}),
+            ("focused", {"players": FOCUS_ROSTER,
+                         "focus": {"id": 1, "name": "JuneCarya"},
+                         "status": "focusing JuneCarya"})):
+        state = dict(state)
+        if "players" in state:
+            state["players"] = lua.table_from(
+                [lua.table_from(r) for r in state["players"]])
+        if "focus" in state:
+            state["focus"] = lua.table_from(state["focus"])
+        collect(f"focusgui/{label}",
+                lua.globals().FocusGui.Build(lua.table_from(state)))
 
     assert captions, "no captions collected -- the panels built nothing"
 
@@ -3017,7 +3043,7 @@ def gui_lua():
     lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Event.lua", "EventHud.lua",
                 "RosterHud.lua", "EventGui.lua", "ConfirmGui.lua",
                 "SettingsGui.lua", "PlotsGui.lua", "MenuGui.lua", "MyPlotGui.lua",
-                "StyleGui.lua")
+                "StyleGui.lua", "FocusGui.lua")
     lua.globals().Settings.Sv_Load(False)
     return lua
 
@@ -5458,6 +5484,450 @@ def every_world_command_has_a_branch():
         "so they do nothing at all: " + ", ".join(orphans))
 
 
+# ------------------------------------------------------------------ focus ---
+#
+# "an admin tool. with the tool you can search for nicknames that are curently
+# on the server. and when selected it will highlight them. so people can see
+# the focus person."
+#
+# Three pieces: FocusGui picks, Game.lua owns who it is, Focus.lua draws it on
+# every client. Only the first is pure enough to run outside the game, so the
+# checks below are honest about what they cover -- searching, paging, layout,
+# and the two structural rules that have cost this project a crash each.
+
+
+def focus_search_finds_a_name_by_any_part_of_it():
+    """Substring, case insensitive, and safe against a name full of punctuation.
+
+    The failure this guards is specific. string.find defaults to PATTERN
+    matching, and a Steam name may legally contain "%", "(", "-" or "+", all of
+    which are pattern syntax. Without plain = true, typing a "(" does not
+    return no matches -- it throws, and takes the whole panel with it.
+    """
+    lua = fresh("FocusGui.lua")
+    G = lua.globals().FocusGui
+    roster = lua.table_from([lua.table_from(r) for r in (
+        {"id": 1, "name": "JuneCarya"},
+        {"id": 2, "name": "carl"},
+        {"id": 3, "name": "100% Mechanic"},
+        {"id": 4, "name": "[SW] zeb-o"},
+    )])
+
+    def names(query):
+        return [str(p["name"]) for p in G.Filter(roster, query).values()]
+
+    assert names("") == ["JuneCarya", "carl", "100% Mechanic", "[SW] zeb-o"], \
+        "an empty search hides people"
+    assert names("car") == ["JuneCarya", "carl"], f"'car' matched {names('car')}"
+    assert names("CAR") == ["JuneCarya", "carl"], "the search is case sensitive"
+    assert names("  car  ") == ["JuneCarya", "carl"], "surrounding spaces break it"
+    assert names("nobody") == [], "a search that should match nothing matched something"
+
+    # the punctuation cases, each of which is a pattern metacharacter
+    for query, want in (("%", ["100% Mechanic"]),
+                        ("[SW]", ["[SW] zeb-o"]),
+                        ("zeb-o", ["[SW] zeb-o"]),
+                        ("100%", ["100% Mechanic"])):
+        assert names(query) == want, (
+            f"searching {query!r} gave {names(query)}, expected {want} -- "
+            "string.find needs plain = true or punctuation is read as a pattern")
+
+
+def focus_paging_shows_every_name_exactly_once():
+    """Page through a full lobby and get everybody back, in order, no repeats.
+
+    /crowd can put 128 names in this list and a real event puts twenty, so the
+    pager is the difference between a usable panel and one where half the lobby
+    is unreachable. An off-by-one in the slice would drop or repeat a name per
+    page, which is invisible on page 1 and infuriating on page 9.
+    """
+    lua = fresh("FocusGui.lua")
+    G = lua.globals().FocusGui
+    rows = int(G.ROWS)
+    for total in (0, 1, rows - 1, rows, rows + 1, 128):
+        roster = lua.table_from([lua.table_from({"id": i, "name": f"player{i:03d}"})
+                                 for i in range(1, total + 1)])
+        seen, pages_seen = [], None
+        page = 1
+        while True:
+            slice_, got_page, pages = G.Page(roster, page)
+            pages_seen = int(pages)
+            assert int(got_page) == page, f"{total}: asked for page {page}, got {got_page}"
+            seen += [str(p["name"]) for p in slice_.values()]
+            if page >= pages_seen:
+                break
+            page += 1
+        want = [f"player{i:03d}" for i in range(1, total + 1)]
+        assert seen == want, (
+            f"{total} names over {pages_seen} page(s) came back as {len(seen)}: "
+            f"{'duplicated' if len(seen) > total else 'lost'} entries")
+
+    # A stale page number lands on the last page, not on an empty panel. The
+    # panel keeps its page across a search, so narrowing a list from nine pages
+    # to one while sitting on page 9 is the ordinary case, not the odd one.
+    roster = lua.table_from([lua.table_from({"id": 1, "name": "only"})])
+    for asked in (0, -5, 99, None):
+        slice_, page, pages = G.Page(roster, asked)
+        assert int(page) == 1 and int(pages) == 1 and len(slice_) == 1, (
+            f"page {asked!r} of a one-name list gave page {page}/{pages} "
+            f"with {len(slice_)} row(s)")
+
+
+def the_focus_panel_fits_in_every_state():
+    lua = gui_lua()
+    G = lua.globals().FocusGui
+    full = [{"id": i, "name": f"a rather long player name {i}", "perma": f"SW-{i:04d}",
+             "plot": i} for i in range(1, int(G.ROWS) + 4)]
+
+    def build(state):
+        state = dict(state)
+        if "players" in state:
+            state["players"] = lua.table_from(
+                [lua.table_from(r) for r in state["players"]])
+        if "focus" in state:
+            state["focus"] = lua.table_from(state["focus"])
+        return G.Build(lua.table_from(state))
+
+    for label, state in (
+            ("nobody online", {}),
+            ("one page", {"players": full[:3], "bots": 0}),
+            ("a full page and a pager", {"players": full, "bots": 128}),
+            ("no match", {"players": full, "query": "zzzz"}),
+            ("somebody focused", {"players": full,
+                                  "focus": {"id": 1, "name": "a rather long player name 1"},
+                                  "status": "focusing a rather long player name 1 -- "
+                                            "everyone can see the marker"}),
+            ("last page", {"players": full, "page": 99}),
+    ):
+        root = build(state)
+        items = panel_fits(f"focus ({label})", root, G.W, G.H)
+        no_button_is_buried(f"focus ({label})", items, G.H)
+
+
+def nothing_on_the_focus_panel_sits_on_top_of_anything_else():
+    """No two pieces of text or buttons share pixels, bar a header and its sub.
+
+    panel_fits() proves every widget is INSIDE the panel and
+    no_button_is_buried() proves no two buttons collide. Neither can see a
+    status line drawn on top of a page counter, which is exactly what this
+    panel did at 620 tall: the footer rule sat at H-78 while the pager row ran
+    to 562, so the two shared five rows of pixels. Everything was inside the
+    panel and every button was reachable, and it was still wrong.
+
+    Same shape as the city-map bug in CLAUDE.md -- the partition was intact, it
+    was the KIND of piece that was wrong, and a check that verifies coverage
+    cannot see that.
+
+    A header and the subtitle tucked under it DO overlap by design, in every
+    panel this mod has. That one pair is allowed and nothing else is.
+    """
+    import itertools
+    lua = gui_lua()
+    G = lua.globals().FocusGui
+    rows = [{"id": i, "name": f"a player called {i}", "perma": f"SW-{i:04d}",
+             "plot": i} for i in range(1, int(G.ROWS) * 3)]
+
+    def build(**extra):
+        state = {"players": lua.table_from([lua.table_from(r) for r in rows])}
+        state.update(extra)
+        if "focus" in state:
+            state["focus"] = lua.table_from(state["focus"])
+        return G.Build(lua.table_from(state))
+
+    for label, root in (
+            ("empty", G.Build(lua.table_from({}))),
+            ("paged", build(page=1, bots=128)),
+            ("last page", build(page=99)),
+            ("focused", build(focus={"id": 1, "name": "a player called 1"},
+                              status="focusing a player called 1 -- everyone "
+                                     "can see the marker")),
+            ("no match", build(query="zzzz")),
+    ):
+        items = [i for i in walk(root, []) if i["name"] != "BackPanel"]
+        for a, b in itertools.combinations(items, 2):
+            # Widget is a background, a rule or a row fill -- those are MEANT to
+            # sit under things. Only text and buttons are checked.
+            if a["type"] == "Widget" or b["type"] == "Widget":
+                continue
+            if {a["name"], b["name"]} == {"Title", "Sub"}:
+                continue
+            clash = (a["x"] < b["x"] + b["w"] and a["x"] + a["w"] > b["x"]
+                     and a["y"] < b["y"] + b["h"] and a["y"] + a["h"] > b["y"])
+            assert not clash, (
+                f"focus ({label}): {a['name']!r} and {b['name']!r} share pixels "
+                f"-- {a['name']} is at ({a['x']},{a['y']}) {a['w']}x{a['h']}, "
+                f"{b['name']} at ({b['x']},{b['y']}) {b['w']}x{b['h']}")
+
+
+def the_focus_panel_has_exactly_one_typed_box():
+    """One EditBox, and the handler behind it draws nothing at all.
+
+    Both rules are paid for. The event clock crashed the game twice over typed
+    input: once from rendering inside the text callback, and again AFTER that
+    redraw had been deferred by a tick -- which says the hazard is the focus
+    transfer between two EditBoxes and not the timing. The base game has exactly
+    one editable box in one editable panel (DigitalSign.gui).
+
+    So this panel gets one box, and cl_onFocusSearchTyped is allowed to send and
+    nothing else. Sending is safe and is what vanilla does from inside a click
+    callback (CreativePlayer.lua:48); it is destroying widgets that kills the
+    callback that is running.
+    """
+    lua = gui_lua()
+    G = lua.globals().FocusGui
+    root = G.Build(lua.table_from({
+        "players": lua.table_from([lua.table_from({"id": 1, "name": "somebody"})])}))
+
+    boxes = [n for n in walk_raw(root) if n["Type"] == "EditBox"]
+    assert len(boxes) == 1, (
+        f"the focus panel has {len(boxes)} EditBoxes -- moving focus between two "
+        "of them is what crashed the game twice")
+    box = boxes[0]
+    assert str(box["Name"]) == str(G.SEARCH_BOX), (
+        f"the search box is called {box['Name']!r} but FocusGui.SEARCH_BOX says "
+        f"{G.SEARCH_BOX!r}, so the handler cannot tell which box was typed into")
+    assert box["Static"] is False, (
+        "the search box is Static -- it would display text and never accept any")
+    assert box["NeedKey"] is True, "the search box cannot take the keyboard"
+    assert box["onTextEnter"] is not None, "the search box has no onTextEnter"
+
+    game = read("Game.lua")
+    handler = game[game.index("function Game.cl_onFocusSearchTyped"):]
+    handler = handler[:handler.index(chr(10) + "end")]
+    for banned in ("cl_showPanel", "cl_renderLater", "cl_closeLater", ":render("):
+        assert banned not in handler, (
+            f"cl_onFocusSearchTyped calls {banned} -- a text callback that "
+            "touches the GUI crashed the game twice, and deferring was not "
+            "enough. It may send and nothing else.")
+
+
+def the_focus_marker_is_drawn_from_the_world_not_the_game():
+    """The compass needs a world. A Game script has none, and this is measured.
+
+    PlotMarker spent several versions never appearing because it was driven from
+    Game.lua:
+
+      WARNING: compass marker unavailable: PlotMarker.lua:72:
+               Calling world dependent functions in a no world script!
+
+    Going via the player script gave the same warning verbatim. The world's own
+    client is the one context that certainly has a world, and it is where every
+    vanilla caller of the compass lives -- so the focus marker goes the same way,
+    and this check stops it drifting back.
+    """
+    game, world, focus = read("Game.lua"), read("World.lua"), read("Focus.lua")
+
+    assert "g_compassHud" not in game, (
+        "Game.lua touches g_compassHud -- a Game script has no world and every "
+        "compass call from one fails with 'Calling world dependent functions in "
+        "a no world script'")
+    assert "sm.effect.createEffect" not in game, (
+        "Game.lua creates an effect -- effects belong to a world; drive them "
+        "from World.lua's client, the way Focus.lua is driven")
+
+    # Comments stripped first. A commented-out call still contains the string,
+    # and a check that a commented-out line satisfies is not a check.
+    live = chr(10).join(l for l in world.splitlines()
+                        if not l.strip().startswith("--"))
+    tick = live[live.index("function World.client_onFixedUpdate"):]
+    tick = tick[:tick.index(chr(10) + "end")]
+    assert "Focus.Cl_Step()" in tick, (
+        "World.client_onFixedUpdate never calls Focus.Cl_Step, so a marker whose "
+        "target was still loading when it was set would never appear at all, and "
+        "a respawn would leave it floating where the player died")
+    assert "cl_n_swFocus" in live and "sendToClients" in live, (
+        "the focus push does not reach every client -- the whole point is that "
+        "EVERYBODY sees the marker, not just the host who set it")
+
+    # The effectset is the one part of this feature with no precedent in the
+    # mod, so there has to be a way for it to fail that is not an error per
+    # frame. createEffect on a name the engine does not know THROWS, which
+    # makes the pcall the existence test -- and the last name tried has to be
+    # base content, or a failed effectset means no marker at all.
+    lua = fresh("Focus.lua")
+    F = lua.globals().Focus
+    names = [str(n) for n in F.MARKER_EFFECTS.values()]
+    assert len(names) >= 2, (
+        f"Focus.MARKER_EFFECTS is {names} -- with no fallback, an effectset the "
+        "engine does not load leaves the feature with nothing to draw")
+    assert names[-1] == "QuestMarker_Far", (
+        f"the last marker tried is {names[-1]!r}, which is not base content. "
+        "The fallback has to be something the game certainly ships.")
+    assert focus.count("pcall") >= focus.count("sm.effect.createEffect"), (
+        "Focus.lua creates more effects than it has pcalls -- an unknown effect "
+        "name throws, and an error per frame is the largest performance bug "
+        "this project has measured")
+
+
+def a_focus_never_outlives_the_player_it_marks():
+    """The plumbing that clears a marker when its target leaves.
+
+    There is no player-left callback on this class, so a marker over somebody
+    who disconnected would hang in the air until a host noticed. It is checked
+    on the same once-a-second beat as the roster.
+
+    String matching, which proves the wiring exists rather than that it works --
+    but a name on one side of a bridge and nowhere on the other has always been
+    a real bug here, and it was exactly this one for the panel plumbing.
+    """
+    game = read("Game.lua")
+    for needed, why in (
+            ("sv_checkFocusAlive", "nothing notices the focused player leaving"),
+            ("sv_pushFocus", "nothing tells the clients who is focused"),
+            ("sv_setFocus", "there is no single place that changes the focus"),
+            ("focusRepush", "a client that joins mid-focus is never told")):
+        assert game.count(needed) >= 2, (
+            f"{needed} is defined or called fewer than twice -- {why}")
+
+    body = game[game.index("function Game.sv_checkFocusAlive"):]
+    body = body[:body.index(chr(10) + "end")]
+    assert "sm.exists" in body and "sv_pushFocus" in body, (
+        "sv_checkFocusAlive does not test the player and re-push, so a marker "
+        "would stay up over somebody who has gone")
+
+
+def only_the_host_can_point_the_lobby_at_somebody():
+    """Every door into the focus is host gated, and NO SETTING CAN OPEN ONE.
+
+    There are five doors: the tool's client half, the tool's server half, the
+    Game-script bridge the tool talks through, the panel action, and the chat
+    command. A guest who could mark anybody they liked has a toy for annoying
+    people, not an admin tool -- and the marker is drawn on every screen in the
+    world, which is the one thing in this mod a guest cannot otherwise do.
+
+    This is STRICTER than the other host tools on purpose. `hostcleaner`,
+    `hostlift` and `hostnotlift` each let a host hand out a tool that changes
+    the WORLD, where the server-side rules on that tool still apply. Focus
+    changes what is drawn on everybody else's SCREEN, and there is no half of
+    that to delegate -- so the gate is `sm.player.getHostPlayer()` everywhere
+    with nothing in front of it. The check that matters most here is the one
+    that no `hostfocus` exists to relax it.
+    """
+    game, tool = read("Game.lua"), read("FocusTool.lua")
+
+    handler = game[game.index("function Game.sv_n_focusGuiAction"):]
+    handler = handler[:handler.index(chr(10) + "end")]
+    assert "getHostPlayer" in handler, "the panel action does not check the sender"
+
+    bridge = game[game.index("function Game.sv_e_swFocus"):]
+    bridge = bridge[:bridge.index(chr(10) + "end")]
+    assert "getHostPlayer" in bridge, (
+        "Game.sv_e_swFocus does not check the sender -- an event is reachable by "
+        "anything sharing this Lua environment, so the class that owns the state "
+        "has to be the class that decides")
+
+    tool_sv = tool[tool.index("function FocusTool.sv_n_swFocus"):]
+    assert "getHostPlayer" in tool_sv, (
+        "FocusTool's server half does not check the sender")
+
+    # NOTHING may soften any of those gates. A settings read in the path is how
+    # "host only" quietly becomes "host only unless somebody typed /set".
+    for where, src in (("Game.sv_e_swFocus", bridge),
+                       ("FocusTool.sv_n_swFocus", tool_sv)):
+        assert "Settings.Get" not in src and "hostfocus" not in src, (
+            f"{where} consults a setting before refusing a guest. Focusing is "
+            "host only with no switch -- see HOST_ONLY in Settings.lua")
+
+    # the guest half of the tool refuses before it sends anything
+    equipped = tool[tool.index("function FocusTool.client_onEquippedUpdate"):]
+    equipped = equipped[:equipped.index(chr(10) + "end")]
+    assert "looksLikeHost" in equipped, (
+        "a guest holding the tool for the couple of ticks before the guard "
+        "takes it gets no hint that it is not theirs")
+
+    opener = game[game.index("function Game.sv_openFocusGui"):]
+    opener = opener[:opener.index(chr(10) + "end")]
+    assert "getHostPlayer" in opener, (
+        "sv_openFocusGui does not check the sender, so a modified client could "
+        "read the whole roster off the server")
+
+    # and the tool is in the guard tables, so it is pulled out of a guest's
+    # hands rather than merely refusing to work
+    lua = fresh("Palette.lua", "Settings.lua")
+    S = lua.globals().Settings
+    S.Sv_Load(False)
+    keys = {str(row["key"]) for row in S.SCHEMA.values()}
+    for key in ("focus", "focusname"):
+        assert key in keys, f"there is no {key!r} setting, so it cannot be switched"
+    assert "hostfocus" not in keys, (
+        "a `hostfocus` setting is back in the schema. Focusing is host only with "
+        "no switch: a setting that opened the TOOL would give a guest a marker "
+        "they could not place from the panel or /focus, which are gated outright")
+
+    # and the gate survives a host switching everything off. HOST_ONLY maps
+    # focus to `true` rather than to a settings key, so there is no value of
+    # anything that takes the tool out of the guard.
+    for row in S.SCHEMA.values():
+        if str(row["kind"]) == "bool":
+            S.Sv_Set(str(row["key"]), "off")
+    # The gate names a uuid; the toolset declares one. If they ever drift, the
+    # guard would be pulling a tool nobody has out of nobody's hands while the
+    # real one stayed in a guest's.
+    import re as _re
+    toolset = io.open(ROOT / "mod" / "Tools" / "Database" / "ToolSets"
+                      / "serverworks.toolset", encoding="utf-8").read()
+    declared = _re.search(r'"uuid":\s*"([0-9a-f-]+)"[^}]*?"class":\s*"FocusTool"',
+                          toolset, _re.S)
+    assert declared, "the toolset does not declare a FocusTool entry at all"
+
+    host_only = {str(k): str(v) for k, v in S.Sv_HostOnlyTools().items()}
+    assert host_only.get(declared.group(1)) == "focus", (
+        f"the focus tool's uuid {declared.group(1)} is not in the host-only "
+        f"guard (it holds {sorted(host_only.values())}), so a guest keeps it in "
+        "their hands instead of having it pulled out")
+
+
+def the_roster_hud_grows_for_the_focus_line():
+    """The corner panel gets a third row, and it is still on screen.
+
+    A root widget's x,y is its CENTRE, so a panel that grows without telling the
+    position arithmetic is placed as if it were still short and the new strip
+    hangs below where it belongs. Same trap that put the event clock off the
+    edge of the screen for four versions.
+    """
+    lua = fresh("Event.lua", "EventHud.lua", "RosterHud.lua")
+    R = lua.globals().RosterHud
+
+    short = R.Build(lua.table_from({"online": 3, "residents": 9}), 1720, 720)
+    tall = R.Build(lua.table_from({"online": 3, "residents": 9, "focus": "zeb"}),
+                   1720, 720)
+    assert tall["height"] > short["height"], (
+        "the roster HUD does not grow when somebody is focused, so the FOCUS "
+        "strip is drawn outside the panel background")
+
+    captions = {str(k["Name"]): k["Caption"] for k in tall["Childs"].values()
+                if k["Caption"] is not None}
+    assert captions.get("FocusValue") == "zeb", (
+        f"the focus line reads {captions.get('FocusValue')!r}")
+    assert "FocusValue" not in {str(k["Name"]) for k in short["Childs"].values()}, (
+        "the focus line is drawn even when nobody is focused")
+
+    # a long name is truncated rather than allowed to run off a 168-wide panel
+    long_name = "a" * 40
+    grown = R.Build(lua.table_from({"online": 1, "residents": 1, "focus": long_name}),
+                    1720, 720)
+    shown = None
+    for k in grown["Childs"].values():
+        if str(k["Name"]) == "FocusValue":
+            shown = str(k["Caption"])
+    assert shown is not None and len(shown) <= 22, (
+        f"a 40 character name is drawn as {len(shown) if shown else 0} characters")
+    assert "…" not in shown, (
+        "the truncation uses a Unicode ellipsis -- the game builds a limited "
+        "glyph atlas per font from the strings it renders itself, and a "
+        "codepoint it has never drawn comes out as a hollow box")
+
+    # and it is still inside the canvas at every resolution the game ships a
+    # skin for, at the taller height
+    for w, h in ((1280, 720), (1920, 1080), (2560, 1440), (3840, 2160), (1720, 720)):
+        tallH = R.Height(lua.table_from({"focus": "zeb"}))
+        x, y = R.TopLeft(w, h, tallH)
+        assert x - R.W / 2 >= -w / 2 - 0.5 and y - tallH / 2 >= -h / 2 - 0.5, \
+            f"{w}x{h}: the grown roster hangs off the top left"
+        assert x + R.W / 2 <= w / 2 + 0.5 and y + tallH / 2 <= h / 2 + 0.5, \
+            f"{w}x{h}: the grown roster runs off the canvas"
+
+
 def main():
     check("rules: over budget still lets you trim", over_budget_still_lets_you_trim)
     check("rules: over budget never opens somebody else's plot",
@@ -5552,6 +6022,24 @@ def main():
     check("crowd: churn never lets the world grow", churn_mode_never_lets_the_world_grow)
     check("crowd: imports cannot flood one tick",
           the_crowd_cannot_flood_the_server_with_imports)
+
+    check("focus: the search finds a name by any part of it",
+          focus_search_finds_a_name_by_any_part_of_it)
+    check("focus: paging shows every name exactly once",
+          focus_paging_shows_every_name_exactly_once)
+    check("focus: the panel fits in every state", the_focus_panel_fits_in_every_state)
+    check("focus: nothing on the panel sits on top of anything else",
+          nothing_on_the_focus_panel_sits_on_top_of_anything_else)
+    check("focus: the panel has exactly one typed box",
+          the_focus_panel_has_exactly_one_typed_box)
+    check("focus: the marker is drawn from the world, not the game",
+          the_focus_marker_is_drawn_from_the_world_not_the_game)
+    check("focus: a focus never outlives the player it marks",
+          a_focus_never_outlives_the_player_it_marks)
+    check("focus: only the host can point the lobby at somebody",
+          only_the_host_can_point_the_lobby_at_somebody)
+    check("hud: the roster grows for the focus line",
+          the_roster_hud_grows_for_the_focus_line)
 
     check("hud: the roster fits in the top left corner",
           the_roster_hud_fits_in_the_top_left_corner)

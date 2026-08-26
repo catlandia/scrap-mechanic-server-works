@@ -11,16 +11,25 @@ event on 2026-08-22.
 
 ## Status
 
-**V23.** Working in game: lockdown, plot claiming and enforcement, the city
-builder, snapshots, bans and the allow list, the settings and city-layout panels,
-and tool bans that actually hold.
+**V56.** Seen working in game: lockdown, plot claiming and enforcement, the city
+builder (up to 384 plots without denting a 40 Hz tick), snapshots, bans and the
+allow list, the settings and city-layout panels, tool bans that hold, NOTlift
+importing a creation, the Cleaner, the crowd-bot load harness, and the focus
+marker.
 
-Still unconfirmed: the lift spawning creations, and the panels added most
-recently.
+Never run in a real event with real people. That is the honest headline, and
+[`docs/STATUS.md`](docs/STATUS.md) is the ledger that keeps it honest — it
+separates what has been *seen working*, what was seen broken and has a fix
+nobody has re-tested, and what has never executed at all. `check_all.py` passing
+is not evidence and that file says so.
 
+- [`docs/NEXT.md`](docs/NEXT.md) — the handover: what to do next and why
+- [`docs/STATUS.md`](docs/STATUS.md) — **the honest ledger.** Start here if you
+  want to know what actually works
 - [`docs/PLAN.md`](docs/PLAN.md) — the plan of record: goals, the measurement that
   reordered them, engine constraints, architecture, what is left
 - [`docs/CHANGELOG.md`](docs/CHANGELOG.md) — every version and the bug it fixed
+- [`docs/CROWD.md`](docs/CROWD.md) — testing with a lobby you do not have
 - [`REVIEW.md`](REVIEW.md) — verified versus assumed, for a sceptical reader
 
 ---
@@ -63,8 +72,11 @@ it over any documentation, including this file.
 | **Snapshots** | `/snapshot`, `/autosave N`, and `/restore <name> [plot]` — rebuild one plot without flattening the city. |
 | **Identity** | Permanent ids, alias tracking, ban list and allow list, all persisted outside the save so they survive between events. |
 | **Rules** | The event's posted rules as enforced numbers — joint budgets, bot and light caps, banned parts. Every number is a setting. |
+| **Focus** | Point at somebody with the Focus tool, or pick them off a searchable list, and **everybody** gets a marker over them — drawn through walls at any distance, with their name under it and an icon on the compass. For a host saying "now look at this build" to a lobby of twenty. Host only, with no setting that opens it up. |
+| **Events** | A clock with prep, build and buffer phases, each one snapshotting on the boundary and setting what may be built. |
+| **Load testing** | `/crowd N` stands N dressed, wandering, plot-claiming bots on the city and `/bench` walks the count up while recording frame rate and tick rate. 128 of them never moved the tick rate off 40 Hz. |
 
-Full command list: `/help` in game. Server rules: `/rules`.
+Full command list: `/sw` in game. Server rules: `/rules`.
 
 ---
 

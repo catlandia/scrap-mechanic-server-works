@@ -10,6 +10,172 @@ was most of them.
 
 ---
 
+## V56 -- the focus tool: point at one person, the whole lobby finds them
+
+Asked for as *"an admin tool. with the tool you can search for nicknames that
+are curently on the server. and when selected it will highlight them. so people
+can see the focus person. usefull for event stuff."*
+
+Three ways in, one piece of state, one marker.
+
+| | |
+|---|---|
+| **Focus** | a new tool. Aim at a player and click. Aim at nothing and click to open the list. Hold **F** to clear. |
+| **FOCUS PLAYER** | a new host entry on `/menu`: everyone online, one row each, a search box, a FOCUS button per name |
+| `/focus <name>` | and `/focus off`, `/unfocus`. Multi-word names work -- same rejoin the `/kick` parser already uses |
+
+A focused player gets a billboard over their head drawn **through walls at any
+distance**, their name in world text under it, an icon on the game's own
+compass, and a FOCUS line on the top-left roster panel. Everybody sees all four.
+One person at a time: focusing somebody replaces whoever was focused before, so
+there is no way to leave stale markers standing across the city.
+
+### The engine already had all of it, in five places
+
+Nothing here is invented. Every call is copied from a vanilla file that does the
+same job:
+
+| what | vanilla |
+|---|---|
+| a marker over a character | `sm.effect.createEffect( "EnemyMarker", character, nil, sm.effect.axis.all )` -- `BaseEnemyCharacter.lua:16` |
+| lifting it clear of the head | `setOffsetPosition( vec3( 0, 0, character:getHeight() ) )` -- same file, `:17` |
+| a compass icon that follows a person | `compassSetIconHost( name, character )` -- `:25`, `RaidManager.lua:981`, `WorldMarkerManager.lua:285` |
+| text in an effect, set at runtime | `setParameter( "TextContent", str )` on `RaidMarkerNear` -- `RaidManager.lua:1539` |
+| a raycast that hits a player | `result.type == "character"` then `getCharacter():getPlayer()` -- `Feeder.lua:218`, `RayProjectileManager.lua:29` |
+
+The one number that mattered was **`maxRenderDistance`**. Vanilla's `EnemyMarker`
+stops at **26 metres**, which is useless across an event city; `QuestMarker_Far`
+is **1000000**, with `behindFadeAlpha 0.6` so it draws through geometry. Those
+are the numbers our own effectset uses.
+
+### The first effectset this mod has ever shipped, and it has a fallback
+
+`mod/Effects/Database/EffectSets/serverworks.effectset` declares
+`ServerWorks - Focus` and `ServerWorks - FocusName`. 87 Workshop mods ship an
+effectset and the Empty Custom Game template includes the folder, so the
+mechanism is real -- but nothing here has run one, and **`createEffect` on a
+name the engine does not know throws rather than returning nil**. So the pcall
+IS the existence test, and the last name tried is `QuestMarker_Far`, which is
+base content. Worst case the marker is a vanilla quest diamond with no name
+under it. There is no case where this errors per frame.
+
+`dev/check_uuids.py` now resolves effects too. It had never looked at them,
+because **effects are named by string and not by uuid** -- the entire uuid scan
+was blind to them. It also resolves every texture our effectset names and the
+compass icon.
+
+Getting there meant teaching `strip_comments` the three ways the game's own JSON
+is not JSON: `//` lines, `/* */` blocks, and trailing commas. Five of the game's
+forty-odd effectsets use one of them, and refusing those files would have meant
+reporting an effect that plainly exists as missing.
+
+### The marker is drawn from World.lua, and that is not a style choice
+
+The compass turns a position into a bearing, so it needs a world, and a Game
+script has none. MEASURED, and it is the whole reason `PlotMarker` moved:
+
+    WARNING: compass marker unavailable: PlotMarker.lua:72:
+             Calling world dependent functions in a no world script!
+
+Going via the player script gave the same warning verbatim. A check now asserts
+that `Game.lua` touches neither `g_compassHud` nor `sm.effect.createEffect`.
+
+### The search box, and the crash it was written around
+
+The event clock crashed the game **twice** over typed input, and the second
+crash came after the redraw had already been deferred by a tick -- so deferring
+is not known to be enough. The surviving rules are one `EditBox` per panel and a
+text handler that touches no widget at all.
+
+So searching is a **server round trip**: Enter sends the query, the server sends
+the whole panel back filtered, and the tree is rebuilt from a network callback
+rather than from inside the text callback. One tick slower, and it cannot crash.
+Paging stays local through `cl_renderLater`, which `ConfirmGui` already does
+from its own click handler.
+
+`FocusGui.Filter` passes `plain = true` to `string.find`, because a Steam name
+may contain `%`, `[` or `-` and all of those are Lua pattern syntax -- without
+it, typing a bracket does not return no matches, it throws and takes the panel
+with it. A check searches four names full of punctuation.
+
+### Smaller things
+
+- **The roster HUD grows.** The focused name is a third row on the top-left
+  panel rather than a HUD of its own -- that panel already exists, already sits
+  where a host looks, and already redraws once a second. `RosterHud.Height`
+  feeds the position arithmetic, because a root widget's x,y is its CENTRE and a
+  panel that grows without saying so is placed as if it were still short.
+- **A marker never outlives its target.** There is no player-left callback on
+  this class, so the focus is validated on the same once-a-second beat as the
+  roster. A client that joins mid-focus is told two seconds later -- during the
+  join its world script does not exist yet, so a push then would land nowhere.
+- **Host only, with no switch at all.** Five gates -- the tool's client half,
+  its server half, the Game bridge it talks through, the panel action and the
+  chat command -- and every one is `sm.player.getHostPlayer()` with nothing in
+  front of it. `HOST_ONLY.focus` is the literal `true` rather than a settings
+  key, so the tool is also pulled out of a guest's hands by the guard.
+
+  Deliberately **stricter than the other three host tools**. `hostcleaner`,
+  `hostlift` and `hostnotlift` all let a host delegate a tool that changes the
+  WORLD, where that tool's own server-side rules still apply. A `hostfocus`
+  would have been worse than useless here: it could only ever have opened the
+  TOOL, because the panel and `/focus` are gated outright -- so a guest would
+  have got a marker they could place one way and not the other. The check turns
+  every boolean setting off and asserts focus is the only entry left in the
+  guard. `focus` still removes the tool from everybody, host included, and
+  `focusname` turns off the in-world text if the glyph atlas mangles a name.
+- **Crowd bots are not in the list and the panel says so.** They are units, not
+  players; `getAllPlayers` does not return one and there is no `Player` to find
+  a character through.
+
+### A panel check that verifies coverage cannot verify KIND
+
+The focus panel shipped its first draft 620 tall, and every existing check
+passed: `panel_fits` said every widget was inside the panel, `no_button_is_buried`
+said no two buttons collided. The status line was drawn **on top of the page
+counter** anyway -- the footer rule sat at `H-78` while the pager row ran to
+562. Everything was inside the panel; the wrong things were in the same place.
+
+Same shape as the road-seam bug written up in CLAUDE.md -- the partition was
+intact, `dev/test_layout.py` checked overlap, gaps and fractional blocks and all
+of them passed, and a one-block strip of the wrong MATERIAL still ran the height
+of the city through every road. A suite that verifies coverage does not verify
+kind. The panel is 660 tall now and a check walks every pair of text and button widgets across five
+states. Reverting the height fails it by name.
+
+Two things it found on the way, both left alone as out of scope: `SettingsGui`
+draws its `Hint` text box from x 256 to 916 with the BACK button at 834, and the
+same on the paged variant with PREV and NEXT. Nothing visible today, because the
+hints are short and left aligned -- but a longer hint would run under a button.
+
+### CONFIRMED IN GAME, same day: *"thanks it works!"*
+
+A screenshot of the marker over the host's own head, their name under it, and
+the compass icon with a `1m` readout beside it. Three things at once, and the
+middle one settles the risk this entry opened with.
+
+**The name is the proof the effectset loaded**, and the reasoning is worth more
+than the result. `Focus.bind` only attempts the name tag when the marker
+resolved to `MARKER_EFFECTS[1]` -- our own effect. The vanilla fallback
+`QuestMarker_Far` has no `text` element and never gets one. So a visible name is
+not merely *consistent with* our effectset loading; it is **unreachable unless
+it did.** A fallback chain whose fallback is visibly poorer than the real thing
+is a free experiment: the screenshot says which one fired, with no logging and
+no second session.
+
+It also settles the in-world font question outright. `SM_Header` drew
+`CyberSlime2077` -- mixed case and digits, a string the game has certainly never
+rendered itself -- clean. **The font tiers apply to 3D text as well as GUI
+text**, which was assumed and is now measured.
+
+Still unrun, and [`STATUS.md`](STATUS.md) has the full list: **anybody but the
+host seeing it** (one machine, no guest -- and this is the one feature whose
+entire purpose is what other people see), the marker through a wall or at range
+(the compass read `1m`), the whole panel, clearing, and two of the three doors
+in.
+
+---
+
 ## V55 -- a lobby of bots, and the harness that became the load
 
 The question was *"we need to start testing the mod optimitsation for players.

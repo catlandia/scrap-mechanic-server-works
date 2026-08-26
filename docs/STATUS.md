@@ -59,6 +59,9 @@ The owner has watched these happen. Each line names how it was confirmed.
 | The city builds, and it is walkable | screenshots, V26 onward |
 | Protection flags are genuinely being applied to bodies | proved backwards by V46: the world went `buildable=false, erasable=true`, which is one profile out of six. Wrong profile, but really applied |
 | Fonts render without hollow boxes | V29, after three were found glyph-limited |
+| A mod-shipped **effectset** loads and its effects can be created | V56 — the focused player's name is drawn, and only our own effect has a text element |
+| **In-world** text honours the same font tiers as GUI text | V56 — `SM_Header` drew `CyberSlime2077` clean |
+| An effect and a compass icon can be **hosted on another player's character** | V56 screenshot — marker over the head, compass icon with a distance readout |
 | The game log is quiet in a Custom Game session | no `g_unitManager` storm since V1 |
 
 ### Four things the snapshot files on disk prove, that nobody had noticed
@@ -98,6 +101,49 @@ yet a backup** — it is the single most important untested thing left.
 ---
 
 ## B. Seen BROKEN in game — a fix shipped, not re-tested
+
+### Seen working in game, 2026-08-26 — the focus marker, first try
+
+*"thanks it works!"*, with a screenshot. Three separate things confirmed at once,
+and one of them answers a question this file had flagged as the highest risk in
+the release.
+
+| what the screenshot shows | what it proves |
+|---|---|
+| an orange diamond floating over the player's head | `sm.effect.createEffect( name, character, nil, sm.effect.axis.all )` works on a **player's** character, driven from `World.lua`'s client, with `setOffsetPosition` lifting it clear of the head |
+| **`CyberSlime2077` in world text under it** | **the mod-shipped effectset LOADED**, and `setParameter( "TextContent", … )` on a parameter *we* declared works |
+| the name is legible, mixed case and digits | **the glyph atlas did not mangle it.** `SM_Header` is tier 1 and in-world text really does honour that |
+| a compass icon with a `1m` distance readout | `compassSetIconHost( name, character )` binds an icon to a character from a Custom Game |
+
+**The name is the load-bearing detail, and it is worth spelling out why.**
+`Focus.bind` only attempts the name tag when the marker resolved to
+`MARKER_EFFECTS[1]` — our own `ServerWorks - Focus`. The vanilla fallback,
+`QuestMarker_Far`, has no `text` element and never gets one. So a visible name
+is not merely *consistent with* our effectset having loaded; it is only
+reachable if it did. **A Custom Game can ship an effectset, and this one does.**
+
+That retires the biggest unknown in V56 in a single screenshot, and it retires
+it the strong way — by a consequence that could not have happened otherwise,
+rather than by "it looked right".
+
+**What this does NOT prove, and it is the same gap as everything else here:**
+
+- **that anybody else sees it.** One machine, no guest. The push is
+  `sendToClients` from the world, so every client should get it, but "should" is
+  what this section exists to distinguish from "does". This is the first feature
+  in the mod whose entire purpose is what *other* people see, so the gap matters
+  more here than usual.
+- **that it draws through walls.** Nothing occluded the marker in that shot.
+  `behindFadeAlpha 0.6` and `InWorldIconBehindDepthOffset` are copied from
+  `QuestMarker_Far`, which does it in vanilla.
+- **that it holds at range.** The compass read `1m`. `maxRenderDistance` is
+  1000000 and `distanceScale` keeps it a constant size on screen; neither has
+  been seen past a few metres.
+- **which door was used.** The tool, the panel and `/focus` all end at
+  `Game.sv_setFocus`, so one of the three worked and the other two are untested.
+  The search box, the pager and CLEAR are all still unrun.
+- **that clearing works.** Hold F, the CLEAR button and `/unfocus` all go through
+  `sv_setFocus( nil )`, which has not been seen.
 
 ### Seen working in game, 2026-08-25
 
@@ -265,6 +311,48 @@ do nothing until asked for, and their faults are caught in a `pcall` separate
 from the protection patrol's -- deliberately, so a test harness can never switch
 off protection, and a protection fault can never leave a crowd nothing can
 clear. `/bench` additionally refuses to start while an event clock is running.
+
+### New in V56 — the marker is confirmed, the rest of it is not
+
+The focus feature's *highlight* half was seen working the day it shipped — see
+"Seen working in game, 2026-08-26" above, which is where the evidence and its
+limits are written out. What is left on this list is everything that screenshot
+did not touch.
+
+- **Anybody but the host seeing the marker.** One machine, no guest. This is the
+  first feature in the mod whose whole purpose is what *other people* see, so
+  this is not a formality: `World.sv_e_swFocusPush` uses `sendToClients`, and a
+  message that reaches one client is not proof it reaches two.
+- **The marker through a wall, or at range.** The compass read `1m`.
+  `behindFadeAlpha` and `maxRenderDistance 1000000` are `QuestMarker_Far`'s own
+  numbers, which vanilla uses across a map, but neither has been seen here.
+- **The panel.** `FOCUS PLAYER` on `/menu`: the list, the search box, the pager,
+  the FOCUS button per row, CLEAR, BACK. None of it has been clicked. It reuses
+  the plumbing every other panel proved in V30, and the search deliberately does
+  a **server round trip** rather than redrawing from inside the text callback --
+  the shape that crashed the game twice on the event clock.
+- **Clearing.** Hold F, the CLEAR button and `/unfocus` all end at
+  `sv_setFocus( nil )`. Unrun. If a marker ever sticks, that is the function.
+- **Two of the three doors.** The tool, the panel and `/focus` all end at
+  `Game.sv_setFocus`, so exactly one of them is known to work and it is not
+  recorded which.
+- **`sm.isHost` inside a TOOL script.** Read by `FocusTool.looksLikeHost` for the
+  guest-side crosshair hint only. Vanilla reads it in 81 places and never from a
+  tool, and a tool's environment is demonstrably not a Game script's -- a
+  character script's callbacks have no `setmetatable` at all. It fails **open**
+  on purpose: the server refuses regardless, so being wrong costs a guest one
+  wasted click rather than a host a dead tool.
+- **A focused player leaving, and a client joining mid-focus.**
+  `sv_checkFocusAlive` runs once a second beside the roster push; the join
+  re-push is deferred two seconds because the joining client's world script does
+  not exist yet. Neither has been observed.
+- **The roster HUD's third row.** The `FOCUS` line in the top-left corner grows
+  the panel by 30 units. Never seen with a name in it.
+
+**Not on the event path.** The focus tool creates nothing, deletes nothing and
+changes no body flag -- it is the only host tool in the mod that cannot damage a
+world. Every marker call is inside a `pcall` that faults once and then stops,
+never per frame.
 
 ### Specific API calls that are still guesses
 

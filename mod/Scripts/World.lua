@@ -6,6 +6,7 @@ dofile( "$CONTENT_DATA/Scripts/Plots.lua" )
 dofile( "$CONTENT_DATA/Scripts/Rules.lua" )
 dofile( "$CONTENT_DATA/Scripts/Snapshots.lua" )
 dofile( "$CONTENT_DATA/Scripts/PlotMarker.lua" )
+dofile( "$CONTENT_DATA/Scripts/Focus.lua" )
 dofile( "$CONTENT_DATA/Scripts/Crowd.lua" )
 dofile( "$CONTENT_DATA/Scripts/Bench.lua" )
 
@@ -307,6 +308,39 @@ function World.client_onFixedUpdate( self )
 	end
 	CablebotManager.Cl_OnWorldFixedUpdate( self.world )
 	self.waterManager:cl_onFixedUpdate()
+	-- Returns on its first line unless somebody is focused. It is a tick job
+	-- rather than a one-shot because a target's character may not exist yet
+	-- when the server names them -- a player still loading has
+	-- player.character == nil -- and because a character is REPLACED on
+	-- respawn, which would otherwise leave the marker floating where they died.
+	Focus.Cl_Step()
+end
+
+--[[ the focus marker ]]
+
+-- Game owns WHO is focused; this owns getting that to every client's screen,
+-- because the compass and the effect both want a world and a Game script has
+-- none. See Focus.lua, and see the measured warning quoted in
+-- Game.sv_pushFocus.
+--
+-- sendToClients, not sendToClient: the whole point of the feature is that
+-- EVERYBODY can see the marker, not just the host who set it.
+function World.sv_e_swFocusPush( self, params )
+	local target = params and params.target
+	if target ~= nil and not sm.exists( target ) then target = nil end
+	self.network:sendToClients( "cl_n_swFocus", {
+		target = target,
+		name = params and params.name or nil,
+		showName = params and params.showName ~= false,
+	} )
+end
+
+function World.cl_n_swFocus( self, data )
+	if type( data ) ~= "table" or data.target == nil then
+		Focus.Cl_Clear()
+		return
+	end
+	Focus.Cl_Set( data.target, data.name, data.showName )
 end
 
 function World.sv_stepSnapshots( self )

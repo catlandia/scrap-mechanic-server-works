@@ -1,0 +1,51 @@
+{
+	"ServerWorks - Focus":
+	{
+		"effectList":
+		[
+			{
+				"type": "billboard",
+				"billboardTexture":
+				[
+					"$GAME_DATA/Gui/QuestMarker/icon_questmarker.png"
+				],
+				"billboardMaterial": "InWorldIconBehindDepthOffset",
+				"billboardSize": [ 56.0, 56.0 ],
+				"color": [ 1.0, 0.62, 0.24, 1.0 ],
+				"behindFadeAlpha": 0.6,
+				"customDepthOffset": -0.3,
+				"distanceScale": true,
+				"maxRenderDistance": 1000000.0,
+				"textureIndex": 0,
+				"useHostShapeDepthOffset": false
+			}
+		]
+	},
+
+	"ServerWorks - FocusName":
+	{
+		"effectList":
+		[
+			{
+				"type": "text",
+				"TextContent": "FOCUS",
+				"FontName": "SM_Header",
+				"FontSize": 26,
+				"Color": [ 1.0, 1.0, 1.0, 1.0 ],
+				"TextMaterial": "InWorldText",
+				"anchor": "CENTER",
+				"distanceScale": true,
+				"maxRenderDistance": 1000000.0,
+				"offset": [ 0.0, 0.0, 0.0 ],
+				"textAnchorOffset": [ 0.0, 0.0 ]
+			}
+		],
+		"parameterList":
+		{
+			"TextContent": "FOCUS",
+			"FontName": "SM_Header",
+			"TextMaterial": "InWorldText",
+			"Color": "ffffffff "
+		}
+	}
+}

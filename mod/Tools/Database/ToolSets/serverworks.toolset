@@ -92,6 +92,32 @@
 			"script": { "class": "CleanerTool", "file": "$CONTENT_DATA/Scripts/CleanerTool.lua" }
 		},
 
+		// THE FOCUS TOOL -- "search for nicknames that are curently on the
+		// server. and when selected it will highlight them. so people can see
+		// the focus person."
+		//
+		// Point at a player and click: everybody in the world gets a marker over
+		// them. Point at nothing and click: the searchable player list opens.
+		// Hold F and the focus is cleared.
+		//
+		// It is a tool rather than only a panel for one forced reason: F is
+		// `ForceBuild` and reaches Lua ONLY as the third argument of a tool's
+		// client_onEquippedUpdate. No Game, World or player script is handed key
+		// state at all.
+		//
+		// Another new uuid, so this is an ADDITION and resolves to our class --
+		// see the note at the top of this file for why an override would not.
+		{
+			"uuid": "f0c5a11e-7d3b-4c6a-9e21-5b8a4d0f9c33",
+			// Sledgehammer preview and rotation, the same pair the Cleaner uses,
+			// because this is a Sledgehammer subclass too and the rotation
+			// matrix belongs to the renderable. The MENU icon is what tells the
+			// three apart -- see mod/Gui/IconMap.xml.
+			"previewRenderable": "$GAME_DATA/Character/Char_Tools/char_sledgehammer_preview.rend",
+			"previewRotation": [ -1, 0, 0, 0, 0, 1, 0, 1, 0 ],
+			"script": { "class": "FocusTool", "file": "$CONTENT_DATA/Scripts/FocusTool.lua" }
+		},
+
 		// The stale-mod canary. A uuid nothing else declares, so if it is in the
 		// creative menu then mod content updates are reaching the game. It is
 		// also the standing proof that adding a tool works.

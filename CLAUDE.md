@@ -715,6 +715,122 @@ its keys -- it just carries `panel = "style"`, which makes its nav button open
 the picker instead of selecting a tab. A check asserts no key ending in `block`
 or `colour` is a stepper row under **any** group, OTHER included.
 
+### Marking a person so everybody can see them: it is all vanilla, in five calls
+
+Asked for as *"an admin tool. with the tool you can search for nicknames that
+are curently on the server. and when selected it will highlight them. so people
+can see the focus person."* Nothing about it had to be invented; the whole
+feature is five vanilla calls put together, and the useful part is knowing which
+five and which numbers.
+
+**It is host only with no switch, and that is not the same tier as the other
+host tools.** `hostcleaner`, `hostlift` and `hostnotlift` each let a host hand
+out a tool that changes the WORLD, where the server-side rules on that tool
+still apply. Focus changes what is drawn on everybody else's SCREEN, so there is
+no half of it to delegate — `HOST_ONLY.focus` is the literal `true` rather than
+a settings key, and the tool, its server half, the Game bridge, the panel and
+`/focus` all test `sm.player.getHostPlayer()` with nothing in front of it. A
+check turns every boolean setting off and asserts the focus tool is the ONE
+entry left in the host-only guard.
+
+| what | where |
+|---|---|
+| a marker over a character | `sm.effect.createEffect( "EnemyMarker", character, nil, sm.effect.axis.all )` — `Survival/.../characters/BaseEnemyCharacter.lua:16` |
+| lifted clear of the head | `effect:setOffsetPosition( sm.vec3.new( 0, 0, character:getHeight() ) )` — same file, `:17` |
+| an icon that FOLLOWS a person | `g_compassHud:compassSetIconHost( name, character )` — `:25`, `RaidManager.lua:981`, `WorldMarkerManager.lua:285` |
+| text inside an effect, set at runtime | `effect:setParameter( "TextContent", str )` on `RaidMarkerNear` — `RaidManager.lua:1539` |
+| a raycast that hits a player | `result.type == "character"` → `result:getCharacter()` → `character:isPlayer()` → `:getPlayer()` — `Feeder.lua:218`, `RayProjectileManager.lua:29` |
+
+`WorldMarkerManager.lua` is the file to read before building anything of this
+kind. It is a complete reference implementation — near/far billboard pairs,
+`setHost`, `setWorldAny()` for a hostless effect, `setHostAxisIgnore`, compass
+icons — and it is a **Survival** manager, so `g_worldMarkerManager` does **not**
+exist in a `CreativeGame` subclass. Copy the calls, not the object.
+
+**`maxRenderDistance` is the number that decides whether a marker is any use.**
+Vanilla's billboards are in `Survival/Effects/Database/EffectSets/billboard.effectset`
+and they are wildly different:
+
+| effect | max distance | notes |
+|---|---|---|
+| `EnemyMarker` | **26** | useless across a city |
+| `QuestMarker` / `Waypoint` / `LostItem` | 50 | the near half of a near/far pair |
+| `Beacon` | 80 | 24 selectable icons via `textureIndex` |
+| `RaidMarkerNear` | 100 | the one with a runtime `text` element |
+| `RaidMarkerFar` | 600 | |
+| `QuestMarker_Far` | **1000000** | `behindFadeAlpha 0.6`, `InWorldIconBehindDepthOffset` — draws through walls at any range |
+
+`QuestMarker_Far` also carries `minRenderDistance: 50` and `nearFade`, because
+vanilla pairs it with `QuestMarker`. Our own effectset copies its numbers
+without the near cutoff, so one effect covers every distance.
+
+`behindFadeAlpha` plus a `...Behind` billboard material is what "visible through
+walls" actually is. It is a property of the effectset, not of anything Lua does.
+
+### A mod CAN ship an effectset, and an unknown effect name THROWS
+
+`mod/Effects/Database/effectsets.effectdb` pointing at
+`EffectSets/*.effectset`, exactly like the Custom Game template
+(`Data/ExampleMods/Templates/Empty Custom Game/Effects/`). Nothing in
+`config.json` or `description.json` refers to it; it is found by convention.
+87 Workshop mods ship one and several of them are Custom Games.
+
+**MEASURED, 2026-08-26**, and the way it was measured is the part worth keeping.
+A screenshot showed the focused player's marker *with their name under it* —
+and `Focus.bind` only attempts the name tag when the marker resolved to
+`MARKER_EFFECTS[1]`, our own `ServerWorks - Focus`. The vanilla fallback
+`QuestMarker_Far` has no `text` element and never gets one. So the name is not
+merely consistent with our effectset having loaded; **it is unreachable unless
+it did.**
+
+That is the useful shape: a fallback chain gives you a free experiment. Make the
+fallback *visibly poorer* than the real thing and the screenshot tells you which
+one fired, with no logging and no second session. The same trick would settle
+any "did our content load" question.
+
+Two things follow, and the second is the important one — and both were written
+before the measurement above, which is why the fallback existed to prove
+anything with:
+
+- **Effects are named by STRING, not by uuid.** `sm.effect.createEffect` takes
+  `"QuestMarker_Far"`. So the entire uuid scan in `dev/check_uuids.py` was blind
+  to them, exactly the way it was blind to scriptable objects before the
+  `baseGameContent` disaster. It resolves effect names now, plus every texture
+  an effectset of ours names, plus the compass icon.
+- **`createEffect` on a name the engine does not know throws.** It does not
+  return nil. So there is no "does this effect exist" binding, the `pcall` IS
+  the existence test, and anything depending on a mod-shipped effect must fall
+  back to base content. `Focus.MARKER_EFFECTS` is `{ ours, "QuestMarker_Far" }`
+  and a check asserts the last entry is base content.
+
+**The game's own JSON is not JSON**, which is what made checking this possible
+at all. Five of the forty-odd vanilla effectsets use `//` line comments
+(`claygun.effectset:176`), `/* */` blocks (`crystal.effectset:2`) or trailing
+commas (`tools.effectset:500`). The engine's parser tolerates all three — the
+same leniency `Data/Tools/ToolSets/tools.json` relies on — so
+`check_uuids.strip_comments` does too. Strip blocks first: one of them contains
+a trailing comma.
+
+### In-world text draws from the same limited glyph atlas as GUI text
+
+`type: "text"` inside an effect takes `FontName`, and the font rules in the
+section above apply unchanged — the game builds a glyph atlas per font from the
+strings it renders itself, and a codepoint it has never drawn comes out as a
+hollow box. `RaidMarkerNear` gets away with `SM_TechNumbers` because it only
+ever writes two digits.
+
+**MEASURED, 2026-08-26: a tier 1 font is enough, and the tiers really do apply
+to in-world text.** `SM_Header` drew `CyberSlime2077` — mixed case and digits,
+a string the game has certainly never rendered itself — with no hollow boxes.
+So the atlas for a font with no `<Codes>` element is genuinely complete, and
+that is now established for the 3D text path as well as the GUI one.
+
+`/set focusname off` stays, because it costs nothing and a name is the one part
+of the marker somebody might not want on screen.
+
+The same trap catches a Unicode ellipsis used to truncate a long name. Three
+ASCII dots always draw.
+
 ### The compass is available and is per-player
 
 `CreativeGame.client_onCreate` calls `sm.gui.createCompassHudGui()` and stores it
@@ -1619,6 +1735,9 @@ credit it with fixing the thing that actually degraded.
     mod/Scripts/RosterHud.lua   top-left: who is online, and how many residents
     mod/Scripts/StyleGui.lua    what the city is made of: block list + paint palette
     mod/Scripts/MyPlotGui.lua   the panel players use: claim, find, team, leave
+    mod/Scripts/FocusGui.lua    who the lobby should be looking at: search + list
+    mod/Scripts/Focus.lua       the marker itself, on every client. Driven from
+                                World.lua -- the compass needs a world
     mod/Scripts/PlotMarker.lua  "find my plot", on the game's own compass HUD
                                 driven from Player.lua -- compassSetIconWorldPosition
                                 is world-dependent and Game.lua has no world
@@ -1634,8 +1753,11 @@ credit it with fixing the thing that actually degraded.
 
     mod/Scripts/GuiProbe.lua    /guitest -- the button experiment, client only
     mod/Scripts/CleanerTool.lua the only thing that can delete a carryable prop
+    mod/Scripts/FocusTool.lua   Focus -- point at a player, everybody sees them
     mod/Scripts/NotLift.lua     NOTlift -- imports a saved creation. Host only
-    mod/Gui/IconMap.xml/.png    custom menu icons (NOTlift, Cleaner)
+    mod/Gui/IconMap.xml/.png    custom menu icons (NOTlift, Cleaner, Focus)
+    mod/Effects/Database/       the focus marker. The first effectset this mod
+                                has shipped -- see the effectset section above
 
     dev/check_all.py            all four checks below; --sync installs afterwards
     dev/check_lua.py            compiles every mod script through a real Lua parser
@@ -1648,15 +1770,20 @@ credit it with fixing the thing that actually degraded.
     dev/bench_report.py         the table /bench wrote, out of Bench.json
     dev/dump_api.py             per-module Lua bindings out of the executable
 
-### Three tools, and why there are not more
+### Four tools, and why there are not more
 
-`nugdupS` (the stale-mod canary), `NOTlift` (imports a creation) and the
-`Cleaner` (deletes anything, including lifts and carryable props). Both real
-tools carry a custom icon, because both would otherwise be indistinguishable
-from something else in the menu -- NOTlift draws the lift's preview renderable
-and the Cleaner IS a sledgehammer subclass. The Cleaner is also tinted red in the
-hand (`setTpColor`/`setFpColor`), since a held model cannot be crossed out
-without new 3D content.
+`nugdupS` (the stale-mod canary), `NOTlift` (imports a creation), the `Cleaner`
+(deletes anything, including lifts and carryable props) and `Focus` (marks one
+player for the whole lobby). All three real tools carry a custom icon, because
+each would otherwise be indistinguishable from something else in the menu --
+NOTlift draws the lift's preview renderable, and the Cleaner and Focus are both
+sledgehammer subclasses. They are tinted in the hand as well
+(`setTpColor`/`setFpColor`, red and amber), since a held model cannot be crossed
+out without new 3D content.
+
+Focus is a tool for one forced reason and one convenient one: **F is the only
+key Lua can see, and only from a tool**, and a crosshair raycast wants
+`sm.localPlayer`. Everything it can do is also on a panel and on `/focus`.
 
 **Two lifts were added and both have been removed.** `5cc12f03`, the creative
 lift, was added because `baseGameContent: "Survival"` never loads the creative
@@ -1671,8 +1798,8 @@ is host-gated by `hostlift`.
 
 Commands, all host-only: `/lockdown` `/unlock` `/protection` `/buildtime` `/autosave`
 `/snapshot` `/snapshots` `/restore` `/players` `/ban` `/unban` `/banlist` `/kick`
-`/citystyle` `/nolift` `/crowd` `/bench`. `/budget` and `/players` are open to
-everyone.
+`/citystyle` `/nolift` `/crowd` `/bench` `/focus` `/unfocus`. `/budget` and
+`/players` are open to everyone.
 
 Diagnostics, kept because they settle questions in one command rather than
 an argument: `/guitest` (json GUI buttons), `/bptest` and `/bptest2` (can we read a

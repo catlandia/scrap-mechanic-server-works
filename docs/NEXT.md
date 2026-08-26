@@ -13,7 +13,7 @@ Companions:
 [`BUTTONS.md`](BUTTONS.md) everything a json GUI needs ·
 [`CHANGELOG.md`](CHANGELOG.md) what every version fixed
 
-Current version: **V55**. All 139 checks pass. `python dev/check_all.py --sync`
+Current version: **V56**. All 148 checks pass. `python dev/check_all.py --sync`
 before playing, and **restart Scrap Mechanic** — scripts are read at world load.
 
 ---
@@ -85,12 +85,31 @@ was never necessary.
 
 ---
 
+## The focus marker, and the one thing it now needs
+
+V56 added it and it was **confirmed working the same day** — marker, name and
+compass icon, all three, in one screenshot. See
+[`STATUS.md`](STATUS.md) for exactly what that does and does not prove.
+
+What it needs is the thing nothing else in this project needs quite so badly:
+**one other person in the world.** Every other feature can be judged from the
+host's own screen. This one exists entirely so that *other people* can see who
+to look at, and `sendToClients` reaching one client is not evidence it reaches
+two. It is a thirty-second test the moment anybody joins — focus them, ask if
+they see a marker over their own head, ask if they see one over yours.
+
+That is the same guest this project already needs for the per-client network
+budget (see [`CROWD.md`](CROWD.md)). One visit settles both.
+
+---
+
 ## Everything else that is untested
 
 [`STATUS.md`](STATUS.md) is the ledger and it is the file to trust. In brief,
 never run in a real event: the freeze, the event clock end-to-end, `/restore`,
 the plot rules under contention, the grief alarm now that its false positive is
-fixed, and every host panel except the ones the button saga forced through.
+fixed, the focus panel and its search, and every host panel except the ones the
+button saga forced through.
 
 ---
 
