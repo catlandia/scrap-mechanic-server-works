@@ -1340,6 +1340,43 @@ agrees with the one real event on record, where client frame rate slid while the
 player count stayed flat. What caused it — content, count, or what was being
 built — is **not** established. `dev/session_stats.py` now reports it per client.
 
+### The network budget did NOT need a guest -- it needed reading the logs
+
+REPORTED, flatly: *"I have ZERO"*, about the "invite one guest" plan that had
+been recommended half a dozen times in a row. Correct, and the recommendation
+was lazy: the owner's own `Logs/` already holds real per-client budget data from
+every session anybody ever joined.
+
+**MEASURED**, across all 150 logs, 13 sessions with genuine starvation:
+
+| log | skips | clients | worst | longest unbroken |
+|---|---|---|---|---|
+| `game-20260227-190435` | 1,685 | 1 | -186,023 | **271 ticks (6.8 s)** |
+| `game-20250607-155444` | 441 | 1 | -190,411 | 20 ticks |
+| `game-20260710-192923` | 371 | 3 | **-856,841** | 253 ticks (6.3 s) |
+
+The number that matters is the last column. **A client went 6.8 seconds without
+receiving a single state update** -- everyone else frozen on their screen, or
+them frozen on everyone else's. That is not a stutter, and it has already
+happened on this owner's machine, more than once.
+
+**It is not a join artefact.** The densest single burst does start one second
+after `State: Finding Route -> Connected`, which looked like the whole answer --
+but across every log only **7% of skips fall within 20 s of anybody joining**.
+93% happen in the middle of ordinary play. The tidy story was wrong again; the
+check is three lines of Python over the logs.
+
+**So the freeze earns its keep after all, and for the OTHER reason.** The entry
+above says freezing is anti-grief rather than performance, because simulation was
+never the bottleneck -- true, and it dismisses the wrong half. A static body has
+no velocity and nothing to replicate per tick, so freezing a finished build
+should take it out of the per-client send budget entirely. That is an inference
+from what the budget is for, not a measurement, and it is the one lever this mod
+already owns that plausibly touches the only failure mode left.
+
+Ranking, for an event: **content costs frame rate, movement costs budget.** Part
+limits address the first. Freezing finished batches addresses the second.
+
 ### Emulating players: `/crowd`, and what it can and cannot stand in for
 
 **The whole argument is in [`docs/CROWD.md`](docs/CROWD.md).** Read it before
