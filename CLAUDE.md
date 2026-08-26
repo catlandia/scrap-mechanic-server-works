@@ -1425,11 +1425,39 @@ Frame rate is flat to about 70 bots and then falls away -- 57.6, 51.9, 42.3 --
 which puts the knee somewhere around 70-80. That is the client, on one machine
 that is also hosting.
 
-**What this run does NOT separate.** Build mode grows the world as the crowd
-grows, so stage 12 has more bots AND more content than stage 4, and the fps
-curve is both together. To pull them apart, run the same bench in
-`/crowd mode churn`, where the world never grows: the difference between the two
-curves is what a CHARACTER costs against what its BUILD costs. Not yet done.
+**And the second run separates the two.** Same bench in `/crowd mode churn`,
+where a bot puts a block down and takes it away again so the world never grows:
+
+    bots   churn fps   build fps   content costs   shapes churn/build
+      70        57.7        57.6             0.1      712 / 1,276
+      90        55.0        42.3            12.7      721 / 1,638
+     110        49.7        38.1            11.6      738 / 2,069
+     128        42.5        31.9            10.6      742 / 2,580
+
+Churn holds the world at 195-266 bodies the whole way, so that column is the
+cost of the CHARACTERS alone. The gap to build mode is the cost of what they
+built. Subtracting at 128:
+
+| | cost | per unit |
+|---|---|---|
+| 128 characters, world held still | 17.5 fps | **0.137 fps each** |
+| the 1,838 shapes they built | 10.6 fps | **0.0058 fps each** |
+
+**One character costs about the same as 24 shapes.** That is the number to
+budget an event with, and it says people are cheap: twenty players' characters
+are about **2.7 fps**, which is nothing. Content is what accumulates without
+limit over an evening, and content is what to budget.
+
+It is also consistent with the one real event on record -- 19 players, 60 to 31
+fps over a hundred minutes. Characters account for ~2.6 of those 29 frames; the
+rest is roughly 4,500 shapes' worth of building, which is an ordinary evening.
+Consistent, not proven: that event was a different mod on somebody else's
+server.
+
+**The caveat that does not transfer.** A bot's blocks are separate BODIES, one
+shape each, because Lua cannot weld (see the note by `Crowd.STYLES`). A real
+player's build is one body with many shapes. The per-SHAPE figure is the one to
+carry across; the per-body one is not.
 
 And it is still 128 bots, not 128 players -- no client connections, so the
 per-client network budget stays at zero however far this goes. See

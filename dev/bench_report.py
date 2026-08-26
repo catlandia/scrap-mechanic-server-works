@@ -60,12 +60,68 @@ def installed_bench():
     return None
 
 
-def rows_from(path):
+def runs_from(path):
+    """Every run in the file, newest last, as (mode, rows).
+
+    /bench keeps the last few rather than overwriting, because the question a
+    bench answers is not "what is the frame rate" but "what is costing it" --
+    and that needs two runs to subtract.
+    """
     data = json.loads(io.open(path, encoding="utf-8-sig").read())
+    if isinstance(data, dict) and isinstance(data.get("runs"), list):
+        return [(r.get("mode", "?"), r.get("rows") or []) for r in data["runs"]]
     rows = data.get("rows") if isinstance(data, dict) else data
     if not isinstance(rows, list):
         sys.exit(f"{path}: no rows in this file")
-    return rows
+    return [("?", rows)]
+
+
+def compare(a, b):
+    """Two runs at the same bot counts: what the difference between them is.
+
+    build mode grows the world with the crowd; churn mode holds it still. So
+    churn is the cost of the CHARACTERS alone and the gap to build is the cost
+    of what they built.
+    """
+    by_bots = {}
+    for mode, rows in (a, b):
+        for r in rows:
+            by_bots.setdefault(r.get("bots", 0), {})[mode] = r
+    shared = sorted(k for k, v in by_bots.items() if len(v) == 2)
+    if len(shared) < 3:
+        return
+
+    ma, mb = a[0], b[0]
+    if ma == mb:
+        return
+    steady, grows = (ma, mb) if ma == "churn" else (mb, ma)
+
+    print()
+    print(f"  comparing: {steady} (world held still) against {grows} (world grows)")
+    print(f"  {'bots':>5} {steady+' fps':>12} {grows+' fps':>12} {'content':>9}"
+          f"   shapes {steady}/{grows}")
+    for k in shared:
+        s_row, g_row = by_bots[k][steady], by_bots[k][grows]
+        gap = s_row.get("fps", 0) - g_row.get("fps", 0)
+        print(f"  {k:>5} {s_row.get('fps', 0):>12.1f} {g_row.get('fps', 0):>12.1f}"
+              f" {gap:>9.1f}   {s_row.get('shapes', '?')}/{g_row.get('shapes', '?')}")
+
+    top = shared[-1]
+    s_row, g_row = by_bots[top][steady], by_bots[top][grows]
+    base = by_bots[shared[0]][steady].get("fps", 0)
+    chars = base - s_row.get("fps", 0)
+    content = s_row.get("fps", 0) - g_row.get("fps", 0)
+    dshapes = (g_row.get("shapes") or 0) - (s_row.get("shapes") or 0)
+    if top and chars > 0:
+        print()
+        print(f"  {top} characters, world held still : {chars:.1f} fps"
+              f"  ({chars / top:.4f} each)")
+        if dshapes > 0 and content > 0:
+            per = content / dshapes
+            print(f"  {dshapes} extra shapes they built    : {content:.1f} fps"
+                  f"  ({per:.5f} each)")
+            print(f"  so one CHARACTER costs about {(chars / top) / per:.0f} shapes"
+                  f" of frame time")
 
 
 def main():
@@ -77,12 +133,14 @@ def main():
         sys.exit("no Bench.json found -- run /bench start in game first, "
                  "and let it finish (results are written at the end).")
 
-    rows = rows_from(path)
-    if not rows:
+    runs = runs_from(path)
+    if not runs or not runs[-1][1]:
         sys.exit(f"{path}: the run recorded no rows")
+    mode, rows = runs[-1]
 
     print(f"{path}")
-    print(f"{len(rows)} stage(s)")
+    print(f"{len(rows)} stage(s), mode {mode}"
+          + (f"   ({len(runs)} runs kept)" if len(runs) > 1 else ""))
     print()
 
     base = rows[0]
@@ -130,6 +188,9 @@ def main():
         print("  per client, at the last size:")
         for c in clients:
             print(f"    {c.get('name', '?'):<20} {c.get('fps', 0):>6.1f} fps")
+
+    if len(runs) > 1:
+        compare(runs[-2], runs[-1])
 
     print()
     print("  the per-client NETWORK budget is not in this file -- bots hold no")

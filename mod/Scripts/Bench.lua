@@ -100,6 +100,10 @@ function Bench.sv_start( self, step, window, maxBots, reply )
 	self.maxBots = math.max( self.step, math.min( Crowd.MAX, math.floor( maxBots or Crowd.MAX ) ) )
 
 	self.rows = {}
+	-- Recorded with the run: two runs at the same bot counts and different modes
+	-- are the comparison, so a run that does not say which mode it was is half
+	-- a measurement.
+	self.mode = self.crowd.mode or "?"
 	self.target = 0                 -- the first stage is the BASELINE, no bots
 	self.lastSample = sm.game.getCurrentTick()
 	self.state = "settle"
@@ -341,9 +345,31 @@ function Bench.sv_lines( self )
 	return out
 end
 
+-- KEEP THE LAST FEW RUNS, because comparing two is the whole point.
+--
+-- The question a bench actually answers is not "what is the frame rate" but
+-- "what is costing it", and that needs two runs: one in build mode where the
+-- world grows with the crowd, one in churn mode where it does not. The
+-- difference between the curves is what a CHARACTER costs against what its
+-- BUILD costs.
+--
+-- The first version wrote one run and overwrote it, so the only way to hold two
+-- side by side was a screenshot of the chat. That is how the numbers in
+-- CLAUDE.md's cost model were actually compared, and it should not have been.
+Bench.KEEP = 6
+
 function Bench.sv_save( self )
-	local ok, err = pcall( sm.json.save, { rows = self.rows }, Bench.PATH )
-	if not ok then
+	local runs = {}
+	local ok, existing = pcall( sm.json.open, Bench.PATH )
+	if ok and type( existing ) == "table" and type( existing.runs ) == "table" then
+		runs = existing.runs
+	end
+
+	runs[#runs + 1] = { mode = self.mode or "?", rows = self.rows }
+	while #runs > Bench.KEEP do table.remove( runs, 1 ) end
+
+	local wrote, err = pcall( sm.json.save, { runs = runs }, Bench.PATH )
+	if not wrote then
 		sm.log.warning( "[ServerWorks] could not write bench results: " .. tostring( err ) )
 	end
 end
@@ -352,8 +378,11 @@ function Bench.sv_load( self )
 	local ok, exists = pcall( sm.json.fileExists, Bench.PATH )
 	if not ( ok and exists ) then return end
 	local read, data = pcall( sm.json.open, Bench.PATH )
-	if read and type( data ) == "table" and type( data.rows ) == "table" then
-		self.rows = data.rows
+	if not ( read and type( data ) == "table" ) then return end
+	if type( data.runs ) == "table" and #data.runs > 0 then
+		self.rows = data.runs[#data.runs].rows or {}
+	elseif type( data.rows ) == "table" then
+		self.rows = data.rows          -- a file from before runs were kept
 	end
 end
 
