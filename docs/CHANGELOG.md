@@ -10,6 +10,467 @@ was most of them.
 
 ---
 
+## V59 -- the first session driven from outside the game, and the two bugs it found
+
+V58 built the bridge. This is what happened the first time it carried a real
+session, and it is the best argument for the whole idea: **two bugs in an hour,
+in features that had been shipped for weeks and never once run.**
+
+### THE PLAZA-SHAPED HOLE
+
+REPORTED, with a screenshot, thirty seconds after the first restore ever run in
+this project: *"the load back in WORKS! the issue is the middle doesnt"*.
+
+The restore said **`195 creations, 0 failed`** and left a hole where the plaza
+had been. Those two facts are not a contradiction, and the reason is the whole
+lesson:
+
+- `sv_beginRestore` cleared the world and the driver stepped on the **very next
+  tick**, four creations at a time.
+- `shape:destroyShape()` does not take effect immediately -- the engine tears
+  shapes down at the *end* of a tick.
+- So the first four creations were handed to the importer while the old blocks
+  were still standing in that space. What lands in occupied space is anybody's
+  guess; here the answer was nothing.
+- **The plaza is entry one in every snapshot**, which is why it is the middle
+  that vanishes and nothing else.
+- `importFromString` reports success either way, so all 195 counted as fine.
+
+**The city builder already knew this.** `World.CITY_SETTLE_TICKS` exists for
+exactly this hazard and its comment describes the same symptom -- *"brown ground
+showing between a plot and the walkway beside it"*. The fix never travelled to
+the other place that clears and rebuilds, and nothing noticed, because restore
+had never been run.
+
+Restore now waits the same 20 ticks, and a check asserts the two waits stay in
+step so they cannot drift apart again. Written by putting the bug back: it
+reports *"6 creations were imported into space the old world still occupies"*.
+
+**Confirmed fixed, same session:** 195 bodies back, and the profile breakdown
+reads `locked 99, open_destructible 96` -- 99 deck creations *including the
+plaza*, where a hole would have shown 98. The import count was never the
+evidence; it said 195 while the plaza was missing.
+
+**A whole-city restore takes about a second.** That was never known, and it is
+what makes `/restore` usable as a panic button in the middle of an event.
+
+### /lockdown DID NOT BLOCK THE LIFT, AND NEVER GAVE ANYTHING BACK
+
+REPORTED: *"I still could use the lift, and the clay gun. look make sure that
+thing works. the lockdown"* and *"the lockdown shall block EVERYTHING"*.
+
+Two faults, both real, both found by reading the code the report pointed at:
+
+1. **The lift was never in the list.** `/lockdown` turned off exactly four
+   things -- clay gun, fire launcher, cornades, extinguisher. Not the lift, the
+   sledgehammer, the paint tool, the weld tool or NOTlift. A locked world could
+   still have whole creations carried around in it.
+2. **`/unlock` never restored them.** Lockdown worked by *writing the host's
+   settings false*, and unlock had no memory of what it had changed. **One
+   lockdown disabled four tools permanently** and the only way to notice was to
+   find them missing later. The owner's live `Settings.json` had `claygun
+   false` from a lockdown rather than from a choice.
+
+Both have the same root, so both go away the same way: **the blocked set is
+derived from the protection MODE instead of being written into the settings.**
+Nothing is remembered, so nothing has to be restored, and unlocking returns to
+whatever the host actually chose.
+
+A locked world now blocks everything except two, and both exceptions are
+load-bearing:
+
+- **the cleaner**, because it is the only thing in the game that can remove a
+  dropped craftbot and the world stays locked BETWEEN events -- take it away and
+  every piece of dropped litter is permanent. That rule has already cost three
+  separate fixes.
+- **focus**, because it changes nothing in the world; it draws on screens.
+
+And it now binds **the host too**. The host keeps every build tool normally --
+that bypass is so whoever runs the event can place and clear things -- and it
+stops applying the moment the world is shut, or `/lockdown` stops the lobby and
+not the person who called it.
+
+**What is still not explained.** The clay gun should already have been blocked
+for the host: the setting was false and the host guard list contained it. The
+code alone does not explain how it got through, so rather than guess, two things
+changed. `/tool` now prints the server's own view -- whether the world is shut,
+what is blocked for the host, what is blocked for a guest -- so the next test
+says which half is lying. And the guard **repairs itself**: the tool guard is
+client side (`sm.tool.forceTool` is client-only, so the server can see what you
+hold and cannot put it away), which makes the client's copy of the list
+load-bearing, and a client whose copy arrived empty enforces nothing while
+looking perfectly healthy. The server now re-sends the list the moment it
+catches a blocked tool in a hand -- one message in exactly the case where
+something is already wrong.
+
+Five checks, all written by putting the bug back, including *"the host keeps
+their tools in a lockdown"* and *"the cleaner is taken away, litter made
+permanent"*.
+
+### What else the first bridge session established
+
+- **The grief alarm fired, by itself, for the first time.** `/plotclear` tripped
+  it: *"\*\*\* 678 blocks have disappeared \*\*\*"* in chat, unprompted. An item
+  that had never been tested passed by accident. It also means **a host clearing
+  their own city trips their own alarm** -- the rebuild silences it, the clear
+  does not. Noted, not yet fixed.
+- **`PhysicsQuality` is 9** on this machine. The closest thing to a simulation
+  knob this project has found, and nobody had ever read the value.
+- **An empty claimed plot really is locked** while every unclaimed one stays
+  open -- `locked 100, open_destructible 95` with one plot claimed. V46's rule,
+  confirmed for the first time, from the profile breakdown rather than by hand.
+- **The log was silent all session.** Zero Lua errors, zero tracebacks; the only
+  warnings are vanilla's own texture and particle ones.
+
+### Two things that are not bugs but will bite at an event
+
+- **Nothing that is not resting on a plot has anything holding it up.** Clearing
+  the city removed the ground under a creation the owner had just imported and
+  it fell out of the world. `/restore` deletes the world first, so at an event
+  anybody's build survives a rollback only if it is in the snapshot.
+- **A creation on a lift is not in the snapshot.** Deliberate -- a blueprint
+  somebody happens to be holding must not be saved into the world and spawned
+  for real later -- but it means "snapshot everything" has an exception worth
+  knowing before relying on it.
+
+### Smaller findings, recorded and not fixed
+
+- **`/protection`'s "shapes in world" is stale after a mass deletion.** It read
+  676 with the world empty. Misleading for exactly the host who is checking
+  whether a clear worked.
+- **The `where the city landed` census runs a moment too early.** It counted 191
+  of 195 bodies; a forced sweep immediately afterwards saw all 195. The four
+  missing are a timing artefact of the line, not missing bodies -- but that line
+  is what the checklist tells you to trust.
+
+---
+
+## V58 -- the bridge: a running world can be driven from outside the game
+
+Asked for as *"we can make you dirrectly connect to the game?"*, after the owner
+put their finger on what is actually slow here:
+
+> *"this is wildly inefficent because we two have different thoughts on how
+> something is supposed to work."*
+
+Both halves of that are true and they need different answers. The round trip --
+write a change, load a world, try it, come back and describe it -- is what this
+version removes. The other half, two people meaning different things by the same
+sentence, is not a testing problem and nothing here fixes it; that is what the
+plain-English *IT WORKED IF* line on every checklist item is for.
+
+**In the game, once:** `/bridge on`. **From outside:**
+
+    python dev/bridge.py /protection
+    python dev/bridge.py "/set plots on" "/plot claim" "/why"
+    python dev/bridge.py --wait 30 /plotbuild
+    python dev/bridge.py --status
+
+A file appears in the mod's own folder, the mod runs it as the host, and
+everything said for the next second and a half comes back as a transcript.
+
+### The one thing that could have killed it, designed out rather than tested
+
+The engine keeps compiled copies of the data files it reads -- MEASURED,
+2026-08-23: every `.rco` in the mod's `Cache/` was stamped hours before the
+`.lua` it came from. If `sm.json.open` serves a cached copy, a channel built on
+rewriting one file would answer the first command forever and nothing would say
+why.
+
+**So no file is ever read twice.** The sequence number is in the *filename*:
+`Cmd-7.json`, then `Cmd-8.json`. A path that has never been read cannot be a
+stale read, which turns an unknown that needed an experiment into a property of
+the design. What is left is `fileExists` on a path that did not exist a moment
+ago; if that turns out to be cached too, the fix is one line and
+`Bridge.sv_poll` is written so that it is the only line.
+
+### The capture closes on a CLOCK, not on a call
+
+The part that would have made it look broken for half the mod. A world command
+does not answer while it runs: Game hands it to the world as an event, the world
+deals with it on its own tick, and the reply arrives through `sv_e_swReply` some
+time later. A capture that closed when the call returned would have caught every
+reply from `Game.lua` and almost none from `World.lua` -- which is `/plot`,
+`/why`, `/budget`, `/protection`, `/purge`, `/snapshot` and the entire city.
+
+So a batch runs, and then *listens* -- 1.5 seconds by default, up to 120 for
+something slow like building a city. Everything said in the window is the
+transcript.
+
+### Why it is safe, in four rules
+
+It is a remote control for a game server, so:
+
+- **Off unless switched on.** `bridge` is a setting, default false, and while it
+  is off the poll does not run at all. `allow_add_mods` is false in this mod
+  because the mod list is the trust boundary; this is the same argument pointed
+  at a file.
+- **Host only**, to switch on and to run. Every command goes through the same
+  dispatch a typed one does, *as the host player*, so the bridge can reach
+  nothing the host could not type and every existing host gate still applies.
+- **Its own `pcall`**, separate from everything else on the tick. A control
+  channel must never take the server down, and a fault elsewhere must never
+  leave a batch half-run -- the same separation `/crowd` and `/bench` have.
+- **Loud.** Every command is written to the log *before* it runs, so a session
+  driven from outside reads back exactly like one driven by hand. The setting
+  persists, so a world that comes up with the bridge open says so in the log at
+  create time. A door left open is fine; a door left open quietly is not.
+
+### Seven checks, five of them mutation-tested
+
+| the bug put back | the check that caught it |
+|---|---|
+| the bridge on by default | shut unless somebody opens it |
+| one fixed filename, so reads could go stale | never reads the same path twice |
+| a malformed file left on the same number | a file it cannot use does not wedge it |
+| world replies not reaching the capture | every reply funnel tells it |
+| the tick driven without a `pcall` | runs inside its own pcall |
+
+The third of those is a bug this found in itself: a file that exists but is not
+a command file used to leave the sequence number where it was, which would have
+polled the same bad file twice a second for the rest of the session -- and from
+outside that is indistinguishable from a bridge that is on, listening, and
+ignoring you.
+
+### What it does not reach, and will not
+
+- **A second player.** Everything runs as the host, and the host is authorised
+  everywhere on purpose. The eleven `needs a guest` items are untouched.
+- **A tool, a key or a button.** No `F`, no held tool, no GUI click.
+- **The screen.** Colours, layout, whether a marker looks right -- all still
+  need eyes.
+- **A bot as a stand-in for a person.** Bots can hold a plot open and can never
+  lock one (`Plots.lua`: they are deliberately kept out of the push-out list,
+  because pushing needs a real `Player`). And a bot's blocks go in through a
+  script import that ignores permission flags entirely, so a bot "trying to
+  build" on a locked plot succeeds regardless and proves nothing. The useful
+  pairing is the bot as hands, the flags and the log as eyes.
+
+---
+
+## V57 -- the checklist is in the game now, where the testing happens
+
+Asked for as *"you make an ingame check list. for devs. so I can test stuff. if
+something doesnt work I can exactly test it and then write result like did it
+work yes or no. because if I have to switch every time here. I waste my time if
+the feature is still broken on writing it again."*
+
+That cost is real and it is the reason `docs/STATUS.md` reads the way it does.
+Every red line in it has to be turned green by somebody standing in the world
+doing the thing -- and until now the only way to record the answer was to alt-tab
+out and type it. So the answers were mostly never recorded at all, and the
+ledger is written days later from memory.
+
+**`/check`, or DEV CHECKLIST on `/menu`.** Eighty-three items, grouped in the
+order to run them in, each with what to do, what counts as a pass, and the log
+line that settles it. Answer with one click. It writes
+`$CONTENT_DATA/Checklist.json` immediately, and `python dev/checklist_report.py`
+reads it back out on this side.
+
+| | |
+|---|---|
+| the list | eleven groups down the left, eight rows a page, PASS and FAIL on every row |
+| an item | the steps, the pass condition, the log line, a note box, and BLOCKED / SKIP / CLEAR |
+| **NEXT UNANSWERED** | walks the whole catalogue in order and stops when there is nothing left one person can answer |
+| **RUN IT** | fires that item's own command -- `/protection`, `/crowd 5`, `/set maxjoints 10` -- through the ordinary host-gated path |
+| `/check next` | the same walk from the chat box, when your hands are already there |
+| `/check summary` | the counts and every failure by name, to chat **and** to the log |
+
+### Nothing on the panel sends you to a log file
+
+REPORTED, while the first version of the list was being read:
+
+> *"so that there are only things I can directly test in games since I dont want
+> to go in logs to test something. since stuff like that you can basicaly do
+> your self."*
+
+Right, and it is not only a preference. Reading a log happens afterwards, from
+outside the game -- so an item that needs one cannot be answered by somebody
+standing in the world with the panel open, and it stalls the walk through the
+list.
+
+**`/why` is what made the rewrite possible**, and it was already there. Point at
+anything and it prints, to chat: the zone and its plot number, the protection
+mode, whether `buildopen` is on, whether the body is a ghost or on a lift, and
+all eight permission flags. That is every fact the log lines were being consulted
+for. So:
+
+| was | is now |
+|---|---|
+| *read the line the city prints* -- the most important item in the list | stand on a pad, point down, **`/why`** -> `zone: plot 34` |
+| *read the phase line, 96 open* | during build, `/why` on your own plot -> `buildable=true` |
+| *read the four opening lines* | `/protection` answers at all, which is the same proof `World.lua` loaded |
+| *read the gui canvas line* | open `/settings` and look at whether its bottom row is on screen |
+| *it announces and arms lockdown* | chat says `*** N blocks have disappeared ***` |
+
+Two items have no on-screen form at all, because the engine writes them to the
+log and nowhere else: **a quiet log** and **the per-client network budget**.
+Those carry `who = "log"`, are off the panel entirely, and are answered from this
+side with `python dev/checklist_report.py --set <id> pass`. One ledger, two
+halves, and the panel stays a list of things a person in the world can actually
+do. Two checks hold the line -- no panel item may mention a log, and no log item
+may appear on the panel.
+
+### What BLOCKED means, on the panel itself
+
+Asked outright, which means it was not obvious, which means it needed to be on
+the screen rather than in a document:
+
+    PASS worked   FAIL did not   BLOCKED could not try   SKIP not now
+
+**BLOCKED is not FAIL.** It means the answer is still owed -- nobody else was
+online, the city would not build, an earlier item failed and this one needed it.
+**SKIP** means it is not: you could have tried and chose not to. The distinction
+matters because the report chases blocked items and lets skipped ones lie.
+
+### Four things in the list described a mod that no longer exists
+
+REPORTED: *"some things are just olden. like not up to date like use clear city
+but we removed that. find all the outaded things and remove them. I want to have
+the list that is possible now."*
+
+All four had the same shape -- an instruction inherited from a DOCUMENT rather
+than read out of the code:
+
+| the list said | what is true |
+|---|---|
+| `/purge walkways` | removed on the owner's instruction, together with the SWEEP LITTER button that ran it. `/purge` takes look, carry, plot, here |
+| `/set maxparts 105` | **there is no `maxparts`, and there never was.** `Rules.lua` enforces `maxjoints`, `maxbots` and `maxlights` and nothing else -- there is no per-plot block budget at all |
+| all the limits are off | they are 10 bearings, 1 craftbot, 25 lights by default. What is off is `plots`, and nothing is enforced until that is on |
+| `/citystyle brutalist` | real, but the owner had already said they disliked it. `arctic` now |
+
+**The second one had been repeated in `docs/NEXT.md` as the headline
+recommendation of the whole project**: *"`/set maxparts 105` is now a defensible
+number rather than a taste call."* It was a defensible number for a setting that
+does not exist. `CLAUDE.md` was offering the removed SWEEP LITTER button in the
+same way. Both are corrected, and whether a per-plot BLOCK budget should exist
+at all is now an open decision rather than an assumed feature.
+
+### The check that stops it happening again
+
+`everything_the_checklist_tells_you_to_type_still_exists` reads the mod and
+asks whether each instruction is still possible:
+
+- every `/command` is one `bindChatCommand` actually binds
+- every `type /x y` step has a `y` the handler for `x` still accepts --
+  subcommands pulled out of `sv_plotCommand`, `sv_eventCommand`,
+  `sv_crowdCommand` and the `/purge` branch by reading their source
+- every `/set key` is a key in the settings schema, which is executed rather
+  than parsed
+- every ALL-CAPS phrase is a caption some panel really draws
+- every RUN button would type something real
+
+**None of the valid values are written down in the check.** A hardcoded list
+would go stale in exactly the way this exists to prevent, and it would go stale
+silently. Five mutations were used to build it -- the removed purge target, the
+never-existent setting, the removed button, an unknown city style and an unknown
+plot subcommand -- and it catches all five.
+
+It also caught its own first version reading a step boundary as an argument, and
+accusing `/citystyle` of not taking `look` -- the word that started the NEXT
+step. Steps are scanned one at a time now.
+
+### Written for the person holding the mouse, not for the person who wrote it
+
+REPORTED, on reading the first version:
+
+> *"can you make it like simpler to understand and use? I dont know exactly how
+> the code works and some things are just too complex for me."*
+
+Fair, and the first draft was indefensible: items said things like *"any sweep
+where a plot should be means V46's fix did not take"*, which names a version
+number, an internal word and a function, and tells the reader nothing they can
+do. All eighty-three were rewritten:
+
+| was | is |
+|---|---|
+| The plots land as PLOTS, not as filler | The game knows a plot is a plot |
+| 96 bodies come out 'plot'. If plots land as filler then sv_bodyZone is wrong | the reply says zone: plot and a number. If it says filler, STOP AND TELL ME -- the plots are in the wrong place |
+| over budget stops placing and nothing else -- the trim profile | You can still REMOVE things while over the limit |
+| PASS / FAIL / BLOCKED / SKIP | IT WORKED / IT DID NOT WORK / CANNOT TRY IT / SKIP IT |
+| WHAT TO DO -- IT PASSES WHEN | DO THIS -- IT WORKED IF |
+| BOOT, PROTECT, ADMIN, LOAD | START UP, LOCKING, BANS, FAKE CROWD |
+
+Every item now ends in something visible: a chat reply, a block that does or
+does not go down, a marker on screen. Where a failure has a known cause worth
+reporting, the item says *tell me* rather than naming the function.
+
+### And a font rule the panel is now held to
+
+The game builds a limited glyph set per font from the strings it renders itself,
+and a character outside it draws as a hollow box -- MEASURED, `SM_LabelMini`
+drew `HOST` as `(X)OST`. The fonts here have no declared limit and mixed case
+and digits are known good, but **punctuation has never been measured**, and the
+checklist is by far the most text this mod has ever drawn.
+
+So a check computes the characters the already-shipped panels draw and asserts
+the checklist stays inside them. It immediately found an apostrophe in four
+items and `%`, `*`, `;`, `?` and brackets elsewhere -- none of which any panel
+in this mod had ever asked a font for. The set is computed rather than written
+down, so it grows on its own the day another panel draws something new.
+
+### Why a result is written on the press and not at the end
+
+A test session ends when the game crashes or when somebody stops playing.
+Neither runs a shutdown hook, so anything held in memory is exactly the data
+that would be lost by the failure it was recording. Every press writes the file
+and writes a line to the log -- which means a FAIL and the traceback that caused
+it end up a few lines apart in `game-*.log`, where every other piece of evidence
+in this project already lives.
+
+### The results file is the one thing a new world must NOT clear
+
+Every other state file here describes a WORLD, and `sv_newWorldReset` exists
+because a fresh world inheriting the last one's claims is a real bug that was
+reported. The checklist is the opposite case: it records what the CODE did, and
+making a fresh world is the usual way to test something. Wiping it at world
+create would delete the session that was being recorded, every time. A check
+asserts `sv_newWorldReset` never touches it.
+
+Each result carries the build it was recorded against, and the panel shows that
+build in dim text when it is not the current one. A PASS from V56 is still a
+PASS; a result whose provenance is lost is worth less than no result.
+
+### The check that was passing for the wrong reason
+
+Each item may name the log line that settles it, and a check asserts the mod
+actually writes that line -- otherwise the instruction sends somebody looking for
+something that was never there.
+
+**The first version of that check searched every script in `mod/Scripts`,
+including `Checklist.lua` itself, and passed.** Four of the cited lines existed
+nowhere but in the catalogue quoting itself: `event prep`, `event build ->
+protection open`, `[ServerWorks] new world` and `[ServerWorks] ALARM`. The real
+literals are `[ServerWorks] event`, `[ServerWorks] NEW WORLD` and
+`[ServerWorks] GRIEF ALARM`. A check that reads its own answer back is not a
+check, and this is the second time this project has written that mistake.
+
+### Sixteen new checks, eight of them mutation-tested
+
+`dev/test_logic.py` is at **164**. The eight that were written by putting the bug
+back and watching them fail:
+
+| the bug put back | the check that caught it |
+|---|---|
+| `Checklist.BUILD` left at 55 | it knows which build it is |
+| an item citing a log line nobody writes | every log line it cites is one the mod writes |
+| a RUN button offering an unbound command | every command it offers to run exists |
+| NEXT walking a solo host into a guest item | it walks every item exactly once |
+| the note dropped when the answer is given | a note outlives the answer it was written for |
+| the panel grown past the canvas height | the panel fits for every item and every page |
+| a result kept only in memory | answering writes the file at once |
+| `sv_newWorldReset` clearing the results | a new world never clears it |
+
+### The hub menu is one entry taller
+
+Nine entries plus the HOST header do not fit at the old 58-pixel pitch -- the
+ninth lands on top of CLOSE. The pitch is 54 now and the panel is the same
+height, because the canvas is about 720 tall and a taller panel would put its
+own footer off screen. The layout check computes that rather than trusting the
+eye; it caught this exact panel overflowing when the EVENT CLOCK entry was added.
+
+---
+
 ## V56 -- the focus tool: point at one person, the whole lobby finds them
 
 Asked for as *"an admin tool. with the tool you can search for nicknames that

@@ -1,0 +1,16 @@
+# The first batch to run once /bridge on is typed in the game.
+#
+# It proves the three things that decide whether the channel works at all:
+#
+#   /players       a GAME command -- its reply is sent while the call runs
+#   /protection    a WORLD command -- its reply comes back an event later, which
+#                  is the case a naive capture would miss entirely
+#   /check summary the checklist, which proves the bridge can reach V57 as well
+#
+#   python dev/bridge.py --file dev/bridge_smoke.txt --wait 3
+#
+# If the transcript has lines from all three, the bridge works and the engine
+# does NOT serve a cached copy of a file written from outside.
+/players
+/protection
+/check summary

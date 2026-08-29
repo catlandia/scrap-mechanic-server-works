@@ -11,7 +11,7 @@ Read it before believing any other document in here.
 
 ## The one thing to understand about the checks
 
-`python dev/check_all.py` runs **110 checks** in ten seconds and they all pass.
+`python dev/check_all.py` runs **181 checks** in ten seconds and they all pass.
 That is worth having and it is not evidence the mod works.
 
 | what the checks DO touch | what they CANNOT touch |
@@ -100,7 +100,73 @@ yet a backup** — it is the single most important untested thing left.
 
 ---
 
+### Seen working in game, 2026-08-29 -- the first session driven from outside
+
+The first hour the bridge carried real commands. Everything here was observed
+through it, with the game's own replies as the evidence, and it is the largest
+single move from C to A this project has had.
+
+| what | the evidence |
+|---|---|
+| **the bridge itself** | game commands, world commands and the replies that arrive an event later all came back in the transcript |
+| **the city builds** | `96 plots, 0 failed`, twice, in two fresh worlds |
+| **snapshot capture** | `195 creations`, and the file on disk holds 195 entries |
+| `/snapshots` | listed it |
+| **RESTORE** | `195 of 195`, and afterwards `locked 99, open_destructible 96` -- 99 deck creations *including the plaza*. **Only after the fix**; see section B |
+| **the grief alarm** | fired by itself on `/plotclear`: `*** 678 blocks have disappeared ***` |
+| `/lockdown` | `195 bodies, 96 changed [locked 195]` -- every body on the locked profile |
+| `/unlock` | `locked 99, open_destructible 96`, which is exactly what the rules specify |
+| **an empty claimed plot is LOCKED** | with one plot claimed and the host standing elsewhere: `locked 100, open_destructible 95`. V46's rule, confirmed for the first time |
+| `/plot claim`, `/plot info` | claimed plot 66, read it back |
+| `/protection` | mode, counts, and **`PhysicsQuality: 9`** -- read for the first time in this project |
+| **a quiet log** | zero Lua errors and zero tracebacks across the whole session |
+
+Two of those deserve their own line because they were the two most important
+unknowns in the project:
+
+- **A whole-city restore takes about a second.** That is what makes `/restore`
+  usable as a panic button mid-event rather than a thing you would only try
+  afterwards.
+- **The tick rate never moved.** 120 ticks in 3 seconds of wall clock, read off
+  the log's own counters, while a city was being built and destroyed.
+
+**What the restore evidence is, precisely.** The import count is NOT the
+evidence -- it said `195 creations, 0 failed` on the run that left a hole. The
+BODY count afterwards is: 99 deck creations where a missing plaza would leave
+98. The plaza has not yet been confirmed by eye.
+
+
 ## B. Seen BROKEN in game — a fix shipped, not re-tested
+
+### Seen BROKEN and fixed, 2026-08-29 — restore lost the plaza
+
+The first restore ever run in this project reported `195 creations, 0 failed`
+and left a hole in the middle of the city. It cleared the world and imported on
+the very next tick, so the first four creations went into space the old shapes
+still occupied — and the plaza is entry one in every snapshot.
+
+Fixed by giving restore the same settle stage the city builder has had since the
+same bug bit there. **Re-tested the same session, and the body count says it
+worked**: 99 deck creations, where a missing plaza would leave 98. What has NOT
+happened is somebody looking at the middle of the city and saying so.
+
+### /lockdown, rebuilt and NOT re-tested
+
+REPORTED: *"I still could use the lift, and the clay gun."* Two faults were found
+and fixed — the lift was never in the blocked list, and `/unlock` never restored
+the four settings `/lockdown` wrote — but **none of the new behaviour has run in
+the game**, because it needs a world reload.
+
+**What to check first:** `/lockdown`, hold the clay gun and the lift, then
+`/tool`. It now prints whether the world is shut and what the server blocks for
+the host and for a guest, so a disagreement between the server's list and the
+client's is visible instead of guessed at.
+
+The clay gun getting through is still unexplained: the setting was already false
+and the host guard list already contained it. The guard now re-sends the list
+whenever the server catches a blocked tool in a hand, which repairs the one
+failure the code allows for — a client whose copy arrived empty, which enforces
+nothing while looking perfectly healthy.
 
 ### Seen working in game, 2026-08-26 — the focus marker, first try
 
@@ -353,6 +419,28 @@ did not touch.
 changes no body flag -- it is the only host tool in the mod that cannot damage a
 world. Every marker call is inside a `pcall` that faults once and then stops,
 never per frame.
+
+### New in V57–V59, and what of it has run
+
+**The checklist** (`/check`) — the panel itself is confirmed: 14 items were
+answered through it before the bridge existed, and the file it writes is read
+back by `dev/checklist_report.py`. Not run: the note box, RUN IT, NEXT, and the
+pager.
+
+**The bridge** (`/bridge on`) — confirmed, and it carried the session above.
+Two things about it are still unknown:
+
+- **A batch that runs longer than its listening window.** The window is a
+  clock, so a slow command answers into the next batch's transcript or nobody's.
+  `--wait` covers it; nothing enforces it.
+- **Two sessions of a world in one day.** The sequence number is persisted and
+  only ever moves forward, so this should be fine, and has not been watched.
+
+**The lockdown rebuild** — see section B. Written, checked, installed, unrun.
+
+**Save presets and a controlled bot** — asked for, not started.
+
+---
 
 ### Specific API calls that are still guesses
 

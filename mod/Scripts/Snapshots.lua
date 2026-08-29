@@ -20,6 +20,34 @@
 Snapshots = class( nil )
 
 Snapshots.CREATIONS_PER_TICK = 4
+
+-- WAIT AFTER CLEARING, BEFORE PUTTING ANYTHING BACK.
+--
+-- MEASURED, 2026-08-29, through the bridge: a restore of a 96-plot city
+-- reported "195 creations, 0 failed" and came back with a hole where the plaza
+-- had been. REPORTED, with a screenshot: "the load back in WORKS! the issue is
+-- the middle doesnt".
+--
+-- The middle is the plaza, and the plaza is the FIRST entry in the file. The
+-- restore cleared the world and then stepped on the very next tick, four
+-- creations at a time -- so the first four went to the importer while the old
+-- shapes were still standing in that space.
+--
+-- shape:destroyShape() does not take effect immediately; the engine tears
+-- shapes down at the end of a tick. What lands in occupied space is anybody's
+-- guess, and here the answer was nothing at all -- with no error, because
+-- importFromString reports success either way. That is why "0 failed" and a
+-- hole in the ground are not a contradiction.
+--
+-- THIS IS THE SAME BUG THE CITY BUILDER ALREADY FIXED, in another file:
+-- World.CITY_SETTLE_TICKS exists for exactly this, and its comment describes
+-- exactly this symptom ("brown ground showing between a plot and the walkway
+-- beside it"). The fix never travelled to the other place that clears and
+-- rebuilds, and nothing pointed that out because restore had never been run.
+--
+-- Same number, deliberately: whatever is right for one is right for the other,
+-- and dev/test_logic.py asserts they stay in step.
+Snapshots.SETTLE_TICKS = 20
 Snapshots.INDEX = "$CONTENT_DATA/Snapshots/index.json"
 Snapshots.AUTO_SLOTS = 6          -- rotating auto-snapshot names
 
@@ -287,6 +315,8 @@ function Snapshots.sv_beginRestore( self, name, world, opts )
 		entries = wanted,
 		cursor = 1,
 		failed = 0,
+		-- Nothing is imported until the tick this passes. See SETTLE_TICKS.
+		settleUntil = sm.game.getCurrentTick() + Snapshots.SETTLE_TICKS,
 	}
 	return true, string.format( "cleared, restoring %d creation(s)%s", #wanted,
 		opts.plot and string.format( " onto plot %d", opts.plot ) or "" )
@@ -332,6 +362,12 @@ function Snapshots.sv_onFixedUpdate( self )
 	end
 	if self.job.kind == "capture" then
 		return self:sv_stepCapture()
+	end
+	-- The world was cleared a moment ago and the engine has not finished tearing
+	-- those shapes down. Importing into space they still occupy loses whatever
+	-- goes in first, silently. See Snapshots.SETTLE_TICKS.
+	if self.job.settleUntil and sm.game.getCurrentTick() < self.job.settleUntil then
+		return nil
 	end
 	return self:sv_stepRestore()
 end

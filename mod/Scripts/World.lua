@@ -679,14 +679,20 @@ function World.sv_e_swCommand( self, params )
 			local ok, detail = g_swProtection:sv_setMode( mode )
 			if ok then
 				Settings.Sv_SetQuiet( "protection", mode )
-				-- A locked world means locked: hazards go off regardless of what the
-				-- settings panel says, and stay off until the world is reopened.
-				if mode ~= "open" then
-					for _, key in ipairs( { "claygun", "firelauncher", "cornades", "extinguisher" } ) do
-						Settings.Sv_SetQuiet( key, false )
-					end
-					sm.event.sendToGame( "sv_e_swToolsChanged", {} )
-				end
+				-- A LOCKED WORLD MEANS LOCKED, and the blocked set is derived from
+				-- the mode now rather than written into the settings.
+				--
+				-- This used to set claygun, firelauncher, cornades and extinguisher
+				-- false and leave them that way: /unlock never put them back, so one
+				-- lockdown disabled four tools for good. It also never covered the
+				-- LIFT, which is why a locked world could still have creations moved
+				-- around in it. REPORTED: "I still could use the lift, and the clay
+				-- gun."
+				--
+				-- Announced on EVERY change, not just the ones that shut the world.
+				-- The old guard skipped mode == "open", so unlocking left every
+				-- client still holding the locked list.
+				sm.event.sendToGame( "sv_e_swToolsChanged", {} )
 				-- The other half. Game owns buildopen and the event clock, so it does
 				-- this bit; see Game.sv_e_swOpenBuilding.
 				if mode == "open" then

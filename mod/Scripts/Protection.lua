@@ -266,8 +266,10 @@ end
 
 Protection.MODES = { "open", "locked", "display", "sweep", "polish" }
 
+-- Settings owns this list, because the TOOL guard needs the same answer and the
+-- two used to decide it separately. See Settings.LOCKED_MODES.
 local function isLockedMode( mode )
-	return mode == "locked" or mode == "display"
+	return Settings.LOCKED_MODES[tostring( mode )] == true
 end
 
 local function applyProfile( body, p )

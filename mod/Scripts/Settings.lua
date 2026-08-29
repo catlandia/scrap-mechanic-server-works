@@ -55,6 +55,17 @@ local HAZARD = {
 	claygun = true, firelauncher = true, cornades = true, extinguisher = true,
 }
 
+-- WHICH MODES MEAN "THE WORLD IS SHUT". One definition, because two files need
+-- it: Protection.lua short-circuits its resolver on these, and the tool guard
+-- below blocks nearly everything while one is in force. They drifted apart once
+-- already -- see the note on LOCKDOWN_KEEPS.
+Settings.LOCKED_MODES = { locked = true, display = true }
+
+function Settings.WorldIsShut()
+	return Settings.LOCKED_MODES[tostring( Settings.Get( "protection" ) )] == true
+end
+
+
 -- Tools only the host may hold, even when the tool itself is switched on. The
 -- lift is here because it spawns whole saved creations out of thin air: fine for
 -- whoever is running the event, not something a lobby of guests should each have.
@@ -360,6 +371,13 @@ Settings.SCHEMA = {
 	-- /set alarmlock on for an unattended server.
 	{ key = "alarmlock", kind = "bool", default = false,
 	  help = "grief alarm locks the world by itself (off: it only shouts)" },
+	-- THE OUTSIDE-THE-GAME CONTROL CHANNEL. Default false and it must stay
+	-- false: while it is off, Bridge.lua does not read, write or poll anything.
+	-- Switched on, a file dropped into the mod folder runs commands as the host.
+	-- That is a door, and the reason this mod sets allow_add_mods false is that
+	-- the door list IS the trust boundary -- see docs/MODS-AND-TRUST.md.
+	{ key = "bridge", kind = "bool", default = false,
+	  help = "let this world be driven from outside the game (dev only)" },
 	{ key = "autosave", kind = "number", default = 10,
 	  help = "minutes between automatic snapshots, 0 for off" },
 
@@ -699,6 +717,43 @@ end
 -- Which tool uuids are currently forbidden, rebuilt whenever settings change.
 -- Returns two tables: everything blocked, and the subset the host does not get
 -- a pass on.
+-- THE TWO TOOLS THAT SURVIVE A LOCKDOWN, and both are load-bearing.
+--
+-- REPORTED: "the lockdown shall block EVERYTHING. so clay gun = blocked. and
+-- other stuff." Right -- and the reason it did not is worth keeping, because it
+-- was two separate faults:
+--
+--   1. /lockdown wrote four settings false -- claygun, firelauncher, cornades,
+--      extinguisher -- and nothing else. The LIFT was never in that list, which
+--      is why a locked world could still have creations moved around in it.
+--   2. It wrote them by CHANGING THE HOST'S SETTINGS, and /unlock never put
+--      them back. One lockdown disabled four tools permanently, and the only
+--      way to notice was to find them missing later.
+--
+-- Both go away by deriving the blocked set from the MODE instead of writing
+-- settings: nothing is remembered, so nothing has to be restored, and unlocking
+-- returns to whatever the host actually chose.
+--
+-- The cleaner stays because litter must never become permanent -- it is the only
+-- thing in the game that can remove a dropped craftbot, and the world stays
+-- locked BETWEEN events. The focus marker stays because it changes nothing in
+-- the world at all; it draws on screens.
+local LOCKDOWN_KEEPS = { cleaner = true, focus = true }
+
+-- Everything a locked world takes out of everyone's hands, host included.
+function Settings.Sv_LockdownTools()
+	local blocked = {}
+	if not Settings.WorldIsShut() then return blocked end
+	for name, uuids in pairs( TOOLS ) do
+		if not LOCKDOWN_KEEPS[name] then
+			for _, uuid in ipairs( uuids ) do
+				blocked[tostring( uuid )] = name
+			end
+		end
+	end
+	return blocked
+end
+
 function Settings.Sv_BlockedTools()
 	local blocked = {}
 	for name, uuids in pairs( TOOLS ) do
@@ -707,6 +762,10 @@ function Settings.Sv_BlockedTools()
 				blocked[tostring( uuid )] = name
 			end
 		end
+	end
+	-- A LOCKED WORLD MEANS LOCKED.
+	for uuid, name in pairs( Settings.Sv_LockdownTools() ) do
+		blocked[uuid] = name
 	end
 	return blocked
 end
@@ -734,6 +793,15 @@ function Settings.Sv_HazardTools()
 				blocked[tostring( uuid )] = name
 			end
 		end
+	end
+	-- THE HOST IS GUARDED BY THIS LIST AND NOTHING ELSE (see
+	-- Game.sv_toolPayload and the client tick that reads `host`). The host keeps
+	-- every build tool normally -- that bypass is so whoever runs the event can
+	-- place and clear things -- but a LOCKED world is the one case where it has
+	-- to stop applying, or /lockdown stops the lobby and not the person who
+	-- called it. REPORTED: "I still could use the lift, and the clay gun."
+	for uuid, name in pairs( Settings.Sv_LockdownTools() ) do
+		blocked[uuid] = name
 	end
 	return blocked
 end

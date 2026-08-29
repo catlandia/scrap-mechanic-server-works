@@ -372,6 +372,210 @@ first makes that function's own `if self.sv.saved == nil` test see a non-empty
 table and skip creating the world entirely — the same no-world-at-all failure the
 `baseGameContent` experiment produced. A check enforces the ordering.
 
+### TWO PLACES CLEAR AND REBUILD, AND BOTH MUST WAIT A TICK
+
+`shape:destroyShape()` does not take effect when you call it -- the engine tears
+shapes down at the **end of a tick**. So anything that clears the world and then
+puts something back in the same breath is asking the importer to place blocks
+into space the old blocks still occupy, and what lands there is anybody's guess.
+
+The city builder learned this and has waited ever since (`World.CITY_SETTLE_TICKS
+= 20`, with a comment describing the symptom: *"brown ground showing between a
+plot and the walkway beside it"*). **RESTORE HAD THE IDENTICAL BUG AND NOBODY
+NOTICED FOR MONTHS, because restore had never been run.**
+
+MEASURED, 2026-08-29, on the first restore ever performed:
+
+    restored 'plazatest': 195 creations, 0 failed
+
+...and a hole in the middle of the city. REPORTED, with a screenshot: *"the load
+back in WORKS! the issue is the middle doesnt"*. `Snapshots.CREATIONS_PER_TICK`
+is 4 and **the plaza is entry one in every snapshot**, so the first four
+creations were lost and the plaza was the one you could see.
+
+`importFromString` reports success either way, which is why `0 failed` and a hole
+in the ground are not a contradiction. **The import count is not evidence that
+anything landed.** The body count afterwards is: 99 deck creations where a
+missing plaza leaves 98.
+
+Both waits are 20 ticks and `dev/test_logic.py` asserts they stay in step. The
+general rule: **a count of things attempted is not a count of things that
+happened**, and this engine will tell you an import succeeded when it placed
+nothing at all.
+
+### NEVER ENFORCE BY WRITING THE HOST'S OWN SETTINGS
+
+`/lockdown` used to shut the hazards off by setting `claygun`, `firelauncher`,
+`cornades` and `extinguisher` to false. Two bugs fell out of that one decision,
+and they are different in kind:
+
+- **It only covered what somebody remembered to list.** The LIFT was not in it,
+  so a locked world could still have whole creations carried around in it.
+  REPORTED: *"I still could use the lift, and the clay gun."*
+- **`/unlock` could not undo it**, because it had no idea what had been changed.
+  One lockdown disabled four tools **permanently**; the owner's live
+  `Settings.json` had `claygun false` from a lockdown rather than from a choice.
+
+Both vanish by deriving the blocked set from the **mode** instead:
+`Settings.Sv_LockdownTools()` returns everything while `Settings.WorldIsShut()`,
+and nothing is remembered, so nothing has to be restored. Unlocking returns to
+whatever the host actually chose.
+
+Two tools survive a lockdown and both are load-bearing: **the cleaner**, because
+it is the only thing that can remove a dropped craftbot and the world stays
+locked *between* events, and **focus**, because it changes nothing in the world.
+
+And it binds the HOST. The host keeps every build tool normally -- that bypass
+exists so whoever runs the event can place and clear things -- and it has to stop
+applying the moment the world is shut, or `/lockdown` stops the lobby and not the
+person who called it.
+
+### THE TOOL GUARD RUNS ON THE CLIENT, SO THE CLIENT'S LIST IS LOAD-BEARING
+
+`sm.tool.forceTool` is **client-side only**. The server can see what you are
+holding (`player:getCurrentToolUuid()` is a Player binding) and cannot put it
+away. So every tool ban in this mod ultimately depends on a list the server
+pushed to that client -- and **a client whose copy of the list arrived empty
+enforces nothing at all while looking perfectly healthy**, because the guard
+early-outs on an empty table.
+
+There is no way to make this server-authoritative; the binding does not exist.
+What there is: the server re-sends the list the moment its own poll catches a
+blocked tool in somebody's hand, which is proof that client is not enforcing.
+One message in exactly the case where something is already wrong, none
+otherwise. `/tool` prints the server's half of it so the two can be compared
+instead of guessed at.
+
+### NOTHING OFF A PLOT HAS ANYTHING HOLDING IT UP
+
+MEASURED the hard way, 2026-08-29: the owner imported a creation, the city was
+cleared out from under it, and it fell out of the world. Obvious in hindsight and
+worth writing down because of what it implies for an event:
+
+- **`/restore` deletes the world before it rebuilds.** Anybody's build survives a
+  rollback only if it is in the snapshot.
+- **A creation on a LIFT is not in the snapshot.** Deliberate -- a blueprint
+  somebody happens to be holding must not be saved into the world and spawned
+  for real later -- but "snapshot everything" has an exception, and a creation
+  that has just been imported is exactly the kind of thing that is still on a
+  lift when the capture runs.
+
+### PhysicsQuality IS 9 ON THIS MACHINE
+
+Read for the first time on 2026-08-29, through `/protection`. It is the only
+simulation-shaped number this project has ever found (`sm.game.getSettingValue`
+reads it; there is no setter, and the host's value governs the server). Still
+unmeasured: whether changing it in the host's options moves anything. The way to
+find out has not changed -- get a value, change it, re-run `dev/session_stats.py`
+on both sessions.
+
+### A RUNNING WORLD CAN BE DRIVEN FROM OUTSIDE, AND THE TRICK IS THE FILENAME
+
+`mod/Scripts/Bridge.lua`, `dev/bridge.py`, V58. The sandbox has no network and
+no filesystem outside `$CONTENT_*` (measured -- see `docs/MODS-AND-TRUST.md`),
+so the only thing both sides can touch is the installed mod's own folder. That
+is enough:
+
+    outside            writes  $CONTENT_DATA/Cmd-7.json
+    the mod, at 2 Hz   reads it, runs it as the HOST, listens for replies
+                       writes  $CONTENT_DATA/Out-7.json
+
+**THE SEQUENCE NUMBER IS IN THE FILENAME, and that is the whole design.** The
+engine keeps compiled copies of the data files it reads -- every `.rco` in the
+mod's `Cache/` was stamped hours before the `.lua` it came from -- so a channel
+built on rewriting one file could read a stale copy forever and never say why.
+A path that has never been read cannot be a stale read. **The general rule: when
+a cache might be in the way, change the key rather than testing whether the
+cache exists.**
+
+Two facts about the mod fall out of building it, and both are worth keeping:
+
+**A world command answers LATE.** `Game` hands it to the world as an event, the
+world deals with it on its own tick, and the reply comes back through
+`sv_e_swReply` some time afterwards. So anything that wants to collect what a
+command said has to listen on a **clock**, not for the duration of the call --
+otherwise it catches every reply from `Game.lua` and almost none from
+`World.lua`, which is `/plot`, `/why`, `/budget`, `/protection`, `/purge`,
+`/snapshot` and the whole city.
+
+**There are exactly four places the mod speaks**, and anything that wants to
+hear all of it has to hook all four: `sv_e_swReply` (world replies),
+`sv_e_swBroadcast` and `sv_broadcast` (announcements -- "City built: 96 plots"
+is one), and the `reply` closure inside `sv_n_adminCommand` (game replies). A
+check asserts all four hand their text to the bridge.
+
+**What it cannot reach, and this is the useful half of knowing about it:** a
+second player (everything runs as the host, who is authorised everywhere on
+purpose), a tool, a key press, a GUI click, and the screen. It moves the *state*
+half of testing off the owner's hands and leaves the *visual* half exactly where
+it was.
+
+### A BOT IS NOT A PLAYER, IN THE TWO WAYS THAT MATTER FOR TESTING
+
+Both discovered while designing the automated harness, and both are the reason
+`docs/HARNESS.md` claims less than the first draft of it did.
+
+**A bot can hold a plot open and can never lock one.** `Plots.sv_updateOccupancy`
+feeds crowd bots in as real characters at real positions -- they mark plots
+active, they hold their own team's ground -- but they are deliberately kept out
+of `occupied`, the list the authorisation walk pushes people off. `sv_pushOut`
+needs a `Player` to move, and a bot that could deny a zone would hold it shut
+forever with nothing able to clear it. So *"you cannot build on somebody else's
+plot"* cannot be tested by a bot, and the host cannot stand in either, because
+the host is authorised on every square of the map.
+
+**A bot's blocks do not go through the build path.** They are imported by
+`sv_importBlueprint`, and a script-side import ignores every permission flag --
+the same fact `destroyShape` relies on. So a bot "trying to build" on a locked
+plot succeeds whatever the flags say, and proves nothing at all. Reading
+`body:isBuildable()` back is not a weaker test than watching a bot try; it is
+the only one of the two that is a test.
+
+### The one file a new world must NOT reset, and why the exception is safe
+
+`$CONTENT_DATA/Checklist.json` is where `/check` records what was tested. It sits
+in the same shared folder as `Settings.json` and `Plots.json`, and the section
+above exists because that sharing is a bug for every one of those -- a fresh
+world came up locked, with claims on plots that did not exist.
+
+The checklist is the opposite case and the distinction is worth stating, because
+it is the rule for anything added later: **`sv_newWorldReset` clears what
+describes a WORLD. A test result describes the CODE.** Making a fresh world is
+the usual way to test something, so clearing the results at world create would
+delete the session that was being recorded, every single time -- and the failure
+would look exactly like the panel not working.
+
+Each result carries the build it was recorded against instead. A PASS from V56 is
+still a PASS in V57 and the panel says which build it came from, which is the
+difference between a ledger and a guess. `dev/test_logic.py` asserts the reset
+never touches it, and reverting that fails.
+
+### A CHECK THAT SEARCHES THE FILE IT IS CHECKING PASSES FOR THE WRONG REASON
+
+Second time. Worth a heading of its own for that reason alone.
+
+Each checklist item may name the log line that settles it, and there is a check
+that the mod actually writes that line -- otherwise the instruction sends
+somebody hunting for something that never existed. The first version searched
+every script under `mod/Scripts`, **including the catalogue itself**, and passed
+with a clean sweep.
+
+Four of the cited lines existed nowhere but in the catalogue quoting itself:
+
+| cited | what the mod really writes |
+|---|---|
+| `event prep` | `[ServerWorks] event %s -> protection %s (%s)` -- `World.lua:602` |
+| `event build -> protection open` | the same line |
+| `[ServerWorks] new world` | `[ServerWorks] NEW WORLD --` -- `Game.lua:265` |
+| `[ServerWorks] ALARM` | `[ServerWorks] GRIEF ALARM: %d shapes lost in %ds` -- `World.lua:415` |
+
+The general form: **when a check reads a corpus, ask what is in the corpus.** The
+first instance of this was V34's polish profile, where the check read the
+PROFILES table and proved only that the data said what the data said. Both were
+found the same way -- by asking what the check would do if the feature were
+absent, which is the whole discipline behind *write the check by breaking the
+code*.
+
 ### Custom item icons
 
 `"custom_icons": true` in `description.json`, plus `Gui/IconMap.xml` and
@@ -414,7 +618,10 @@ separate places all locked shared ground, and each one alone was enough.
 harvestables are *picked up* by the remove tool rather than erased, so making
 them erasable does not make them removable. Script-side `destroyShape()` ignores
 every permission flag — vanilla's own `sv_e_clear` relies on that — so `/purge`
-and the SWEEP LITTER button on the city panel are the only way to be rid of one.
+and the **Cleaner tool** are the only ways to be rid of one. (There was a SWEEP
+LITTER button on the city panel; it was removed on the owner's instruction along
+with the `/purge walkways` branch behind it, and this sentence went on offering
+it for three versions. See the note on checklist drift below.)
 
 **Any bulk purge must skip bodies holding a city shape.** `/purge walkways`
 deleted every body not standing on a plot, which is the deck, the streets, the
@@ -586,6 +793,15 @@ So there are three tiers, not two:
 The mod now uses seven fonts and every one is tier 1. `dev/test_logic.py`
 enforces both rules — existence first, then glyphs — over every caption of every
 panel in every state.
+
+**And PUNCTUATION is a third thing, never measured.** A tier 1 font is known to
+draw mixed case and digits -- SM_Header drew `CyberSlime2077` -- but nothing has
+ever confirmed one has an apostrophe or a percent sign. The checklist panel is 83
+items of prose, far more text than anything else here, so a check computes the
+characters the already-shipped panels draw and holds the checklist inside that
+set. It caught an apostrophe, `%`, `*`, `;`, `?` and brackets on its first run.
+The set is computed from the other panels rather than written down, so it widens
+by itself the day one of them draws something new.
 
 ### The canvas is NOT the window, and a panel is positioned from its CENTRE
 
@@ -1751,6 +1967,13 @@ credit it with fixing the thing that actually degraded.
     mod/Characters/Database/    the crowd bot's character set. No Workshop mod
                                 ships one of these; the template is the only prior art
 
+    mod/Scripts/Bridge.lua      /bridge -- a file the mod watches, so a running
+                                world can be driven from outside the game
+
+    mod/Scripts/Checklist.lua   the dev checklist: 83 things nobody has tested,
+                                what to do, and what counts as a pass
+    mod/Scripts/ChecklistGui.lua the panel that answers them -- /check
+
     mod/Scripts/GuiProbe.lua    /guitest -- the button experiment, client only
     mod/Scripts/CleanerTool.lua the only thing that can delete a carryable prop
     mod/Scripts/FocusTool.lua   Focus -- point at a player, everybody sees them
@@ -1763,11 +1986,15 @@ credit it with fixing the thing that actually degraded.
     dev/check_lua.py            compiles every mod script through a real Lua parser
     dev/check_uuids.py          every uuid the mod names, against the install
     dev/test_layout.py          runs Layout.lua and proves the city is a partition
-    dev/test_logic.py           runs the mod's rules and panel layouts (110 checks)
+    dev/test_logic.py           runs the mod's rules and panel layouts (164 checks)
     dev/sync_mod.py             repo -> game Mods folder (preserves live BanList.json)
     dev/session_stats.py        tick/FPS reconstruction from any game log,
                                 plus the per-client network budget skips
     dev/bench_report.py         the table /bench wrote, out of Bench.json
+    dev/bridge.py               send commands into a running world, read what
+                                it said back. Needs /bridge on in the game
+    dev/checklist_report.py     what /check recorded, out of Checklist.json --
+                                the failures, the notes and what is still untried
     dev/dump_api.py             per-module Lua bindings out of the executable
 
 ### Four tools, and why there are not more
@@ -1798,8 +2025,9 @@ is host-gated by `hostlift`.
 
 Commands, all host-only: `/lockdown` `/unlock` `/protection` `/buildtime` `/autosave`
 `/snapshot` `/snapshots` `/restore` `/players` `/ban` `/unban` `/banlist` `/kick`
-`/citystyle` `/nolift` `/crowd` `/bench` `/focus` `/unfocus`. `/budget` and
-`/players` are open to everyone.
+`/citystyle` `/nolift` `/crowd` `/bench` `/focus` `/unfocus` `/check`
+`/bridge`. `/budget`
+and `/players` are open to everyone.
 
 Diagnostics, kept because they settle questions in one command rather than
 an argument: `/guitest` (json GUI buttons), `/bptest` and `/bptest2` (can we read a

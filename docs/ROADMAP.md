@@ -25,6 +25,11 @@ python dev/check_all.py --sync
 Then **restart Scrap Mechanic** — scripts are read at world load, and a running
 game will not pick up a sync. Load Play → Custom Game → Server Works.
 
+Then **`/check`** (V57). Everything below is in that panel, one item at a time,
+with what to do and what counts as a pass -- and answering an item there records
+it, which is the part that never used to happen. The sections below stay as the
+prose version; the panel is the one to work from while in the game.
+
 **The pass condition for the whole session is a quiet log,** not "the mod appears
 to work". Keep `Logs/game-*.log` open. A `[Lua]` traceback repeating once a
 second is a worse outcome than a feature not working.

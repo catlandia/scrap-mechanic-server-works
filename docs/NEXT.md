@@ -6,6 +6,7 @@ linked from here; nothing important lives only in the conversation.
 Companions:
 [`STATUS.md`](STATUS.md) **what is verified and what is not** — read this one ·
 [`CROWD.md`](CROWD.md) the crowd and the benchmark, and what they cannot cover ·
+[`HARNESS.md`](HARNESS.md) automating the CITY RULES -- designed, not built ·
 [`ROADMAP.md`](ROADMAP.md) the phased plan ·
 [`../CLAUDE.md`](../CLAUDE.md) engine facts with citations ·
 [`ANTI-GRIEF.md`](ANTI-GRIEF.md) why protection cannot be prevention ·
@@ -13,7 +14,7 @@ Companions:
 [`BUTTONS.md`](BUTTONS.md) everything a json GUI needs ·
 [`CHANGELOG.md`](CHANGELOG.md) what every version fixed
 
-Current version: **V56**. All 148 checks pass. `python dev/check_all.py --sync`
+Current version: **V59**. All 181 checks pass. `python dev/check_all.py --sync`
 before playing, and **restart Scrap Mechanic** — scripts are read at world load.
 
 ---
@@ -32,14 +33,77 @@ the plot rules in anger.
 The project's own working agreement is *one working freeze beats five stubbed
 systems*. There are now rather more than five measured systems and no run event.
 
-So: open [`STATUS.md`](STATUS.md), start at section C, and turn red lines green.
-One sitting, `Logs/game-*.log` open afterwards.
+### START HERE: three things, in this order
+
+**1. Look at the middle of the city.** The first restore ever run left a hole
+where the plaza had been, that is fixed, and the fix has been re-run — 195
+bodies back, 99 deck creations where a hole would leave 98. The only thing
+missing is somebody's eyes on it. Then `backup-restore` goes green.
+
+**2. Re-test `/lockdown` after a world reload.** It was rebuilt and none of it
+has run. `/lockdown`, hold the clay gun and the lift, then `/tool` — which now
+prints what the server blocks for the host and for a guest, so a disagreement
+shows up instead of being argued about.
+
+**3. `/bridge on`, and the work moves off your hands.** The bridge carried its
+first real session on 2026-08-29 and found two bugs in an hour, in features
+that had shipped weeks earlier and never been run. It is off by default and
+the switch persists; a world that comes up with it open says so in the log.
+
+    python dev/bridge.py --status
+    python dev/bridge.py --file dev/bridge_smoke.txt --wait 3
+
+**What it cannot reach:** a second player, a held tool, a key press, a button,
+or the screen. That is roughly half the checklist and it stays yours.
+
+### The list in the game, for the half a bridge cannot do
+
+
+In the game, once per install, as host:
+
+    /bridge on
+
+That lets a running world be driven from outside it -- I write a file into
+the mod folder, the mod runs it as you and writes back everything it said.
+The first batch to run is `dev/bridge_smoke.txt`, which proves the channel
+works at all:
+
+    python dev/bridge.py --file dev/bridge_smoke.txt --wait 3
+
+It is off by default and it is a door -- `docs/CHANGELOG.md` V58 has the four
+rules that keep it narrow. **What it cannot reach:** a second player, a held
+tool, a key press, a button, or the screen. Those stay yours, and they are
+roughly half the checklist.
+
+### V57 put the list in the game, so the other half is one command
+
+    /check          the panel: 83 items, grouped, in the order to run them
+    /check next     the next thing nobody has ever tried
+
+Answer each one with a click. It writes `Checklist.json` in the installed mod on
+every press -- so the session leaves a FILE behind rather than a conversation
+somebody has to remember to have, and
+
+    python dev/checklist_report.py
+
+reads it back out on this side: the failures with their notes first, then what
+is still untried. That is the fastest handover this project has ever had, and
+it exists because writing results down by hand was costing more than the
+testing.
+
+The catalogue is [`STATUS.md`](STATUS.md) section C and `ROADMAP.md` phase 1,
+restated one item at a time. **Start with BOOT.** Nothing below it means
+anything if the world came up wrong, and `boot-quiet` -- a log with no repeating
+traceback in it -- is the pass condition for the whole sitting.
 
 ### The two settings that now have numbers behind them
 
 Both were guesses before this session. Neither is any more.
 
-**1. The per-plot part limit.** All the limits are currently `0`, which is off.
+**1. The per-plot part limit.** The limits are NOT off -- `maxjoints` is 10,
+`maxbots` is 1, `maxlights` is 25 by default. What is off is `plots`, and
+`Rules.lua` enforces nothing at all until that is on, which is the real reason
+none of it has ever run at an event.
 The measured cost on this machine is **0.0058 fps per shape**:
 
 | you want to hold | total shapes | per plot, 20 builders |
@@ -47,8 +111,23 @@ The measured cost on this machine is **0.0058 fps per shape**:
 | 45 fps | ~2,100 | **~105** |
 | 31 fps (what the 2026-08-22 event actually did) | ~4,500 | ~225 |
 
-`/set maxparts 105` is now a defensible number rather than a taste call. It is
-also the first time `Rules.lua` rule 10 will have run at all.
+**CORRECTED, V57: there is no setting to put that number in.** Earlier versions
+of this file said `/set maxparts 105` was "now a defensible number rather than a
+taste call". There is no `maxparts`. `Rules.lua` enforces exactly three limits --
+`maxjoints`, `maxbots`, `maxlights` -- and a per-plot SHAPE budget is not one of
+them, so the whole 0.0058-fps-per-shape cost model has nothing to drive.
+
+It was found by a check written to stop the in-game checklist going stale, which
+compares every command the checklist names against the code that would run it.
+The checklist said "type /set maxparts 105" because this file did.
+
+So it is an open decision, not a setting: **should a per-plot block budget
+exist?** The measurement says ~105 blocks each for 20 builders at 45 fps. It
+would be a fourth row in `Rules.lua` beside the three that are there. Say the
+word.
+
+What IS real and has still never run: `maxjoints` (rule 10, ten bearings a
+plot), `maxbots` and `maxlights`.
 
 **2. Freeze each batch when it is finished.** Not for the simulation — the
 simulation never struggles — but for the **per-client network budget**, which is
@@ -151,7 +230,7 @@ button saga forced through.
 ## How to work on this
 
 - `python dev/check_all.py --sync` — four suites, ten seconds, then installs.
-  **139 checks.** A pass does not mean it works; a failure is always real.
+  **181 checks.** A pass does not mean it works; a failure is always real.
 - **Read the log first.** Every hard bug in this project was named by
   `Logs/game-*.log`, several of them weeks before anybody looked.
 - **Write the check by breaking the code.** Every check added this session was

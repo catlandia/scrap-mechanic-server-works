@@ -17,6 +17,9 @@ dofile( "$CONTENT_DATA/Scripts/EventGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/ConfirmGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/MyPlotGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/FocusGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/Checklist.lua" )
+dofile( "$CONTENT_DATA/Scripts/ChecklistGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/Bridge.lua" )
 dofile( "$CONTENT_DATA/Scripts/GuiProbe.lua" )
 dofile( "$CONTENT_DATA/Scripts/NotLift.lua" )
 -- IndexWidgets and friends. BasePlayer pulls this in too, but relying on load
@@ -172,6 +175,40 @@ function Game.server_onCreate( self )
 	-- of stale state sv_newWorldReset exists to kill.
 	self.sv.focus = nil
 
+	-- The dev checklist. Loaded here rather than lazily so a fault in the file
+	-- is reported at world create, in the log, where somebody is already
+	-- looking -- rather than the first time a host opens the panel mid-session.
+	--
+	-- NOT cleared by sv_newWorldReset, deliberately. Every other state file here
+	-- describes a WORLD and a new one must not inherit it; this one records what
+	-- the CODE did, and making a fresh world is the usual way to test something.
+	self.sv.checklist = Checklist.Sv_Load()
+
+	-- The outside-the-game control channel. Created always, polled only while the
+	-- `bridge` setting is on -- see Bridge.lua for why a door like this is shut
+	-- by default.
+	self.sv.bridge = Bridge.sv_new()
+	Bridge.sv_load( self.sv.bridge )
+
+	-- SAID OUT LOUD AT EVERY WORLD CREATE, because the setting persists.
+	-- Leaving it on is convenient and correct for a machine with one user on
+	-- it; leaving it on WITHOUT SAYING SO is a door standing open that nobody
+	-- remembers opening. One line in the log costs nothing and there is no state
+	-- in this mod that deserves it more.
+	if Settings.Get( "bridge" ) == true then
+		sm.log.warning( string.format(
+			"[ServerWorks] BRIDGE IS ON -- this world can be driven from outside "
+			.. "the game. Waiting for %s. /bridge off to shut it.",
+			Bridge.CmdPath( self.sv.bridge.seq ) ) )
+	end
+	Bridge.sv_save( self.sv.bridge, Settings.Get( "bridge" ) == true )
+	do
+		local c = Checklist.Counts( self.sv.checklist )
+		sm.log.info( string.format(
+			"[ServerWorks] checklist: %d of %d answered (%d pass, %d fail) -- /check",
+			c.done, c.total, c.pass, c.fail ) )
+	end
+
 	-- The event clock. Loaded from its own file rather than the Game script's
 	-- storage, for the same reason Plots is: it has to be readable the instant
 	-- the world asks, without depending on save ordering.
@@ -299,6 +336,9 @@ end
 -- Replies come back from the world as events: a world script has no network of
 -- its own to talk to a client with.
 function Game.sv_e_swReply( self, params )
+	-- The bridge listens here too. This is the funnel every WORLD reply comes
+	-- through, and world replies are most of what this mod says.
+	self:sv_bridgeSay( params.text )
 	if params.player and sm.exists( params.player ) then
 		self.network:sendToClient( params.player, "client_showMessage", params.text )
 	end
@@ -357,10 +397,14 @@ function Game.sv_e_swToolsChanged( self, params )
 end
 
 function Game.sv_e_swBroadcast( self, params )
+	self:sv_bridgeSay( params.text )
 	self.network:sendToClients( "client_showMessage", params.text )
 end
 
 function Game.sv_broadcast( self, text )
+	-- Announcements are captured too: "City built: 96 plots" is a broadcast, and
+	-- it is the answer to the command that caused it.
+	self:sv_bridgeSay( text )
 	self.network:sendToClients( "client_showMessage", text )
 end
 
@@ -368,6 +412,10 @@ function Game.server_onFixedUpdate( self, dt )
 	CreativeGame.server_onFixedUpdate( self, dt )
 
 	local tick = sm.game.getCurrentTick()
+	-- Its own pcall, separate from everything else on this tick: a control
+	-- channel must never be able to take the server down with it, and a fault
+	-- anywhere else must never leave a batch half-run.
+	pcall( function() self:sv_bridgeTick( tick ) end )
 	self:sv_checkToolGuard( tick )
 	self:sv_flushKicks()
 	self:sv_tickEvent( tick )
@@ -434,6 +482,17 @@ function Game.sv_checkToolGuard( self, tick )
 	-- every poll while the tool stayed in the player's hands, which is how a ban
 	-- turned into a wall of chat instead of a removal.
 	local drop = function( player, name )
+		-- SELF-REPAIR. The guard that actually takes a tool out of a hand runs on
+		-- the CLIENT -- sm.tool.forceTool is client-side only, so the server can
+		-- see what you hold and cannot put it away. That makes the client's copy
+		-- of the blocked list load-bearing, and a client whose copy is empty
+		-- enforces nothing at all while looking perfectly healthy.
+		--
+		-- The server is standing here having just seen a blocked tool in a hand,
+		-- which is proof that client is not enforcing. So send the list again
+		-- rather than only asking for the tool to be dropped. Costs one message
+		-- in exactly the case something is already wrong, and nothing otherwise.
+		self.network:sendToClient( player, "client_setBlockedTools", self:sv_toolPayload() )
 		self.network:sendToClient( player, "client_dropTool", { name = name } )
 	end
 	local blocked = self.sv.blockedTools
@@ -1243,6 +1302,15 @@ function Game.client_onCreate( self )
 		"Host: clear the focus marker" )
 	sm.game.bindChatCommand( "/menu", {}, "cl_onAdminCommand",
 		"Open the Server Works menu" )
+	-- The dev checklist. Two optional words, so /check on its own opens the
+	-- panel and /check pass <id> answers one without leaving the chat box.
+	-- The outside-the-game control channel. Off by default; see Bridge.lua.
+	sm.game.bindChatCommand( "/bridge",
+		{ { "string", "onoff", true, { "on", "off", "status" } } }, "cl_onAdminCommand",
+		"Host: let this world be driven from outside the game -- /bridge on|off" )
+	sm.game.bindChatCommand( "/check",
+		{ { "string", "what", true }, { "string", "id", true } }, "cl_onAdminCommand",
+		"Host: the dev checklist -- /check [next|summary|pass <id>|fail <id>]" )
 	-- Client only, no server hop. Four combinations of who owns the callback and
 	-- where the widget tree came from; see GuiProbe.lua.
 	sm.game.bindChatCommand( "/bptest", { { "string", "blueprintUuid", true } },
@@ -2093,6 +2161,8 @@ function Game.sv_n_menuOpen( self, data, player )
 		self:sv_openEventGui( player )
 	elseif what == "focus" and isHost then
 		self:sv_openFocusGui( player )
+	elseif what == "checklist" and isHost then
+		self:sv_openChecklistGui( player )
 	elseif what == "myplot" then
 		self:sv_toWorld( "/myplot", {}, player )
 	elseif what == "rules" then
@@ -2677,6 +2747,371 @@ function Game.sv_n_focusGuiAction( self, data, player )
 end
 
 
+--[[ the bridge -- driving a session from outside the game ]]
+
+-- See Bridge.lua for the whole argument. In short: the slow part of this
+-- project is the round trip, not the work, and $CONTENT_DATA is the one place
+-- both sides can reach. A file appears, it gets run as the host, everything
+-- said in the next second and a half is written back out.
+
+function Game.sv_bridgeSay( self, text )
+	local b = self.sv and self.sv.bridge
+	if b == nil then return end
+	Bridge.sv_capture( b, text )
+end
+
+-- Called from server_onFixedUpdate inside its own pcall.
+function Game.sv_bridgeTick( self, tick )
+	local b = self.sv and self.sv.bridge
+	if b == nil then return end
+
+	-- A batch that has run and is still LISTENING. Nothing else happens until
+	-- its clock runs out -- not another poll, not another batch -- so replies
+	-- can never be filed under the wrong command.
+	if b.pending ~= nil then
+		if tick < b.pending.deadline then return end
+		local done = b.pending
+		b.pending = nil
+		local lines = b.capture or {}
+		b.capture = nil
+		Bridge.sv_writeResult( b, done.seq, done.entries, done.note, lines )
+		b.seq = done.seq + 1
+		Bridge.sv_save( b, true )
+		sm.log.info( string.format(
+			"[ServerWorks] bridge: wrote Out-%d.json -- %d command(s), %d line(s) said",
+			done.seq, #done.entries, #lines ) )
+		return
+	end
+
+	if Settings.Get( "bridge" ) ~= true then return end
+	if tick < ( b.nextPoll or 0 ) then return end
+	b.nextPoll = tick + Bridge.POLL_TICKS
+
+	-- Everything runs AS THE HOST, so every host gate in the mod still applies
+	-- and the bridge can reach nothing a host could not type. No host, no
+	-- bridge -- which also means a dedicated-server-shaped future would have to
+	-- decide this again rather than inherit it.
+	local host = sm.player.getHostPlayer()
+	if host == nil or not sm.exists( host ) then return end
+
+	local data = Bridge.sv_poll( b )
+	if data == nil then return end
+	self:sv_bridgeRun( b, data, host, tick )
+end
+
+function Game.sv_bridgeRun( self, b, data, host, tick )
+	local batch = Bridge.Parse( data )
+	local entries = {}
+
+	-- Open BEFORE the first command, closed by the clock in sv_bridgeTick.
+	b.capture = {}
+
+	for _, words in ipairs( batch ) do
+		local line = table.concat( words, " " )
+		-- In the log before it runs, not after. If a command takes the server
+		-- down, the last line in the log is the one that did it.
+		sm.log.info( "[ServerWorks] bridge runs: " .. line )
+		local ok, err = pcall( function()
+			self:sv_n_adminCommand( words, host )
+		end )
+		if not ok then
+			sm.log.warning( "[ServerWorks] bridge command failed: " .. line
+				.. " -- " .. tostring( err ) )
+		end
+		entries[#entries + 1] = {
+			command = line,
+			ok = ok and true or false,
+			error = ( not ok ) and tostring( err ) or nil,
+		}
+		b.ran = ( b.ran or 0 ) + 1
+	end
+
+	local wait = Bridge.Wait( data )
+	b.pending = {
+		seq = b.seq,
+		entries = entries,
+		note = data.note,
+		deadline = tick + math.floor( wait * TICKS_PER_SECOND ),
+	}
+	sm.log.info( string.format(
+		"[ServerWorks] bridge: Cmd-%d.json -- %d command(s), listening %.1fs",
+		b.seq, #batch, wait ) )
+end
+
+-- /bridge on|off|status. Host only, like everything else that can change a
+-- world -- and unlike the rest, this one can change it from outside the game,
+-- which is why it says so out loud when it is switched on.
+function Game.sv_bridgeCommand( self, params, player, reply )
+	local b = self.sv and self.sv.bridge
+	if b == nil then
+		reply( "the bridge did not start with this world" )
+		return
+	end
+	local what = params[2]
+
+	if what == "on" or what == "off" then
+		local on = ( what == "on" )
+		-- The word, not the boolean. Sv_Set parses "on"/"off" for a bool and
+		-- tostring( true ) only happens to land on a value it accepts.
+		Settings.Sv_Set( "bridge", what )
+		Bridge.sv_save( b, on )
+		if on then
+			reply( "BRIDGE ON -- this world can now be driven from outside." )
+			reply( "It runs commands as you, and everything it runs is in the log." )
+			reply( string.format( "waiting for %s", Bridge.CmdPath( b.seq ) ) )
+			sm.log.info( "[ServerWorks] bridge ON -- waiting for "
+				.. Bridge.CmdPath( b.seq ) )
+		else
+			reply( "bridge off -- nothing outside the game can reach this world." )
+			sm.log.info( "[ServerWorks] bridge OFF" )
+		end
+		return
+	end
+
+	local on = ( Settings.Get( "bridge" ) == true )
+	reply( string.format( "bridge %s   waiting for %s   %d command(s) run",
+		on and "ON" or "off", Bridge.CmdPath( b.seq ), b.ran or 0 ) )
+	if b.pending ~= nil then
+		reply( "  a batch is still listening" )
+	end
+	reply( "/bridge on | off | status" )
+end
+
+--[[ the dev checklist ]]
+
+-- ASKED FOR: "you make an ingame check list. for devs. so I can test stuff ...
+-- because if I have to switch every time here. I waste my time if the feature
+-- is still broken on writing it again."
+--
+-- The catalogue and the arithmetic are in Checklist.lua and the panel is in
+-- ChecklistGui.lua; what lives here is the state, which is the part that has to
+-- be on the server. A result is written the moment a button is pressed rather
+-- than batched at the end, because the way a test session actually ends is that
+-- the game crashes or somebody stops playing.
+
+function Game.sv_checklist( self )
+	if self.sv.checklist == nil then
+		self.sv.checklist = Checklist.Sv_Load()
+	end
+	return self.sv.checklist
+end
+
+-- os.time is guarded everywhere else in this project and is guarded here for
+-- the same reason: the sandbox's `os` is not documented anywhere and a
+-- checklist that cannot record a result because a clock is missing would be a
+-- poor sort of test harness. A result with no timestamp is still a result.
+local function checklistNow()
+	local ok, t = pcall( os.time )
+	return ok and t or nil
+end
+
+function Game.sv_openChecklistGui( self, player, status, view )
+	if player ~= sm.player.getHostPlayer() then return end
+	view = view or {}
+	self.network:sendToClient( player, "client_openChecklistGui", {
+		results = self:sv_checklist(),
+		group = view.group,
+		page = view.page,
+		item = view.item,
+		build = Checklist.BUILD,
+		status = status,
+	} )
+end
+
+function Game.client_openChecklistGui( self, state )
+	if self.cl == nil then self.cl = {} end
+	self.cl.checklistState = state
+	self:cl_showPanel( "checklist", ChecklistGui.Build( state ) )
+end
+
+function Game.cl_onChecklistClose( self )
+	self:cl_forgetPanel()
+	if self.cl then self.cl.checklistState = nil end
+end
+
+-- ONLY CLOSE AND BACK CLOSE THE PANEL, and nothing in here renders directly:
+-- close() and render() both destroy the widget whose callback is on the Lua
+-- stack. cl_renderLater is the only route -- see the long note at
+-- Game.cl_closeLater for what that cost to learn.
+function Game.cl_onChecklistClick( self, widgetName, data )
+	if type( data ) ~= "table" or self.cl == nil then return end
+	local state = self.cl.checklistState
+	if state == nil then return end
+
+	if data.action == "close" then
+		self:cl_closeLater( "panel" )
+		return
+	end
+	if data.action == "back" then
+		-- Send FIRST. The hub renders into this same one GUI, so queueing a
+		-- close here would race the panel that is about to arrive.
+		self.network:sendToServer( "sv_n_openMenu", {} )
+		return
+	end
+
+	-- Paging, switching group and opening an item change NOTHING on the server:
+	-- the whole results table is already on this client, so a round trip for a
+	-- page turn would be a visible stutter for no gain. Everything that writes
+	-- a result goes to the server, because the server owns the file.
+	if data.action == "page" then
+		state.page = data.page
+		self:cl_renderLater( "checklist", ChecklistGui.Build( state ) )
+		return
+	end
+	if data.action == "group" then
+		state.group = data.group
+		state.page = 1
+		state.item = nil
+		state.status = nil
+		self:cl_renderLater( "checklist", ChecklistGui.Build( state ) )
+		return
+	end
+	if data.action == "open" then
+		state.item = data.id
+		self:cl_renderLater( "checklist", ChecklistGui.Build( state ) )
+		return
+	end
+	if data.action == "list" then
+		state.item = nil
+		self:cl_renderLater( "checklist", ChecklistGui.Build( state ) )
+		return
+	end
+
+	self.network:sendToServer( "sv_n_checklistAction", {
+		action = data.action, id = data.id, state = data.state,
+		group = state.group, page = state.page, item = state.item } )
+end
+
+-- A typed note. ( self, widgetName, text ) -- a text event carries no
+-- onClickData, so the widget NAME is the only thing that says which box it was.
+--
+-- IT DRAWS NOTHING: not a render, not a deferred render, not a close. The event
+-- clock crashed the game twice over exactly this, and the second crash was
+-- after the redraw had already been deferred by a tick. Sending IS safe, so the
+-- note is a round trip and the panel is rebuilt by client_openChecklistGui,
+-- which is a network callback rather than this widget's own.
+function Game.cl_onChecklistNoteTyped( self, widgetName, text )
+	local ok, err = pcall( function()
+		local state = self.cl and self.cl.checklistState
+		if state == nil then return end
+		if widgetName ~= ChecklistGui.NOTE_BOX then return end
+		self.network:sendToServer( "sv_n_checklistAction", {
+			action = "note", id = state.item, note = tostring( text or "" ),
+			group = state.group, page = state.page, item = state.item } )
+	end )
+	if not ok and not ( self.cl and self.cl.checklistNoteFaulted ) then
+		if self.cl then self.cl.checklistNoteFaulted = true end
+		sm.log.warning( "[ServerWorks] checklist note failed: " .. tostring( err ) )
+	end
+end
+
+-- Saving on every press rather than at the end. A test session ends when the
+-- game crashes or when somebody stops playing, and neither of those runs a
+-- shutdown hook -- so anything held in memory is exactly the data that would be
+-- lost by the failure it was recording.
+function Game.sv_recordChecklist( self, id, state, player )
+	local item = Checklist.Find( id )
+	if item == nil then return nil end
+	Checklist.Set( self:sv_checklist(), id, state, nil, Checklist.BUILD, checklistNow() )
+	Checklist.Sv_Save( self:sv_checklist() )
+	-- In the log as well as in the file, because the log is where every other
+	-- piece of evidence about a session already is: a FAIL and the traceback
+	-- that caused it end up four lines apart.
+	sm.log.info( string.format( "[ServerWorks] checklist %s = %s  (%s)",
+		tostring( id ), string.upper( tostring( state ) ), tostring( item.title ) ) )
+	return item
+end
+
+function Game.sv_n_checklistAction( self, data, player )
+	if type( data ) ~= "table" then return end
+	if player ~= sm.player.getHostPlayer() then return end
+
+	local results = self:sv_checklist()
+	local view = { group = data.group, page = data.page, item = data.item }
+	local status = nil
+
+	if data.action == "mark" then
+		local item = self:sv_recordChecklist( data.id, data.state, player )
+		if item == nil then
+			status = "no such item: " .. tostring( data.id )
+		else
+			status = string.format( "%s -- %s", string.upper( tostring( data.state ) ),
+				tostring( item.title ) )
+			-- ON THE DETAIL VIEW, ANSWERING MOVES YOU ON. That is the whole
+			-- shape of a test session: do it, answer it, next. On the LIST it
+			-- must not, or marking the second row would jump the page out from
+			-- under the hand that is about to mark the third.
+			if view.item ~= nil then
+				local nextId = Checklist.NextUntested( results, view.item, false )
+				if nextId ~= nil then
+					local nextItem = Checklist.Find( nextId )
+					view.item = nextId
+					view.group = nextItem.group
+					status = status .. "   >>   " .. tostring( nextItem.title )
+				else
+					view.item = nil
+					status = status .. "   -- nothing unanswered left"
+				end
+			end
+		end
+
+	elseif data.action == "clearmark" then
+		Checklist.Set( results, data.id, nil )
+		Checklist.Sv_Save( results )
+		status = "cleared -- back to unanswered"
+
+	elseif data.action == "note" then
+		Checklist.SetNote( results, data.id, data.note )
+		Checklist.Sv_Save( results )
+		status = ( tostring( data.note or "" ) == "" )
+			and "note cleared"
+			or ( "note saved: " .. tostring( data.note ) )
+
+	elseif data.action == "next" then
+		local nextId = Checklist.NextUntested( results, view.item, false )
+		if nextId == nil then
+			-- Everything a host can answer alone IS answered. Say what is left
+			-- rather than "done", because the guest group is not done, it is
+			-- waiting for somebody.
+			local c = Checklist.Counts( results, "guest" )
+			view.item = nil
+			status = string.format( "nothing left that one person can answer -- "
+				.. "%d of %d in NEEDS A GUEST still open", c.untested, c.total )
+		else
+			local item = Checklist.Find( nextId )
+			view.item = nextId
+			view.group = item.group
+			status = "next: " .. tostring( item.title )
+		end
+
+	elseif data.action == "run" then
+		local item = Checklist.Find( data.id )
+		if item == nil or item.run == nil then
+			status = "nothing to run for this one"
+		else
+			local words = ""
+			for _, w in ipairs( item.run ) do
+				words = ( words == "" ) and tostring( w ) or ( words .. " " .. tostring( w ) )
+			end
+			-- Straight through the normal command path, host gate and all, so
+			-- the panel can never reach a command a typed one could not. The
+			-- answer arrives in CHAT, because that is where that path replies.
+			self:sv_n_adminCommand( item.run, player )
+			status = "sent " .. words .. " -- the answer is in chat"
+		end
+
+	elseif data.action == "logdump" then
+		local lines = Checklist.Summary( results )
+		for _, line in ipairs( lines ) do
+			sm.log.info( "[ServerWorks] " .. line )
+			self.network:sendToClient( player, "client_showMessage", line )
+		end
+		status = "written to chat and to the log"
+	end
+
+	self:sv_openChecklistGui( player, status, view )
+end
+
 function Game.sv_askConfirm( self, player, what, title, lines, back )
 	self.network:sendToClient( player, "client_openConfirm",
 		{ step = 1, what = what, title = title, lines = lines, back = back } )
@@ -2861,6 +3296,7 @@ end
 
 function Game.sv_n_adminCommand( self, params, player )
 	local function reply( text )
+		self:sv_bridgeSay( text )
 		self.network:sendToClient( player, "client_showMessage", text )
 	end
 
@@ -2931,6 +3367,10 @@ function Game.sv_n_adminCommand( self, params, player )
 			reply( "  /unfocus            take the marker off again" )
 			reply( "  /ban <who>  /unban <who>  /banlist  /known  /kick <who>" )
 			reply( "  /allow <who>  /unallow <who>  /allowlist" )
+			reply( "DEV" )
+			reply( "  /check              the dev checklist -- test it, then answer it" )
+			reply( "  /check next         the next thing nobody has tried" )
+			reply( "  /check summary      what is answered, and what failed" )
 			reply( "LOAD TESTING -- not for a live event" )
 			reply( "  /crowd <n>          stand n bots on the city, one per plot" )
 			reply( "  /crowd churn on     have them place and remove blocks" )
@@ -3025,6 +3465,47 @@ function Game.sv_n_adminCommand( self, params, player )
 	elseif cmd == "/menu" then
 		self:sv_openMenu( player )
 
+	elseif cmd == "/bridge" then
+		self:sv_bridgeCommand( params, player, reply )
+
+	elseif cmd == "/check" then
+		-- The panel is the point; the words are for when your hands are already
+		-- in the chat box, which during a test session they often are.
+		local what = params[2]
+		local results = self:sv_checklist()
+		if what == nil or what == "" then
+			self:sv_openChecklistGui( player )
+		elseif what == "summary" or what == "status" then
+			for _, line in ipairs( Checklist.Summary( results ) ) do
+				reply( line )
+				sm.log.info( "[ServerWorks] " .. line )
+			end
+		elseif what == "next" then
+			local nextId = Checklist.NextUntested( results, nil, false )
+			if nextId == nil then
+				reply( "Nothing left that one person can answer." )
+			else
+				local item = Checklist.Find( nextId )
+				reply( "NEXT: " .. tostring( item.title ) )
+				for i, step in ipairs( item.steps or {} ) do
+					reply( "  " .. i .. ". " .. tostring( step ) )
+				end
+				reply( "  PASSES WHEN: " .. tostring( item.pass ) )
+				self:sv_openChecklistGui( player, nil,
+					{ item = nextId, group = item.group } )
+			end
+		elseif Checklist.IsState( what ) then
+			local item = self:sv_recordChecklist( params[3], what, player )
+			if item == nil then
+				reply( "No checklist item called " .. tostring( params[3] )
+					.. " -- /check summary lists the ids that failed, the panel lists them all." )
+			else
+				reply( string.upper( what ) .. "  " .. tostring( item.title ) )
+			end
+		else
+			reply( "/check | /check next | /check summary | /check pass <id> | /check fail <id>" )
+		end
+
 	elseif cmd == "/plotmenu" then
 		self:sv_openPlotsGui( player )
 
@@ -3086,6 +3567,32 @@ function Game.sv_n_adminCommand( self, params, player )
 		if blocked then
 			reply( string.format( "  gated by the '%s' setting", blocked ) )
 		end
+
+		-- WHAT THE SERVER CURRENTLY BLOCKS, for the host and for a guest.
+		--
+		-- The guard is client side -- only your own client can put a tool away
+		-- -- so "is the lockdown on" has two halves that can disagree: what the
+		-- server computed, and what your client was last told. REPORTED: "I
+		-- still could use the lift, and the clay gun", with the world locked and
+		-- claygun already false in the settings file, which the code alone could
+		-- not explain. This prints the server's half so the next test can say
+		-- which half is wrong instead of guessing.
+		local function nameList( set )
+			local seen, out = {}, {}
+			for _, name in pairs( set or {} ) do
+				if not seen[name] then
+					seen[name] = true
+					out[#out + 1] = name
+				end
+			end
+			table.sort( out )
+			return ( #out > 0 ) and table.concat( out, " " ) or "nothing"
+		end
+		reply( string.format( "  world is %s", Settings.WorldIsShut()
+			and ( "SHUT (" .. tostring( Settings.Get( "protection" ) ) .. ") -- a lockdown blocks everything except the cleaner and focus" )
+			or ( "open (" .. tostring( Settings.Get( "protection" ) ) .. ")" ) ) )
+		reply( "  blocked for the host:  " .. nameList( self.sv.hazardTools ) )
+		reply( "  blocked for a guest:   " .. nameList( self:sv_toolPayload().guest ) )
 
 	elseif cmd == "/players" then
 		-- The host is whoever is running the server -- sm.player.getHostPlayer()

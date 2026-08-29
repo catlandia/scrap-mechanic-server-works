@@ -15,9 +15,11 @@ MenuGui.W = 460
 -- Seven entries plus the HOST header. The layout check computes whether this is
 -- enough rather than trusting the eye -- it caught this exact panel overflowing
 -- the moment the EVENT CLOCK entry was added.
--- Eight entries plus the HOST header. The layout check computes whether this
--- is enough rather than trusting the eye -- it caught this exact panel
--- overflowing the moment the EVENT CLOCK entry was added.
+-- Nine entries plus the HOST header, at a 54 pitch rather than 58 -- which is
+-- what the DEV CHECKLIST entry cost. The layout check computes whether this is
+-- enough rather than trusting the eye; it caught this exact panel overflowing
+-- the moment the EVENT CLOCK entry was added, and it would have caught the
+-- ninth entry landing on top of the CLOSE button.
 MenuGui.H = 660
 
 local BG = "0.055 0.062 0.078 1"
@@ -81,6 +83,8 @@ MenuGui.ENTRIES = {
 	  help = "plots, roads and plaza, with a live map", host = true },
 	{ action = "settings", label = "SERVER SETTINGS", panel = true,
 	  help = "every toggle and limit", host = true },
+	{ action = "checklist", label = "TESTING CHECKLIST", panel = true,
+	  help = "things to try, one at a time. Say if each one worked", host = true },
 }
 
 function MenuGui.Build( isHost )
@@ -122,7 +126,7 @@ function MenuGui.Build( isHost )
 				{ action = e.action, panel = e.panel == true } )
 			kids[#kids + 1] = text( "H" .. i, e.help, 26, y + 36, MenuGui.W - 52, 16,
 				"SM_TextTiny", DIM, "Left" )
-			y = y + 58
+			y = y + 54
 		end
 	end
 

@@ -75,6 +75,12 @@ sm = {
         end,
         save = function( t, p ) _files[p] = deepcopy( t ) end,
         writeJsonString = function( t ) return "<json>" end,
+        -- Snapshots parses the exported string back into a table so the file
+        -- is real nested JSON rather than one giant escaped string. Without
+        -- this every capture produced ZERO entries and said nothing about it --
+        -- which is how the existing round-trip check passed while never once
+        -- holding a snapshot with anything in it.
+        parseJsonString = function( str ) return { bodies = {} } end,
     },
     uuid = {
         new = function( s ) return { s = s, __uuid = true } end,
@@ -84,6 +90,9 @@ sm = {
         new = function( x, y, z ) return { x = x, y = y, z = z } end,
         zero = function() return { x = 0, y = 0, z = 0 } end,
     },
+    -- importFromString takes a rotation. Nothing here inspects it; it only has
+    -- to exist, because restore passes one.
+    quat = { identity = function() return { w = 1, x = 0, y = 0, z = 0 } end },
     game = {
         setEnableAggro = function() end,
         getCurrentTick = function() return _tick or 0 end,
@@ -288,6 +297,135 @@ def hazard_tools_bind_the_host_too():
         "the clay gun is on but still listed as blocked")
 
 
+def a_locked_world_takes_the_tools_off_everyone_including_the_host():
+    """REPORTED, from the game: "I still could use the lift, and the clay gun."
+    and "the lockdown shall block EVERYTHING".
+
+    Two faults were behind it. /lockdown wrote four settings false -- claygun,
+    firelauncher, cornades, extinguisher -- and the LIFT was never among them.
+    And the HOST is guarded by the hazard list alone (Game.sv_toolPayload sends
+    `host = hazardTools`), because the host keeps every build tool so whoever
+    runs the event can place and clear things -- a bypass that must stop
+    applying the moment the world is shut, or /lockdown stops the lobby and not
+    the person who called it.
+
+    So the blocked set is derived from the MODE now, and both lists carry it.
+    """
+    lua = fresh("Settings.lua")
+    S = lua.globals().Settings
+    S.Sv_Load(False)
+
+    def names(fn):
+        got = getattr(S, fn)()
+        return {str(v) for v in got.values()}
+
+    # A tool that is switched ON and is nobody's hazard: the lift.
+    S.Sv_SetQuiet("lift", True)
+    S.Sv_SetQuiet("sledgehammer", True)
+    S.Sv_SetQuiet("painttool", True)
+    S.Sv_SetQuiet("protection", "open")
+    assert "lift" not in names("Sv_BlockedTools"), (
+        "the lift is blocked in an open world, which is not the point")
+    assert "lift" not in names("Sv_HazardTools")
+
+    for mode in ("locked", "display"):
+        S.Sv_SetQuiet("protection", mode)
+        guest, host = names("Sv_BlockedTools"), names("Sv_HazardTools")
+        for tool in ("lift", "claygun", "sledgehammer", "painttool", "notlift"):
+            assert tool in guest, f"{mode}: a guest can still hold the {tool}"
+            assert tool in host, (
+                f"{mode}: THE HOST can still hold the {tool}. The host is "
+                "guarded by the hazard list alone, so a lockdown that leaves "
+                "that list alone stops the lobby and not the person who ran it.")
+
+
+def a_locked_world_still_lets_you_clear_litter():
+    """The two tools that survive, and both are load-bearing.
+
+    The cleaner is the only thing in the game that can remove a dropped
+    craftbot -- a permission flag does not reach a carryable prop -- and the
+    world stays locked BETWEEN events, so taking it away would make every piece
+    of dropped rubbish permanent. That rule already cost three separate fixes.
+
+    The focus marker survives because it changes nothing in the world; it draws
+    on screens.
+    """
+    lua = fresh("Settings.lua")
+    S = lua.globals().Settings
+    S.Sv_Load(False)
+    S.Sv_SetQuiet("protection", "locked")
+    S.Sv_SetQuiet("cleaner", True)
+    S.Sv_SetQuiet("focus", True)
+
+    lockdown = {str(v) for v in S.Sv_LockdownTools().values()}
+    assert lockdown, "a locked world blocks nothing at all"
+    assert "cleaner" not in lockdown, (
+        "a locked world takes the cleaner away, so dropped litter can never be "
+        "removed -- and the world stays locked between events")
+    assert "focus" not in lockdown, "a locked world takes the focus marker away"
+
+
+def unlocking_gives_the_host_back_the_tools_they_chose():
+    """The second half of the same bug, and the worse one.
+
+    /lockdown used to write four settings false and /unlock never put them back,
+    so a single lockdown disabled four tools permanently and the only way to
+    notice was to find them missing later. Deriving the set from the mode means
+    nothing is remembered, so nothing has to be restored.
+    """
+    lua = fresh("Settings.lua")
+    S = lua.globals().Settings
+    S.Sv_Load(False)
+    S.Sv_SetQuiet("claygun", True)          # the host wants it on
+    S.Sv_SetQuiet("lift", True)
+
+    S.Sv_SetQuiet("protection", "locked")
+    assert "claygun" in {str(v) for v in S.Sv_HazardTools().values()}
+
+    S.Sv_SetQuiet("protection", "open")
+    assert S.Get("claygun") is True, (
+        "locking the world changed the host's own claygun setting -- unlocking "
+        "cannot put back what it does not know was changed")
+    assert S.Get("lift") is True
+    assert "claygun" not in {str(v) for v in S.Sv_BlockedTools().values()}, (
+        "the world is open again and the clay gun is still blocked")
+
+
+def both_files_agree_on_what_locked_means():
+    """Protection short-circuits its resolver on a locked mode, and the tool
+    guard blocks nearly everything on one. Two files, one question -- and they
+    used to answer it separately, which is exactly how a mode gets added to one
+    and not the other."""
+    src = read("Protection.lua")
+    body = src[src.index("local function isLockedMode"):]
+    body = body[:body.index(chr(10) + "end")]
+    assert "Settings.LOCKED_MODES" in body, (
+        "Protection decides on its own what a locked mode is, so the tool guard "
+        "and the resolver can disagree")
+
+    lua = fresh("Settings.lua")
+    modes = {str(k) for k in lua.globals().Settings.LOCKED_MODES.keys()}
+    assert modes == {"locked", "display"}, modes
+
+
+def every_mode_change_tells_the_clients():
+    """The guard is client side -- only your own client can put a tool away --
+    so a client holding a stale list is a lockdown that did not happen.
+
+    The announcement used to be skipped for mode == "open", which meant
+    UNLOCKING left every client still holding the locked list.
+    """
+    world = read("World.lua")
+    start = world.index('if cmd == "/lockdown" or cmd == "/unlock" then')
+    body = world[start:start + 3000]
+    assert "sv_e_swToolsChanged" in body, "a mode change tells nobody"
+    announce = body.index("sv_e_swToolsChanged")
+    guard = body.find('if mode ~= "open" then')
+    assert guard == -1 or guard > announce, (
+        "the tools-changed announcement is still behind an `if mode ~= open`, "
+        "so unlocking leaves every client holding the locked list")
+
+
 def the_lift_is_never_a_hazard():
     # The lift is HOST_ONLY, not HAZARD. If it ever lands in the hazard list the
     # host's own client force-unequips it every tick and the creations menu
@@ -362,6 +500,91 @@ def a_backup_captures_everything_and_can_be_put_back():
     listed = [str(n) for n in names.values()]
     assert any("unittest" in n for n in listed), (
         f"the snapshot is not in the list afterwards: {listed}")
+
+
+def a_restore_waits_for_the_old_world_to_be_torn_down():
+    """MEASURED IN GAME, 2026-08-29, and this is the check written from it.
+
+    A restore of a 96-plot city reported "195 creations, 0 failed" and came back
+    with a hole where the plaza had been. REPORTED, with a screenshot: "the load
+    back in WORKS! the issue is the middle doesnt".
+
+    The middle is the plaza, and the plaza is the FIRST entry in the snapshot.
+    sv_beginRestore cleared the world and the driver stepped on the very next
+    tick, four creations at a time -- so the first four were handed to the
+    importer while the old shapes were still standing in that space.
+    shape:destroyShape() does not take effect until the end of a tick, and
+    importFromString reports success either way, which is why "0 failed" and a
+    hole in the ground were not a contradiction.
+
+    The city builder already knew this -- World.CITY_SETTLE_TICKS, with a
+    comment describing the same symptom. The fix had never travelled to the
+    other place that clears and rebuilds, because restore had never been run.
+    """
+    lua = fresh("Layout.lua", "Settings.lua", "Protection.lua", "Snapshots.lua")
+    S = lua.globals().Snapshots
+    snaps = lua.eval("Snapshots()")
+    S.sv_onCreate(snaps)
+
+    lua.execute("""
+        _tick = 1000
+        _imports = 0
+        sm.creation.importFromString = function( ... )
+            _imports = _imports + 1
+            return {}
+        end
+        _cleared = 0
+        clearWorld = function() _cleared = _cleared + 1 end
+        swTestBodies = {}
+        for i = 1, 6 do
+            swTestBodies[i] = { id = i }
+            swTestBodies[i].getShapeCount = function( self ) return 10 end
+        end
+        zoneOfBody = function( body ) return nil end
+    """)
+    world = lua.table_from({})
+
+    ok, detail = S.sv_beginCapture(snaps, "settletest", world, lua.globals().zoneOfBody)
+    assert ok, f"the capture would not start: {detail}"
+    for _ in range(2000):
+        if S.sv_onFixedUpdate(snaps):
+            break
+    assert snaps["job"] is None, "the capture never finished"
+
+    ok, detail = S.sv_beginRestore(snaps, "settletest", world,
+                                   lua.table_from({"clear": lua.globals().clearWorld}))
+    assert ok, f"the restore would not start: {detail}"
+    assert int(lua.globals()._cleared) == 1, "the restore did not clear first"
+
+    # The old shapes are still standing. Nothing may be imported yet, however
+    # many times the world ticks -- this is the whole fix.
+    for _ in range(10):
+        S.sv_onFixedUpdate(snaps)
+    assert int(lua.globals()._imports) == 0, (
+        f"{int(lua.globals()._imports)} creation(s) were imported into space the "
+        "old world still occupies. The first ones in are lost silently, which is "
+        "the plaza-shaped hole of 2026-08-29.")
+
+    settle = int(S.SETTLE_TICKS)
+    assert settle >= 20, f"the settle is only {settle} ticks"
+
+    # ...and once the engine has had its tick, everything goes back.
+    lua.execute(f"_tick = _tick + {settle + 1}")
+    for _ in range(2000):
+        if S.sv_onFixedUpdate(snaps):
+            break
+    assert snaps["job"] is None, "the restore never finished"
+    assert int(lua.globals()._imports) == 6, (
+        f"restored {int(lua.globals()._imports)} of 6 creations")
+
+    # The same hazard, the same number, in the other file that clears and
+    # rebuilds. They were allowed to drift once and it cost the plaza.
+    world_src = read("World.lua")
+    m = re.search(r"World\.CITY_SETTLE_TICKS = (\d+)", world_src)
+    assert m, "World.CITY_SETTLE_TICKS is gone -- the city builder lost its wait"
+    assert settle >= int(m.group(1)), (
+        f"restore waits {settle} ticks and the city builder waits {m.group(1)}. "
+        "They are the same hazard; the shorter one is the bug.")
 
 
 def a_ban_reaches_the_engine_not_just_our_list():
@@ -2743,7 +2966,7 @@ def every_button_reaches_a_branch():
     game = read("Game.lua")
     panels = ["MenuGui.lua", "PlotsGui.lua", "SettingsGui.lua",
               "EventGui.lua", "MyPlotGui.lua", "ConfirmGui.lua", "StyleGui.lua",
-              "FocusGui.lua"]
+              "FocusGui.lua", "ChecklistGui.lua"]
     orphans = []
     for name in panels:
         for action in sorted(set(re.findall(r'action = "([^"]+)"', read(name)))):
@@ -3043,7 +3266,8 @@ def gui_lua():
     lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Event.lua", "EventHud.lua",
                 "RosterHud.lua", "EventGui.lua", "ConfirmGui.lua",
                 "SettingsGui.lua", "PlotsGui.lua", "MenuGui.lua", "MyPlotGui.lua",
-                "StyleGui.lua", "FocusGui.lua")
+                "StyleGui.lua", "FocusGui.lua",
+                "Checklist.lua", "ChecklistGui.lua")
     lua.globals().Settings.Sv_Load(False)
     return lua
 
@@ -5928,6 +6152,885 @@ def the_roster_hud_grows_for_the_focus_line():
             f"{w}x{h}: the grown roster runs off the canvas"
 
 
+# -------------------------------------------------------------- checklist ---
+#
+# The in-game dev checklist. ASKED FOR: "you make an ingame check list. for
+# devs. so I can test stuff ... because if I have to switch every time here. I
+# waste my time if the feature is still broken on writing it again."
+#
+# What these checks can cover is the catalogue and the arithmetic -- that every
+# item is complete, that a result survives a reload, that walking the list
+# reaches every item exactly once, that the panel fits. What they cannot cover
+# is the only thing that matters about it: whether pressing PASS in the game
+# writes a file. That is the same honest limit as everywhere else here.
+#
+# One of these is worth more than the rest. every_log_line_the_checklist_cites
+# EXCLUDES Checklist.lua from the source it searches, and the first version did
+# not -- so it passed while four of the cited lines existed nowhere but in the
+# catalogue quoting itself. A check that reads its own answer back is not a
+# check, and this project has now written that mistake twice.
+
+
+def checklist_lua():
+    return fresh("Checklist.lua")
+
+
+def checklist_gui_lua():
+    return fresh("Checklist.lua", "ChecklistGui.lua")
+
+
+def mod_source_without(*skip):
+    """Every mod script concatenated, minus the ones named."""
+    out = []
+    for f in sorted(SCRIPTS.glob("*.lua")):
+        if f.name in skip:
+            continue
+        out.append(io.open(f, encoding="utf-8").read())
+    return "\n".join(out)
+
+
+def the_checklist_says_which_build_it_is():
+    """A result records the build it was given against, so the number has to be
+    the real one. A stale Checklist.BUILD silently mislabels every result
+    recorded after it, and nothing in the game would ever say so."""
+    lua = checklist_lua()
+    build = int(lua.globals().Checklist.BUILD)
+    stamped = int(io.open(ROOT / "VERSION", encoding="utf-8").read().strip())
+    assert build == stamped, (
+        f"Checklist.BUILD is {build} and VERSION says {stamped}. Every result "
+        "recorded from now on would be stamped with the wrong build.")
+
+
+def every_checklist_item_is_complete_and_unique():
+    """An item with no pass condition is a to-do, not a test.
+
+    And an id is the key a result is stored under, so a duplicate silently makes
+    two items share one answer -- pressing PASS on one would mark the other.
+    """
+    lua = checklist_lua()
+    C = lua.globals().Checklist
+    groups = {g["id"] for g in C.GROUPS.values()}
+    seen, problems = set(), []
+    for item in C.ITEMS.values():
+        i = item["id"]
+        if not i:
+            problems.append("an item has no id")
+            continue
+        if i in seen:
+            problems.append(f"{i}: duplicate id -- two items would share one result")
+        seen.add(i)
+        if item["group"] not in groups:
+            problems.append(f"{i}: group {item['group']!r} is not in Checklist.GROUPS, "
+                            "so the item is unreachable from the panel")
+        if not item["title"]:
+            problems.append(f"{i}: no title")
+        if not item["pass"]:
+            problems.append(f"{i}: no pass condition -- that is a to-do, not a test")
+        steps = item["steps"]
+        if steps is None or len(list(steps.values())) == 0:
+            problems.append(f"{i}: no steps")
+    assert not problems, "; ".join(problems[:6])
+    assert len(seen) >= 40, (
+        f"only {len(seen)} items -- STATUS.md section C is longer than that, so "
+        "something has been dropped")
+
+    # Every group must actually hold something, or the nav column offers a
+    # button that opens an empty list.
+    for g in C.GROUPS.values():
+        n = len(list(C.ItemsIn(g["id"]).values()))
+        assert n > 0, f"group {g['id']!r} has no items but has a nav button"
+
+
+def every_command_the_checklist_can_run_exists():
+    """The RUN button fires the item's own command through the ordinary admin
+    path. A command that is not bound would do nothing at all, and the panel
+    would say it had sent it -- which is precisely the failure mode the
+    'a panel that closes on every click' note is about: a button that lies."""
+    lua = checklist_lua()
+    game = read("Game.lua")
+    bound = set(re.findall(r'bindChatCommand\(\s*"(/\w+)"', game))
+    assert bound, "no chat commands found -- the scan is broken, not the code"
+    dead = []
+    for item in lua.globals().Checklist.ITEMS.values():
+        run = item["run"]
+        if run is None:
+            continue
+        first = list(run.values())[0]
+        if first not in bound:
+            dead.append(f"{item['id']} runs {first}")
+    assert not dead, (
+        "the checklist offers to run a command that is not bound: " + ", ".join(dead))
+
+
+def every_log_line_the_checklist_cites_is_one_the_mod_writes():
+    """Each item may name the log line that settles it. If the mod does not
+    write that line, the instruction sends somebody looking for something that
+    was never there.
+
+    Checklist.lua is EXCLUDED from the search on purpose. The first version of
+    this check included it and passed -- four of the cited lines existed nowhere
+    but in the catalogue quoting itself.
+    """
+    lua = checklist_lua()
+    src = mod_source_without("Checklist.lua")
+    missing = []
+    for item in lua.globals().Checklist.ITEMS.values():
+        line = item["log"]
+        if line is None:
+            continue
+        line = str(line)
+        # An item answered from the log may cite an ENGINE line -- a Lua
+        # traceback, a NetworkServer budget warning. Those are not ours to
+        # write and cannot be found in our source; they are checked only for
+        # being there at all.
+        if not line.startswith("[ServerWorks]"):
+            assert item["who"] == "log", (
+                f"{item['id']} cites {line!r}, which is not one of our lines, "
+                "but is not a who = \"log\" item")
+            assert len(line) > 8, f"{item['id']} cites an empty log line"
+            continue
+        if line not in src:
+            missing.append(f"{item['id']} cites {line!r}")
+    assert not missing, (
+        "the checklist points at a log line the mod never writes: "
+        + "; ".join(missing))
+
+
+def everything_the_checklist_tells_you_to_type_still_exists():
+    """The list must describe the mod as it is TODAY, not as it was.
+
+    REPORTED: "some things are just olden. like not up to date like use clear
+    city but we removed that. find all the outaded things and remove them. I
+    want to have the list that is possible now."
+
+    Three were stale on the first pass, and all three were the same shape -- an
+    instruction inherited from a document rather than read out of the code:
+
+      * `/set maxparts 105`, a setting that has NEVER existed. Rules.lua
+        enforces maxjoints, maxbots and maxlights and nothing else, so there is
+        no per-plot block limit to test -- and docs/NEXT.md was recommending the
+        number to set it to.
+      * `/purge walkways`, removed on the owner's instruction along with the
+        SWEEP LITTER button that ran it. CHANGELOG: "Gone: the SWEEP LITTER
+        button and the /purge walkways branch behind it."
+      * `/citystyle brutalist`, which exists but which the owner had already
+        said they disliked.
+
+    A checklist that sends somebody to type a command that does not exist wastes
+    the thing it was built to save. So every command, every subcommand, every
+    setting name and every button caption it mentions is checked against the
+    code that would run it.
+
+    The valid values are READ OUT OF THE MOD, never listed here -- a hardcoded
+    list would go stale in exactly the way this check exists to prevent, and it
+    would go stale silently.
+    """
+    lua = fresh("Checklist.lua", "Settings.lua", "Palette.lua")
+    C = lua.globals().Checklist
+    game, world = read("Game.lua"), read("World.lua")
+
+    def branch(src, marker, span=6000):
+        """The literals a handler compares against, from its own source."""
+        i = src.find(marker)
+        assert i >= 0, f"cannot find {marker!r} -- the scan is broken, not the code"
+        body = src[i:i + span]
+        return set(re.findall(r'==\s*"([\w/]+)"', body))
+
+    bound = set(re.findall(r'bindChatCommand\(\s*"(/\w+)"', game))
+    assert bound, "no chat commands found -- the scan is broken"
+
+    keys = {str(row["key"]) for row in lua.globals().Settings.SCHEMA.values()}
+    assert len(keys) > 20, "the settings schema came back too small"
+
+    styles = {str(v) for v in lua.globals().Palette.STYLE_ORDER.values()}
+    assert styles, "no city styles found"
+
+    subs = {
+        "/set": keys,
+        "/citystyle": styles,
+        "/purge": branch(world, 'cmd == "/purge"'),
+        "/plot": branch(world, "function World.sv_plotCommand"),
+        "/event": branch(game, "function Game.sv_eventCommand"),
+        "/crowd": branch(world, "function World.sv_crowdCommand"),
+    }
+    for cmd, valid in subs.items():
+        assert valid, f"no valid arguments found for {cmd} -- the scan is broken"
+
+    # Captions the panels really draw, so a button named in an instruction is a
+    # button that is on the screen.
+    captions = set()
+    for f in sorted(SCRIPTS.glob("*Gui*.lua")):
+        if f.name.startswith("Checklist"):
+            continue
+        src = io.open(f, encoding="utf-8").read()
+        captions |= set(re.findall(r'"([A-Z][A-Z0-9 ]{2,})"', src))
+        captions |= set(re.findall(r'label = "([^"]+)"', src))
+    assert "BUILD CITY" in captions, "the caption scan missed a known button"
+
+    # Words that are emphasis in a sentence, not the name of a button.
+    PROSE = {"STOP", "AND", "TELL", "ME", "THIS", "IS", "THE", "MOST", "IMPORTANT",
+             "ONE", "ON", "WHOLE", "LIST", "NOT", "A", "OR", "IT", "IF", "NO",
+             "REMOVE", "TWO", "PEOPLE", "DO", "IN", "AT", "ALL", "HAS", "NEVER",
+             "BEEN", "TRIED", "SAVING", "KNOWN", "TO", "WORK", "BUT", "PUTTING",
+             "BACK", "ONCE", "OF", "WAY", "SAID", "THAT", "ONLY", "REAL",
+             "DEFENCE", "SO", "MATTERS", "MORE", "THAN"}
+
+    def check_typed(where, line):
+        """A step that says `type /x y` is an instruction, so both halves of it
+        have to be real. Prose that merely mentions a command is checked for the
+        command only -- "/crowd puts fake players on the city" is a sentence,
+        not an instruction, and `puts` is not an argument."""
+        for cmd in sorted(set(re.findall(r"(/\w+)", line))):
+            if cmd not in bound:
+                problems.append(f"{where}: {cmd} is not a command any more")
+        m = re.match(r"\s*type (/\w+)(?:\s+(\S+))?", line)
+        if m is None:
+            return
+        cmd, arg = m.group(1), m.group(2)
+        if arg is None or cmd not in subs:
+            return
+        if re.fullmatch(r"-?\d+", arg):
+            return                       # /crowd 5, /plotgrid 20 -- a number
+        if arg not in subs[cmd]:
+            problems.append(
+                f"{where}: `{cmd} {arg}` -- {cmd} does not take {arg!r} any more")
+
+    problems = []
+    for item in C.ITEMS.values():
+        steps = [str(v) for v in item["steps"].values()] if item["steps"] else []
+        # Each string on its own. Joining them let the first word of one step be
+        # read as the argument of the command in the step before it, which is
+        # how this check first accused /citystyle of not taking "look".
+        for line in steps:
+            check_typed(item["id"], line)
+        for field in ("title", "pass"):
+            for cmd in sorted(set(re.findall(r"(/\w+)", str(item[field])))):
+                if cmd not in bound:
+                    problems.append(f"{item['id']}: {cmd} is not a command any more")
+
+        text = " ".join([str(item["title"]), " ".join(steps), str(item["pass"])])
+
+        for phrase in sorted(set(re.findall(
+                r"\b([A-Z][A-Z0-9]+(?: [A-Z][A-Z0-9]+)+)\b", text))):
+            if phrase in captions or all(w in PROSE for w in phrase.split()):
+                continue
+            problems.append(f"{item['id']}: {phrase!r} is not a button on any panel")
+
+        # and the RUN button, which types the command for you
+        if item["run"] is not None:
+            words = [str(v) for v in item["run"].values()]
+            if words[0] not in bound:
+                problems.append(f"{item['id']}: RUN would type {words[0]}, "
+                                "which is not a command")
+            elif (len(words) > 1 and words[0] in subs
+                    and not re.fullmatch(r"-?\d+", words[1])
+                    and words[1] not in subs[words[0]]):
+                problems.append(f"{item['id']}: RUN would type "
+                                f"{' '.join(words[:2])}, which is not valid")
+
+    assert not problems, (
+        f"{len(problems)} thing(s) in the checklist no longer exist in the mod:\n    "
+        + "\n    ".join(problems[:10]))
+
+
+def no_item_on_the_panel_sends_you_to_a_log():
+    """REPORTED: "so that there are only things I can directly test in games
+    since I dont want to go in logs to test something. since stuff like that you
+    can basicaly do your self."
+
+    Right, and it is not only a preference. Reading a log is done afterwards,
+    from outside the game; an item that needs one cannot be answered by somebody
+    standing in the world with the panel open, so it stalls the walk.
+
+    Anything whose answer is only in a log is who = "log" and is off the panel.
+    Everything else must be answerable from what is on screen or in chat -- and
+    the mod gives it: /why prints the zone, the mode and all eight body flags
+    straight to chat, which is what the most important item in the list
+    (city-zones) now uses instead of a log line.
+    """
+    lua = checklist_lua()
+    offenders = []
+    for item in lua.globals().Checklist.ITEMS.values():
+        if item["who"] == "log":
+            continue
+        steps = " ".join(str(v) for v in item["steps"].values()) if item["steps"] else ""
+        blob = f'{item["title"]} {steps} {item["pass"]}'.lower()
+        if "log" in blob:
+            offenders.append(item["id"])
+    assert not offenders, (
+        "these are on the panel and mention a log: " + ", ".join(offenders)
+        + '. Either say what is on SCREEN instead, or mark it who = "log" and'
+        " answer it from this side.")
+
+
+def a_log_item_is_off_the_panel_and_names_what_to_search_for():
+    """The other half of the same rule. A who = "log" item must not reach the
+    panel -- not in the list, not through NEXT, not in the counts -- and it has
+    to name the line to search for, or it is a chore with no instructions."""
+    lua = checklist_lua()
+    C = lua.globals().Checklist
+    logs = [i for i in C.ITEMS.values() if i["who"] == "log"]
+    assert logs, 'no who = "log" items -- the field is not being used at all'
+
+    for item in logs:
+        assert item["log"], (
+            f"{item['id']} is answered from the log and does not say which line")
+
+    ids = {i["id"] for i in logs}
+    shown = {i["id"] for i in C.ItemsIn("all").values()}
+    assert not (ids & shown), (
+        "a log item is on the panel: " + ", ".join(sorted(ids & shown)))
+    for group in [g["id"] for g in C.GROUPS.values()]:
+        shown = {i["id"] for i in C.ItemsIn(group).values()}
+        assert not (ids & shown), (
+            f"a log item is on the {group} page: " + ", ".join(sorted(ids & shown)))
+
+    # and the counts, or the progress bar can never reach the end
+    counts = C.Counts(lua.eval("{}"), None)
+    assert int(counts["total"]) == len(list(C.ItemsIn("all").values())), (
+        "the counts include items the panel does not show, so the bar would "
+        "stop short of full however much work is done")
+    assert len(list(C.AllItems("all").values())) == int(counts["total"]) + len(logs), (
+        "AllItems and ItemsIn do not differ by exactly the log items")
+
+
+def a_checklist_result_survives_a_reload():
+    """Press PASS, and it must still be a PASS after the game is restarted.
+
+    Exercised through the stub filesystem, so the save and the load are the real
+    functions rather than a mock of them -- what is NOT proven is that sm.json
+    can write this particular file, though the installed mod's own Settings.json
+    says it can.
+    """
+    lua = checklist_lua()
+    C = lua.globals().Checklist
+    results = lua.eval("{}")
+    C.Set(results, "boot-world", "pass", None, 56, 1000)
+    C.Set(results, "backup-restore", "fail", "importFromString threw", 56, 1001)
+    C.Sv_Save(results)
+
+    back = C.Sv_Load()
+    assert C.StateOf(back, "boot-world") == "pass"
+    assert C.StateOf(back, "backup-restore") == "fail"
+    assert back["backup-restore"]["note"] == "importFromString threw", (
+        "the note did not survive the round trip -- the note is the only place "
+        "the reason for a failure is written down")
+    assert back["backup-restore"]["build"] == 56
+
+    counts = C.Counts(back, None)
+    assert int(counts["pass"]) == 1 and int(counts["fail"]) == 1, (
+        "the counts do not agree with what came back off the disk")
+
+
+def an_answer_the_panel_cannot_give_is_never_recorded():
+    """Only the four states exist. A typo, or a payload from somewhere other
+    than our panel, must not put a fifth one in the file where nothing can
+    display it and nothing can clear it."""
+    lua = checklist_lua()
+    C = lua.globals().Checklist
+    results = lua.eval("{}")
+    C.Set(results, "boot-quiet", "probably", None, 56, None)
+    assert C.StateOf(results, "boot-quiet") == "untested", (
+        "a made-up state was recorded")
+    C.Set(results, "no-such-item", "pass", None, 56, None)
+    assert C.StateOf(results, "no-such-item") == "untested", (
+        "a result was recorded against an item that does not exist")
+
+
+def clearing_a_result_takes_it_out_of_the_file():
+    """untested is the ABSENCE of a result, not a result.
+
+    If clearing wrote "untested" instead, every count would depend on whether an
+    item had ever been visited, and the file would fill up with non-answers.
+    """
+    lua = checklist_lua()
+    C = lua.globals().Checklist
+    results = lua.eval("{}")
+    C.Set(results, "boot-quiet", "pass", None, 56, None)
+    C.Set(results, "boot-quiet", None, None, 56, None)
+    assert results["boot-quiet"] is None, "a cleared item is still in the table"
+    C.Sv_Save(results)
+    assert C.Sv_Load()["boot-quiet"] is None, "a cleared item came back from the file"
+
+
+def a_note_outlives_the_answer_it_was_written_for():
+    """Somebody types what went wrong, then presses FAIL. Losing the note at
+    that moment would teach people not to write notes, which is the only part of
+    this that a reader other than the person who ran the test can use."""
+    lua = checklist_lua()
+    C = lua.globals().Checklist
+    results = lua.eval("{}")
+    C.SetNote(results, "limit-trim", "the bearing would not break")
+    assert C.StateOf(results, "limit-trim") == "untested", (
+        "writing a note answered the item by itself")
+    C.Set(results, "limit-trim", "fail", None, 56, None)
+    assert results["limit-trim"]["note"] == "the bearing would not break", (
+        "the note was lost when the answer was given")
+
+    # And an empty note on an untested item leaves nothing behind at all.
+    C.SetNote(results, "limit-locks", "typo")
+    C.SetNote(results, "limit-locks", "")
+    assert results["limit-locks"] is None, (
+        "clearing the note left an empty record behind")
+
+
+def the_checklist_walks_every_item_exactly_once():
+    """NEXT UNANSWERED is how a session is actually run, so it has to reach
+    everything and then stop. A cursor that wrapped without noticing would walk
+    somebody round the same list forever."""
+    lua = checklist_lua()
+    C = lua.globals().Checklist
+    results = lua.eval("{}")
+    solo = [i["id"] for i in C.ITEMS.values()
+            if i["needs"] != "guest" and i["who"] != "log"]
+
+    seen, cursor = [], None
+    for _ in range(len(solo) + 5):
+        nxt = C.NextUntested(results, cursor, False)
+        if nxt is None:
+            break
+        assert nxt not in seen, f"{nxt} was offered twice"
+        seen.append(nxt)
+        C.Set(results, nxt, "pass", None, 56, None)
+        cursor = nxt
+    assert C.NextUntested(results, cursor, False) is None, (
+        "everything answerable is answered and it still offers another")
+    assert seen == solo, (
+        f"walked {len(seen)} items, there are {len(solo)} that one person can "
+        "answer -- the walk is not in catalogue order or it skipped something")
+
+
+def the_checklist_never_walks_a_solo_host_into_a_guest_item():
+    """Eleven items cannot be answered without a second person. Offering one to
+    somebody testing alone is how a session stalls on a question nobody can
+    answer -- so they are skipped by default, and reachable on purpose."""
+    lua = checklist_lua()
+    C = lua.globals().Checklist
+    results = lua.eval("{}")
+    guests = {i["id"] for i in C.ITEMS.values() if i["needs"] == "guest"}
+    assert guests, "no guest-only items -- the field is not being read"
+
+    cursor = None
+    for _ in range(200):
+        nxt = C.NextUntested(results, cursor, False)
+        if nxt is None:
+            break
+        assert nxt not in guests, f"{nxt} needs a guest and was offered anyway"
+        C.Set(results, nxt, "pass", None, 56, None)
+        cursor = nxt
+
+    # ...and with includeGuest they are reachable, or they could never be answered
+    nxt = C.NextUntested(results, None, True)
+    assert nxt in guests, (
+        "with a guest present there is no way to reach the guest-only items")
+
+
+def the_summary_names_every_failure():
+    """A count of failures is not actionable; a list of them is. This is the
+    text that gets pasted into a conversation or read out of the log."""
+    lua = checklist_lua()
+    C = lua.globals().Checklist
+    results = lua.eval("{}")
+    C.Set(results, "backup-restore", "fail", "threw on the second call", 56, None)
+    C.Set(results, "limit-trim", "fail", None, 56, None)
+    C.Set(results, "boot-quiet", "pass", None, 56, None)
+    lines = "\n".join(str(v) for v in C.Summary(results).values())
+    assert "backup-restore" in lines and "limit-trim" in lines, (
+        "the summary does not name the failing items")
+    assert "threw on the second call" in lines, "the summary drops the note"
+    assert "boot-quiet" not in lines, "the summary lists passes by name as well"
+
+
+def a_new_world_never_clears_the_checklist():
+    """Every other state file here describes a WORLD, and a new world must not
+    inherit one: sv_newWorldReset exists for exactly that.
+
+    The checklist is the opposite case. It records what the CODE did, and making
+    a fresh world is the usual way to test something -- so wiping it on world
+    create would throw away the session that was being recorded, every time.
+    """
+    game = read("Game.lua")
+    body = game[game.index("function Game.sv_newWorldReset"):]
+    body = body[:body.index(chr(10) + "end")]
+    assert "Checklist" not in body, (
+        "sv_newWorldReset touches the checklist. A new world is the usual way "
+        "to test something; clearing the results there would delete the session "
+        "that is being recorded.")
+
+
+def wrapping_never_loses_a_word():
+    """The panel wraps long text into one widget per line, because a TextBox
+    does not wrap in any way this can rely on. Dropping a word would silently
+    change what a pass condition says."""
+    lua = checklist_gui_lua()
+    G = lua.globals().ChecklistGui
+    C = lua.globals().Checklist
+    for item in C.ITEMS.values():
+        text = str(item["pass"])
+        lines = [str(v) for v in G.Wrap(text, 120, None).values()]
+        assert " ".join(lines).split() == text.split(), (
+            f"{item['id']}: wrapping changed the words of the pass condition")
+        for line in lines:
+            assert len(line) <= 120, f"{item['id']}: a wrapped line is {len(line)} long"
+
+    # A word longer than the whole line must be broken rather than loop forever.
+    long_word = "x" * 300
+    lines = [str(v) for v in G.Wrap(long_word, 40, None).values()]
+    assert "".join(lines) == long_word and len(lines) >= 7
+
+    # And the cap ends with three ASCII dots -- a Unicode ellipsis is one
+    # codepoint the game has probably never drawn, so it comes out hollow.
+    capped = [str(v) for v in G.Wrap(" ".join(["word"] * 200), 40, 3).values()]
+    assert len(capped) == 3 and capped[-1].endswith("...")
+    assert all(ord(c) < 128 for c in "".join(capped)), "a non-ASCII character got in"
+
+
+def the_checklist_panel_fits_for_every_item():
+    """Every list page and EVERY item's detail view, at the panel's own size.
+
+    Per item rather than per sample, because the detail view lays itself out
+    from the item's own steps and pass text -- so a long one added later is
+    exactly what would push the buttons off the bottom, and nothing else here
+    would notice.
+    """
+    lua = checklist_gui_lua()
+    G = lua.globals().ChecklistGui
+    C = lua.globals().Checklist
+    W, H = int(G.W), int(G.H)
+
+    assert H <= 690, (
+        f"the checklist panel is {H} tall. The canvas is about 720 and vanilla's "
+        "own panels stop at 690; taller than that and the footer is off screen")
+
+    results = lua.eval("{}")
+    C.Set(results, "boot-quiet", "pass", None, 55, None)      # an older build
+    C.Set(results, "boot-world", "fail", "a note that is quite long indeed, as "
+          "the ones that matter usually are", 56, None)
+
+    groups = ["all"] + [g["id"] for g in C.GROUPS.values()]
+    for g in groups:
+        for page in (1, 2, 99):
+            state = lua.table_from({"group": g, "page": page, "results": results,
+                                    "build": 56, "status": "something happened"})
+            root = G.Build(state)
+            label = f"checklist/{g}/p{page}"
+            items = panel_fits(label, root, W, H)
+            no_button_is_buried(label, items, H)
+
+    for item in C.ITEMS.values():
+        state = lua.table_from({"item": item["id"], "results": results,
+                                "build": 56, "status": "x"})
+        root = G.Build(state)
+        label = f"checklist/item/{item['id']}"
+        items = panel_fits(label, root, W, H)
+        no_button_is_buried(label, items, H)
+
+
+def the_checklist_draws_no_character_the_other_panels_have_not():
+    """The game builds a limited glyph set per font out of the strings it draws
+    itself, and a character outside it comes out as a hollow box. MEASURED:
+    SM_LabelMini drew HOST as (X)OST.
+
+    The fonts this panel uses have no declared limit, and CLAUDE.md records a
+    measurement that such a font drew mixed case and digits correctly. What was
+    never measured is PUNCTUATION -- so the checklist, which is eighty-three
+    items of prose and by far the most text this mod has ever drawn, stays
+    inside the characters the already-shipped panels draw.
+
+    That set is computed from those panels rather than written down, so it grows
+    on its own the day one of them draws something new.
+    """
+    lua = gui_lua()
+    proven = set()
+
+    def note(root):
+        for w in walk_full(root):
+            for ch in str(w["caption"] or ""):
+                if not ch.isalnum():
+                    proven.add(ch)
+
+    for host in (True, False):
+        note(lua.globals().MenuGui.Build(host))
+    cfg = {"plot": 20, "gap": 1, "cols": 10, "rows": 10, "roadevery": 0,
+           "roadwidth": 6, "plazacells": 2, "claimed": {}}
+    note(lua.globals().PlotsGui.Build(lua.table_from(
+        {k: (lua.table_from(v) if isinstance(v, dict) else v) for k, v in cfg.items()})))
+    for phase in ("off", "prep", "build", "buffer", "ended"):
+        note(lua.globals().EventGui.Build(lua.table_from(
+            {"phase": phase, "remaining": 754.0, "prep": 10, "build": 60, "buffer": 5})))
+    note(lua.globals().FocusGui.Build(lua.table_from(
+        {"players": lua.table_from([lua.table_from({"id": 1, "name": "zeb"})])})))
+    assert len(proven) > 5, "the proven set came out empty -- the scan is broken"
+
+    G, C = lua.globals().ChecklistGui, lua.globals().Checklist
+    results = lua.eval("{}")
+    used = {}
+    states = [{"group": g["id"], "page": p, "results": results, "build": 57}
+              for g in C.GROUPS.values() for p in (1, 2)]
+    states += [{"item": i["id"], "results": results, "build": 57}
+               for i in C.ITEMS.values()]
+    for st in states:
+        for w in walk_full(G.Build(lua.table_from(st))):
+            for ch in str(w["caption"] or ""):
+                if not ch.isalnum() and ch not in proven:
+                    used.setdefault(ch, str(w["caption"])[:50])
+    assert not used, (
+        "the checklist draws characters no other panel does, and nothing has "
+        "ever confirmed the font has them: "
+        + "; ".join(f"{ch!r} in {where!r}" for ch, where in list(used.items())[:5]))
+
+
+def the_checklist_panel_has_exactly_one_typed_box():
+    """One EditBox in a tree, and its handler draws nothing.
+
+    Both rules were paid for by the event clock, which crashed the game twice
+    over typed input -- once by rendering inside the text callback, and again
+    after that redraw had been deferred by a tick.
+    """
+    lua = checklist_gui_lua()
+    G = lua.globals().ChecklistGui
+    results = lua.eval("{}")
+
+    listing = G.Build(lua.table_from({"group": "all", "results": results}))
+    assert not [n for n in walk_raw(listing) if n["Type"] == "EditBox"], (
+        "the list view has an EditBox -- only the detail view may have one")
+
+    detail = G.Build(lua.table_from({"item": "boot-quiet", "results": results}))
+    boxes = [n for n in walk_raw(detail) if n["Type"] == "EditBox"]
+    assert len(boxes) == 1, (
+        f"the item view has {len(boxes)} EditBoxes -- moving focus between two "
+        "of them is what crashed the game twice")
+    box = boxes[0]
+    assert str(box["Name"]) == str(G.NOTE_BOX), (
+        "the note box's name does not match ChecklistGui.NOTE_BOX, so the "
+        "handler cannot tell which box was typed into")
+    assert box["Static"] is False, "the note box is Static -- it would never take text"
+    assert box["NeedKey"] is True, "the note box cannot take the keyboard"
+    assert box["onTextEnter"] is not None, "the note box has no onTextEnter"
+
+    game = read("Game.lua")
+    handler = game[game.index("function Game.cl_onChecklistNoteTyped"):]
+    handler = handler[:handler.index(chr(10) + "end")]
+    for banned in ("cl_showPanel", "cl_renderLater", "cl_closeLater", ":render("):
+        assert banned not in handler, (
+            f"cl_onChecklistNoteTyped calls {banned} -- a text callback that "
+            "touches the GUI crashed the game twice, and deferring was not enough")
+
+
+def answering_from_the_panel_writes_the_file_at_once():
+    """A test session ends when the game crashes or somebody stops playing, and
+    neither runs a shutdown hook. So the press has to write, not a later save.
+
+    Source-level, because the write itself is sm.json's and cannot be reached
+    from here -- but a recorder that only kept results in memory would lose
+    exactly the session that was recording the crash.
+    """
+    game = read("Game.lua")
+    body = game[game.index("function Game.sv_recordChecklist"):]
+    body = body[:body.index(chr(10) + "end")]
+    assert "Checklist.Sv_Save" in body, (
+        "sv_recordChecklist does not save. A result held in memory is lost by "
+        "the crash it was recording.")
+    assert "sm.log.info" in body, (
+        "a result is not written to the log. The log is where every other piece "
+        "of evidence about a session already is -- a FAIL and the traceback "
+        "that caused it should end up a few lines apart")
+
+    handler = game[game.index("function Game.sv_n_checklistAction"):]
+    handler = handler[:handler.index(chr(10) + "end")]
+    assert "sm.player.getHostPlayer()" in handler, (
+        "the checklist action handler does not check the sender")
+
+
+# ----------------------------------------------------------------- bridge ---
+#
+# The outside-the-game control channel. ASKED FOR: "we can make you dirrectly
+# connect to the game?" -- because the slow part of this project is the round
+# trip, not the work.
+#
+# What these can cover: the sequence arithmetic, the parsing, the capture
+# buffer, and the four structural rules that make it safe. What they cannot
+# cover is the one thing that decides whether it works at all -- whether the
+# engine hands back a file written from outside, or a cached copy. That is why
+# the design never reads a path twice: a stale read cannot happen to a path that
+# has never been read.
+
+
+def bridge_lua():
+    return fresh("Settings.lua", "Bridge.lua")
+
+
+def the_bridge_is_shut_unless_somebody_opens_it():
+    """It is a remote control for a game server, so the default has to be off,
+    and off has to mean it does nothing at all -- not "nothing useful". While it
+    is off there is no poll, no read and no write.
+
+    allow_add_mods is false in this mod because the mod list is the trust
+    boundary. This is the same argument pointed at a file.
+    """
+    lua = bridge_lua()
+    lua.globals().Settings.Sv_Load(False)
+    assert lua.globals().Settings.Get("bridge") is False, (
+        "the bridge is ON by default -- a world would be drivable from outside "
+        "the moment it loaded")
+
+    game = read("Game.lua")
+    body = game[game.index("function Game.sv_bridgeTick"):]
+    body = body[:body.index(chr(10) + "end")]
+    assert 'Settings.Get( "bridge" )' in body, (
+        "sv_bridgeTick does not consult the setting, so switching it off would "
+        "not switch it off")
+    assert body.index('Settings.Get( "bridge" )') < body.index("Bridge.sv_poll"), (
+        "the bridge polls before it checks whether it is switched on")
+    assert "sm.player.getHostPlayer()" in body, (
+        "the bridge does not resolve a host, so it would run commands as nobody "
+        "-- every host gate in the mod depends on that player being the host")
+
+
+def the_bridge_never_reads_the_same_path_twice():
+    """THE WHOLE DESIGN, and the reason this did not need an experiment first.
+
+    The engine keeps compiled copies of the data files it reads (MEASURED: every
+    .rco in the mod's Cache/ was stamped hours before the .lua it came from). If
+    sm.json.open serves a cached copy then a channel built on rewriting one file
+    would answer the first command forever and nothing would say why.
+
+    So the sequence number is in the FILENAME. This walks several batches
+    through the real poll and asserts every path is one nothing has read.
+    """
+    lua = bridge_lua()
+    B = lua.globals().Bridge
+    b = B.sv_new()
+
+    seen = []
+    for _ in range(5):
+        path = str(B.CmdPath(b.seq))
+        assert path not in seen, f"the bridge would read {path} a second time"
+        seen.append(path)
+        lua.execute(f'sm.json.save( {{ commands = {{ "/protection" }} }}, "{path}" )')
+        assert B.sv_poll(b) is not None, f"the poll did not see {path}"
+        B.sv_writeResult(b, b.seq, lua.eval("{}"), None, lua.eval("{}"))
+        b.seq = b.seq + 1
+
+    assert len(set(seen)) == 5
+    assert "Cmd-1.json" in seen[0] and "Cmd-5.json" in seen[4], (
+        f"the sequence did not advance one at a time: {seen}")
+
+
+def a_file_the_bridge_cannot_use_does_not_wedge_it():
+    """A half-written or hand-edited file must not be polled forever.
+
+    Leaving the number where it is would re-read the same bad file twice a
+    second for the rest of the session, and from outside that looks exactly like
+    a bridge that is on, listening, and ignoring you. Found by writing this.
+    """
+    lua = bridge_lua()
+    B = lua.globals().Bridge
+    b = B.sv_new()
+    start = int(b.seq)
+
+    lua.execute(f'_files["{B.CmdPath(b.seq)}"] = "this is not a command file"')
+    assert B.sv_poll(b) is None
+    assert int(b.seq) == start + 1, (
+        "the bridge stayed on a file it cannot use -- it would poll it forever")
+
+    lua.execute(f'sm.json.save( {{ commands = {{ "/protection" }} }}, "{B.CmdPath(b.seq)}" )')
+    assert B.sv_poll(b) is not None, "the bridge did not recover from a bad file"
+
+
+def the_bridge_only_runs_things_that_look_like_commands():
+    """It runs chat commands as the host and nothing else. A line that is not a
+    command is dropped here rather than handed to a dispatch that would answer
+    "Host only." and leave somebody reading a confusing transcript."""
+    lua = bridge_lua()
+    B = lua.globals().Bridge
+
+    parsed = B.Parse(lua.table_from({"commands": lua.table_from([
+        "/set plots on",
+        lua.table_from(["/plot", "claim"]),
+        "rm -rf /",
+        "",
+    ])}))
+    got = [[str(w) for w in words.values()] for words in parsed.values()]
+    assert got == [["/set", "plots", "on"], ["/plot", "claim"]], got
+
+    many = B.Parse(lua.table_from({"commands": lua.table_from(
+        ["/protection"] * (int(B.MAX_COMMANDS) + 25))}))
+    assert len(list(many.values())) == int(B.MAX_COMMANDS)
+
+    assert len(list(B.Parse(lua.eval("{}")).values())) == 0
+    assert len(list(B.Parse(lua.eval('"nonsense"')).values())) == 0
+
+
+def the_bridge_keeps_listening_after_the_command_returns():
+    """A WORLD command does not answer while it runs. Game hands it to the world
+    as an event, the world deals with it on its own tick, and the reply comes
+    back later -- so a capture that closed when the call returned would catch
+    every reply from Game.lua and almost none from World.lua, which is /plot,
+    /why, /budget, /protection, /purge, /snapshot and the whole city.
+
+    The buffer closes on a clock instead, and anything arriving while it is open
+    belongs to the batch.
+    """
+    lua = bridge_lua()
+    B = lua.globals().Bridge
+    b = B.sv_new()
+
+    assert B.sv_capture(b, "before") is False, (
+        "the bridge captured a line while no batch was listening")
+
+    b.capture = lua.eval("{}")
+    B.sv_capture(b, "from Game, immediately")
+    B.sv_capture(b, "from the World, two ticks later")
+    assert [str(v) for v in b.capture.values()] == [
+        "from Game, immediately", "from the World, two ticks later"]
+
+    for i in range(int(B.MAX_LINES) + 50):
+        B.sv_capture(b, f"line {i}")
+    assert len(list(b.capture.values())) == int(B.MAX_LINES), (
+        "a command that replies per body could write a file the size of the city")
+
+    assert float(B.Wait(lua.eval("{}"))) == float(B.WAIT_DEFAULT)
+    assert float(B.Wait(lua.table_from({"wait": -5}))) == 0
+    assert float(B.Wait(lua.table_from({"wait": 99999}))) == float(B.WAIT_MAX)
+    assert float(B.Wait(lua.table_from({"wait": 12}))) == 12
+
+
+def every_reply_funnel_tells_the_bridge():
+    """Everything the mod says goes to a chat box, and nothing outside the game
+    can read a chat box. So each funnel hands its text to the bridge as well --
+    asserted for all of them, because forgetting one gives a transcript that is
+    quietly missing the answer somebody needed.
+    """
+    game = read("Game.lua")
+    for name in ("sv_e_swReply", "sv_e_swBroadcast", "sv_broadcast",
+                 "sv_n_adminCommand"):
+        body = game[game.index(f"function Game.{name}("):]
+        body = body[:body.index(chr(10) + "end")]
+        assert "sv_bridgeSay" in body, (
+            f"Game.{name} says something the bridge cannot hear, so a command "
+            "run from outside would come back with an empty transcript")
+
+    body = game[game.index("function Game.sv_bridgeSay"):]
+    body = body[:body.index(chr(10) + "end")]
+    assert "if b == nil then return end" in body, (
+        "sv_bridgeSay does not tolerate there being no bridge, and it is called "
+        "from every reply in the mod")
+
+
+def the_bridge_runs_inside_its_own_pcall():
+    """A control channel must never take the server down with it, and a fault
+    anywhere else on the tick must never leave a batch half-run. Same separation
+    /crowd and /bench already have, for the same reason: a test harness that can
+    switch protection off is worse than no harness."""
+    game = read("Game.lua")
+    tick = game[game.index("function Game.server_onFixedUpdate"):]
+    tick = tick[:tick.index(chr(10) + "end")]
+    assert "sv_bridgeTick" in tick, "nothing drives the bridge"
+    line = next(l for l in tick.splitlines() if "sv_bridgeTick" in l)
+    assert "pcall" in line, f"the bridge is driven without a pcall: {line.strip()!r}"
+
+
 def main():
     check("rules: over budget still lets you trim", over_budget_still_lets_you_trim)
     check("rules: over budget never opens somebody else's plot",
@@ -5993,6 +7096,8 @@ def main():
     check("bench: a wild frame sample is thrown away", a_wild_frame_sample_is_thrown_away)
     check("bench: results survive a restart", the_results_survive_a_restart)
     check("bench: a guest cannot drive the run", a_guest_cannot_drive_the_run)
+    check("backup: restore waits for the old world to be torn down",
+          a_restore_waits_for_the_old_world_to_be_torn_down)
     check("plumbing: every world command has a branch", every_world_command_has_a_branch)
     check("plumbing: every key sent across the bridge is read",
           every_key_sent_across_the_bridge_is_read_on_the_far_side)
@@ -6052,6 +7157,14 @@ def main():
     check("settings: presets differ the way they claim", presets_differ_in_the_direction_they_claim)
     check("tools: hazards bind the host too", hazard_tools_bind_the_host_too)
     check("tools: the lift is never treated as a hazard", the_lift_is_never_a_hazard)
+    check("lockdown: takes the tools off everyone, host included",
+          a_locked_world_takes_the_tools_off_everyone_including_the_host)
+    check("lockdown: you can still clear litter", a_locked_world_still_lets_you_clear_litter)
+    check("lockdown: unlocking gives back the tools you chose",
+          unlocking_gives_the_host_back_the_tools_they_chose)
+    check("lockdown: both files agree what locked means", both_files_agree_on_what_locked_means)
+    check("lockdown: every mode change tells the clients",
+          every_mode_change_tells_the_clients)
 
     check("identity: bans survive a restart", bans_survive_a_restart)
     check("backups: a capture completes and appears in the list",
@@ -6196,6 +7309,55 @@ def main():
     check("gui: the top-down map tiles exactly", the_top_down_map_tiles_exactly)
     check("gui: the my-plot panel fits in every state",
           the_my_plot_panel_fits_in_every_state)
+
+    check("checklist: it knows which build it is", the_checklist_says_which_build_it_is)
+    check("checklist: every item is complete and unique",
+          every_checklist_item_is_complete_and_unique)
+    check("checklist: every command it offers to run exists",
+          every_command_the_checklist_can_run_exists)
+    check("checklist: every log line it cites is one the mod writes",
+          every_log_line_the_checklist_cites_is_one_the_mod_writes)
+    check("checklist: a result survives a reload", a_checklist_result_survives_a_reload)
+    check("checklist: everything it tells you to type still exists",
+          everything_the_checklist_tells_you_to_type_still_exists)
+    check("checklist: nothing on the panel sends you to a log",
+          no_item_on_the_panel_sends_you_to_a_log)
+    check("checklist: a log item is off the panel and names its line",
+          a_log_item_is_off_the_panel_and_names_what_to_search_for)
+    check("checklist: an answer the panel cannot give is never recorded",
+          an_answer_the_panel_cannot_give_is_never_recorded)
+    check("checklist: clearing takes it out of the file",
+          clearing_a_result_takes_it_out_of_the_file)
+    check("checklist: a note outlives the answer it was written for",
+          a_note_outlives_the_answer_it_was_written_for)
+    check("checklist: it walks every item exactly once",
+          the_checklist_walks_every_item_exactly_once)
+    check("checklist: it never walks a solo host into a guest item",
+          the_checklist_never_walks_a_solo_host_into_a_guest_item)
+    check("checklist: the summary names every failure", the_summary_names_every_failure)
+    check("checklist: a new world never clears it", a_new_world_never_clears_the_checklist)
+    check("checklist: wrapping never loses a word", wrapping_never_loses_a_word)
+    check("checklist: the panel fits for every item and every page",
+          the_checklist_panel_fits_for_every_item)
+    check("checklist: the panel has exactly one typed box",
+          the_checklist_panel_has_exactly_one_typed_box)
+    check("checklist: it draws no character the other panels have not",
+          the_checklist_draws_no_character_the_other_panels_have_not)
+    check("checklist: answering writes the file at once",
+          answering_from_the_panel_writes_the_file_at_once)
+
+    check("bridge: shut unless somebody opens it",
+          the_bridge_is_shut_unless_somebody_opens_it)
+    check("bridge: never reads the same path twice",
+          the_bridge_never_reads_the_same_path_twice)
+    check("bridge: a file it cannot use does not wedge it",
+          a_file_the_bridge_cannot_use_does_not_wedge_it)
+    check("bridge: only runs things that look like commands",
+          the_bridge_only_runs_things_that_look_like_commands)
+    check("bridge: keeps listening after the command returns",
+          the_bridge_keeps_listening_after_the_command_returns)
+    check("bridge: every reply funnel tells it", every_reply_funnel_tells_the_bridge)
+    check("bridge: runs inside its own pcall", the_bridge_runs_inside_its_own_pcall)
 
     width = max(len(n) for n in PASS + [n for n, _ in FAIL])
     for name in PASS:
