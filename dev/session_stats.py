@@ -14,7 +14,10 @@ built on.
 AND IT WRITES THE ONE NETWORK MEASUREMENT THE ENGINE GIVES AWAY.
 
     WARNING: NetworkServer.cpp:231 Skip sending unreliable network data
-             to client 76561199070209586 Budget is currently: -280930
+             to client 765611990XXXXXXXX Budget is currently: -280930
+             (steam id redacted -- it identified a real guest, and this
+              repo is public. The tool prints live ids at runtime; only
+              the pasted EXAMPLE is masked.)
 
 That is the host giving up on sending a client its state updates for that
 tick, because that client's send budget is exhausted. It is the closest thing
@@ -60,10 +63,30 @@ JOIN = re.compile(rb"Loaded player (\d+) \(for user (\d+)\)")
 # deliberately not part of the pattern for exactly that reason.
 SKIP = re.compile(rb"Skip sending unreliable network data to client (\d+)"
                   rb"\s*Budget is currently:\s*(-?\d+)")
+# WHO WAS REFUSED, AND WHAT THE VISIBILITY SETTING WAS WHEN THEY WERE.
+#
+# MEASURED across this machine's 340 logs: 50 successful connections, 10
+# refusals -- and 8 of those 10 are one person, in one session, retrying every
+# few seconds and failing every time, right up until the host widened the
+# Multiplayer setting. Their very next attempt connected.
+#
+# A refusal is `Connecting -> None` with no `Finding Route` in between. A real
+# connection goes Connecting -> Finding Route -> Connected, so a state line that
+# falls back to None from Connecting never got as far as routing: it was turned
+# away, not dropped.
+#
+# The mode is logged as `Multiplayer: Multiplayer(N)` on load and on every
+# change, which is what makes the correlation readable at all.
+STATE = re.compile(rb"State: ([A-Za-z ]+) -> ([A-Za-z ]+)")
+CONN = re.compile(rb"Connection handle: (\d+), user: (\d+)")
+MPMODE = re.compile(rb"Multiplayer: Multiplayer\((\d+)\)")
+NOAUTH = re.compile(rb"User (\d+) is not authenticated")
+
 HEAD = re.compile(rb"^\d\d:\d\d:\d\d \(\d+/\d+\) \[[^\]]*\] ?")
 NUM = re.compile(rb"-?\d+\.?\d*")
 
 HEALTHY_TICK = 40.0
+NL = chr(10)
 
 
 def newest_log():
@@ -80,6 +103,10 @@ def scan(path, want_spam):
     spam = collections.Counter()
     # steam id -> [skips, worst deficit, first minute seen, last minute seen]
     budget = {}
+    # the connection story: mode changes, refusals, and auth drops
+    joins = {"modes": [], "refused": collections.Counter(),
+             "connected": collections.Counter(), "noauth": [], "last_user": None,
+             "mode_now": None}
 
     with open(path, "rb") as f:
         for line in f:
@@ -106,12 +133,32 @@ def scan(path, want_spam):
                         minute = t // 60
                         e[2] = minute if e[2] is None else e[2]
                         e[3] = minute
+            c = CONN.search(line)
+            if c:
+                joins["last_user"] = c.group(2).decode()
+            mp = MPMODE.search(line)
+            if mp:
+                joins["mode_now"] = int(mp.group(1))
+                joins["modes"].append((m and t or None, joins["mode_now"]))
+            st = STATE.search(line)
+            if st and joins["last_user"]:
+                a = st.group(1).decode().strip()
+                b = st.group(2).decode().strip()
+                if a == "Connecting" and b == "None":
+                    joins["refused"][(joins["last_user"], joins["mode_now"])] += 1
+                elif b == "Connected":
+                    joins["connected"][joins["last_user"]] += 1
+            na = NOAUTH.search(line)
+            if na:
+                joins["noauth"].append((m and t or None, na.group(1).decode(),
+                                        joins["mode_now"]))
+
             # sampling 1-in-7 is enough to rank spam and keeps the scan fast
             if want_spam and lines % 7 == 0:
                 msg = HEAD.sub(b"", line).strip()
                 spam[NUM.sub(b"#", msg)[:110]] += 1
 
-    return per_minute, users, max_pid, lines, spam, budget
+    return per_minute, users, max_pid, lines, spam, budget, joins
 
 
 def rates(per_minute):
@@ -138,7 +185,7 @@ def main():
     size = os.path.getsize(path)
     print(f"{os.path.basename(path)}  ({size / 1e6:.1f} MB)")
 
-    per_minute, users, max_pid, lines, spam, budget = scan(path, want_spam)
+    per_minute, users, max_pid, lines, spam, budget, joins = scan(path, want_spam)
     print(f"lines {lines:,}   distinct steam users {len(users)}   highest player id {max_pid}")
 
     r = rates(per_minute)
@@ -159,6 +206,45 @@ def main():
           f"{len(starved)}/{len(r)}")
     for k, tr, fr, dt in sorted(starved, key=lambda x: x[1])[:10]:
         print(f"  {k // 60:02d}:{k % 60:02d}   tick {tr:5.1f}   frame {fr:5.1f}   ({dt}s)")
+
+    # WHO GOT IN, WHO DID NOT, AND WHAT THE SETTING WAS AT THE TIME.
+    #
+    # A refusal is Connecting -> None with no Finding Route in between: turned
+    # away before routing, rather than dropped after it. MEASURED over the 340
+    # logs on this machine -- 50 connections, 10 refusals -- and 8 of those 10
+    # were ONE person retrying every few seconds into a visibility setting that
+    # did not allow them, ending the instant the host widened it.
+    print(NL + "who could join")
+    modes = joins["modes"]
+    if modes:
+        shown = ", ".join(
+            ("" if t is None else "%02d:%02d " % (t // 3600, t % 3600 // 60))
+            + "Multiplayer(%d)" % v for t, v in modes)
+        print("  visibility setting: " + shown)
+        if len(modes) > 1:
+            print("  ^ IT CHANGED MID-SESSION. Narrowing it drops everyone the new")
+            print("    setting does not allow, one tick later, logged as 'not")
+            print("    authenticated' rather than as anything about the setting.")
+    else:
+        print("  visibility setting: never logged (single player, or an old build)")
+
+    if joins["connected"]:
+        print("  connected: %d from %d user(s)"
+              % (sum(joins["connected"].values()), len(joins["connected"])))
+    if joins["refused"]:
+        print("  REFUSED:   %d attempt(s) -- turned away before routing"
+              % sum(joins["refused"].values()))
+        for (who, mode), n in joins["refused"].most_common():
+            print("    %3dx  user %s  while Multiplayer(%s)" % (n, who, mode))
+        print("    A refusal is the visibility setting, not the network. The person")
+        print("    retrying sees nothing, and neither does the host.")
+    else:
+        print("  refused:   none")
+    if joins["noauth"]:
+        print("  dropped as 'not authenticated': %d" % len(joins["noauth"]))
+        for t, who, mode in joins["noauth"][:6]:
+            when = "" if t is None else "%02d:%02d " % (t // 3600, t % 3600 // 60)
+            print("    %suser %s  while Multiplayer(%s)" % (when, who, mode))
 
     print("\nnetwork: server -> client updates DROPPED for want of budget")
     if not budget:

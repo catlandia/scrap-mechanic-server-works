@@ -297,19 +297,25 @@ def hazard_tools_bind_the_host_too():
         "the clay gun is on but still listed as blocked")
 
 
-def a_locked_world_takes_the_tools_off_everyone_including_the_host():
-    """REPORTED, from the game: "I still could use the lift, and the clay gun."
-    and "the lockdown shall block EVERYTHING".
+def a_locked_world_takes_every_tool_off_a_guest_and_none_off_the_host():
+    """REPORTED: "the lockdown shall block EVERYTHING" -- and, 2026-08-31, "I
+    should be able to build and delete stuff anywhere. and place lift."
 
-    Two faults were behind it. /lockdown wrote four settings false -- claygun,
-    firelauncher, cornades, extinguisher -- and the LIFT was never among them.
-    And the HOST is guarded by the hazard list alone (Game.sv_toolPayload sends
-    `host = hazardTools`), because the host keeps every build tool so whoever
-    runs the event can place and clear things -- a bypass that must stop
-    applying the moment the world is shut, or /lockdown stops the lobby and not
-    the person who called it.
+    Two halves that pull in opposite directions, and the split between them is
+    the guest list and the host list.
 
-    So the blocked set is derived from the MODE now, and both lists carry it.
+    A GUEST loses everything. The original fault was that /lockdown wrote four
+    settings false -- claygun, firelauncher, cornades, extinguisher -- and the
+    LIFT was never among them, so a locked world still had creations being
+    carried around in it. Deriving the set from the MODE fixed that and this
+    still holds it.
+
+    THE HOST LOSES NOTHING. V53 folded the lockdown into the hazard list too,
+    which is the only list guarding the host (Game.sv_toolPayload sends
+    `host = hazardTools`), so /lockdown disarmed the person who typed it. It
+    broke the lift in particular, in exactly the way the_lift_is_never_a_hazard
+    warns about: a hazard-listed tool is force-unequipped on your own client
+    every tick.
     """
     lua = fresh("Settings.lua")
     S = lua.globals().Settings
@@ -323,6 +329,11 @@ def a_locked_world_takes_the_tools_off_everyone_including_the_host():
     S.Sv_SetQuiet("lift", True)
     S.Sv_SetQuiet("sledgehammer", True)
     S.Sv_SetQuiet("painttool", True)
+    # ON, deliberately. The clay gun is a HAZARD, and a hazard the host switched
+    # off still binds the host -- see hazard_tools_bind_the_host_too. Leaving it
+    # at its default here would make this check pass for that reason instead of
+    # the one it is about.
+    S.Sv_SetQuiet("claygun", True)
     S.Sv_SetQuiet("protection", "open")
     assert "lift" not in names("Sv_BlockedTools"), (
         "the lift is blocked in an open world, which is not the point")
@@ -333,10 +344,12 @@ def a_locked_world_takes_the_tools_off_everyone_including_the_host():
         guest, host = names("Sv_BlockedTools"), names("Sv_HazardTools")
         for tool in ("lift", "claygun", "sledgehammer", "painttool", "notlift"):
             assert tool in guest, f"{mode}: a guest can still hold the {tool}"
-            assert tool in host, (
-                f"{mode}: THE HOST can still hold the {tool}. The host is "
-                "guarded by the hazard list alone, so a lockdown that leaves "
-                "that list alone stops the lobby and not the person who ran it.")
+            assert tool not in host, (
+                f"{mode}: the lockdown took the {tool} off THE HOST. The host is "
+                "guarded by the hazard list alone, so anything a lockdown adds "
+                "to it disarms the person running the event -- and for the lift "
+                "it also kills the blueprint menu, because a tool being "
+                "force-unequipped every tick cannot be handed a creation.")
 
 
 def a_locked_world_still_lets_you_clear_litter():
@@ -380,7 +393,7 @@ def unlocking_gives_the_host_back_the_tools_they_chose():
     S.Sv_SetQuiet("lift", True)
 
     S.Sv_SetQuiet("protection", "locked")
-    assert "claygun" in {str(v) for v in S.Sv_HazardTools().values()}
+    assert "claygun" in {str(v) for v in S.Sv_BlockedTools().values()}
 
     S.Sv_SetQuiet("protection", "open")
     assert S.Get("claygun") is True, (
@@ -389,6 +402,321 @@ def unlocking_gives_the_host_back_the_tools_they_chose():
     assert S.Get("lift") is True
     assert "claygun" not in {str(v) for v in S.Sv_BlockedTools().values()}, (
         "the world is open again and the clay gun is still blocked")
+
+
+def the_host_can_build_where_they_stand_in_a_locked_world():
+    """"I should be able to build and delete stuff anywhere. and place lift."
+    -- the owner, 2026-08-31.
+
+    Body flags are per-BODY. dev/dump_api.py lists 39 Body bindings and not one
+    of them takes a player, so a lockdown that leaves the host able to build
+    cannot be written as a flag -- the only lever is PRESENCE, which is what the
+    plot system has always run on.
+
+    Five things have to hold at once or the bubble is either useless or a hole:
+    it follows the host, it stops well short of the city, another player
+    standing in it shuts it, a player far away does not, and the switch works.
+    """
+    lua = fresh("Settings.lua", "Layout.lua", "Palette.lua", "Plots.lua")
+    S, P = lua.globals().Settings, lua.globals().Plots
+    S.Sv_Load(False)
+    plots = lua.eval("Plots()")
+    P.sv_onCreate(plots, lua.table_from({"grid": lua.table_from({}), "enabled": True}))
+
+    person = lua.execute("""
+        return function( x, y, z )
+            local c = { worldPosition = { x = x, y = y, z = z } }
+            function c:getCharacter() return c end
+            function c:getName() return "somebody" end
+            return c
+        end
+    """)
+    body_at = lua.execute("""
+        return function( x, y, z )
+            local b = {}
+            function b:getWorldAabb()
+                return { x = x, y = y, z = z },
+                       { x = x + 0.25, y = y + 0.25, z = z + 0.25 }
+            end
+            return b
+        end
+    """)
+    host = person(0.0, 0.0, 0.0)
+    lua.globals()._host = host
+
+    near = body_at(1.0, 0.0, 0.0)
+    far = body_at(50.0, 0.0, 0.0)
+
+    lua.globals()._players = lua.table_from([host])
+    P.sv_updateHostBubble(plots)
+
+    # OFF BY DEFAULT, and this assertion is the one that matters most.
+    #
+    # V60 shipped it on, and REPORTED: "even on lock down. I still can build
+    # everything and delete everything. and I mean the lockdown feature." Both
+    # halves are true and they are the same fact -- the bubble follows the host,
+    # so on a server with nobody else on it a lockdown is indistinguishable from
+    # a lockdown that did nothing. The exemption has to be a deliberate press.
+    # BOTH HALVES, because either alone passes while the other is broken.
+    #
+    # Sv_Load runs the migrations, and hostbuild_off_by_default_v62 writes false
+    # -- so Get() would report false even with the SCHEMA default flipped back
+    # to true. MEASURED: flipping the default and running this check passed,
+    # which is the check proving the migration rather than the decision.
+    #
+    # The default is what a new host gets. The migration is what this owner
+    # gets, because a changed default never reaches a key already in the file.
+    row = next(r for r in S.SCHEMA.values() if r["key"] == "hostbuild")
+    assert row["default"] is False, (
+        "the host's bubble is on by DEFAULT again, so a host who has never "
+        "played gets a lockdown they cannot tell from a broken one")
+    assert any(str(m["key"]) == "hostbuild_off_by_default_v62"
+               for m in S.MIGRATIONS.values()), (
+        "the migration is gone, so the fix reaches a new host and not the one "
+        "whose Settings.json already says true")
+    assert S.Get("hostbuild") is False, (
+        "the host's bubble is on after a load, so /lockdown cannot be told "
+        "apart from a broken /lockdown from the only screen there is")
+    assert P.sv_hostReaches(plots, near) is False, (
+        "the bubble is open before anybody switched it on")
+
+    S.Sv_SetQuiet("hostbuild", True)
+    assert P.sv_hostReaches(plots, near) is True, (
+        "the host cannot reach a body one metre away, so a lockdown leaves them "
+        "unable to fix anything at all")
+    assert P.sv_hostReaches(plots, far) is False, (
+        "the bubble reaches 50 metres, which is not a bubble -- it unlocks the "
+        "city and the lockdown stops meaning anything")
+
+    # A guest inside it shuts it. Body flags are global: while the bubble is
+    # open, its bodies are open to whoever else can reach them.
+    lua.globals()._players = lua.table_from([host, person(1.0, 0.0, 0.0)])
+    P.sv_updateHostBubble(plots)
+    assert P.sv_hostReaches(plots, near) is False, (
+        "somebody is standing inside the bubble and it is still open, which "
+        "hands them the host's exemption")
+    assert "standing in it" in str(P.sv_bubbleStatus(plots)), (
+        "/protection does not say WHY the bubble is shut, so a host cannot tell "
+        "it from a broken one")
+
+    lua.globals()._players = lua.table_from([host, person(30.0, 0.0, 0.0)])
+    P.sv_updateHostBubble(plots)
+    assert P.sv_hostReaches(plots, near) is True, (
+        "a player 30 metres away shuts the bubble, so at a real event the host "
+        "would never have one")
+
+    S.Sv_SetQuiet("hostbuild", False)
+    assert P.sv_hostReaches(plots, near) is False, "hostbuild off, bubble still open"
+    assert str(P.sv_bubbleStatus(plots)) == "off"
+    S.Sv_SetQuiet("hostbuild", True)
+
+    lua.globals()._host = None
+    lua.globals()._players = lua.table_from([])
+    P.sv_updateHostBubble(plots)
+    assert P.sv_hostReaches(plots, near) is False, "a bubble with nobody in it"
+
+
+def a_strict_lockdown_leaves_nothing_a_guest_can_touch():
+    """"if the lock down is a proper lock down. like you cant interact like at
+    all. then its good to go for testing" -- the owner, 2026-08-31.
+
+    The last thing that was not: `sweep` is erasable = true, and it escaped a
+    locked world on purpose. So litter on a road, on the plaza or anywhere
+    outside the city stayed deletable by anybody's bare hands during a lockdown
+    -- and bare hands are exactly what the tool guard cannot reach, because
+    placing and removing are the build HAND rather than a uuid.
+
+    The escape answers a real reported bug ("you need to fix the unremovable
+    craft bots"): prep, the buffer, the end of an event and the gap between
+    events all close building, and freezing the rubbish along with the builds is
+    how spawn spam wins. So it survives `display`, and it does NOT survive
+    `locked`. Both halves are asserted here, because keeping only the first
+    would silently reintroduce the bug it was written for.
+    """
+    lua = fresh("Settings.lua", "Layout.lua", "Palette.lua", "Plots.lua",
+                "Protection.lua")
+    S, P, Prot = lua.globals().Settings, lua.globals().Plots, lua.globals().Protection
+    S.Sv_Load(False)
+
+    plots = lua.eval("Plots()")
+    P.sv_onCreate(plots, lua.table_from({"grid": lua.table_from({}), "enabled": True}))
+    plots["enabled"] = True
+    lua.globals().g_swPlots = plots
+    prot = lua.eval("Protection()")
+    Prot.sv_onCreate(prot, "open")
+    lua.globals().g_swProtection = prot
+    Prot.sv_setResolver(prot, lua.execute("""
+        return function( body )
+            if g_swPlots:sv_isScenery( body ) and not Settings.CityIsOpen() then
+                return "locked"
+            end
+            local zone = g_swPlots:sv_bodyIsOpen( body )
+            if zone == "sweep" then return "sweep" end
+            if Settings.Get( "buildopen" ) == false
+                and not g_swProtection:sv_modeClosesBuilding() then
+                return false
+            end
+            return zone
+        end
+    """))
+
+    # A dropped craftbot far outside the city: Layout.locate finds no zone, so
+    # the resolver calls it litter. Not on the plaza -- the plaza is scenery in
+    # its own right and would have made this pass for the wrong reason.
+    litter = lua.execute("""
+        return function()
+            local b = { worldPosition = { x = 900.0, y = 900.0, z = 1.5 } }
+            function b:getShapes() return { { shapeUuid = "not-ours" } } end
+            function b:getWorldAabb()
+                return { x = 900.0, y = 900.0, z = 1.5 },
+                       { x = 900.25, y = 900.25, z = 1.75 }
+            end
+            return b
+        end
+    """)()
+
+    def profile(mode):
+        Prot.sv_setMode(prot, mode)
+        got = Prot.sv_profileForTest(prot, litter)
+        return got[0] if isinstance(got, tuple) else got
+
+    assert profile("open")["erasable"] is True, (
+        "the fixture is not being seen as litter, so neither half below means "
+        "anything")
+
+    strict = profile("locked")
+    for flag in ("buildable", "erasable", "connectable", "paintable",
+                 "liftable", "usable", "destructable", "convertibleToDynamic"):
+        assert strict[flag] is False, (
+            f"/lockdown leaves litter {flag} -- a guest with no tools at all can "
+            "still delete it by hand, because placing and removing are the build "
+            "hand and not a uuid the tool guard can yank")
+
+    show = profile("display")
+    assert show["erasable"] is True, (
+        "/lockdown display froze the rubbish with the builds, which is the "
+        "unremovable-craftbot bug back again -- prep, the buffer and the gap "
+        "between events all run through here")
+
+
+def the_bubble_is_the_first_thing_the_resolver_asks():
+    """Ahead of sv_isScenery, and that ordering is the feature.
+
+    The plaza IS scenery and it is where everyone spawns, so a bubble that lost
+    to the decking would do nothing at the first place anybody tried it -- and
+    "nothing happens where I am standing" cannot be told apart from "this is
+    broken". Same class as the panel that closed on every click.
+    """
+    world = read("World.lua")
+    start = world.index("g_swProtection:sv_setResolver(")
+    body = world[start:world.index("g_swRules = Rules()", start)]
+    # COMMENTS OUT FIRST. The prose above each branch names the branch below it
+    # and the branch it beats, so an index into the raw text finds the sentence
+    # rather than the call -- which made this check fail on a correct resolver
+    # the first time it ran. The rule is the same one that has bitten twice
+    # already: ask what is in the corpus before searching it.
+    body = chr(10).join(
+        line for line in body.split(chr(10)) if not line.strip().startswith("--"))
+    reaches = body.index("sv_hostReaches")
+    assert reaches < body.index("sv_isScenery"), (
+        "the resolver asks about the decking before it asks about the host, so "
+        "the host cannot build on the plaza -- which is where they spawn")
+    assert reaches < body.index("sv_bodyIsOpen"), (
+        "the resolver asks the plot system first, so a locked plot beats the host")
+    assert "WorldIsShut()" in body[:reaches], (
+        "the bubble is consulted in an OPEN world too, which spends a "
+        "getWorldAabb per body per patrol slice on an answer that cannot matter")
+
+
+FIRE_LIMIT = 128        # FIRE_INSTANCE_LIMIT, as the STUB declares it
+
+
+def a_shut_world_forces_the_hazards_off_without_writing_them():
+    """"LOCK down EVERYTHING."
+
+    Fire, explosion cratering and unit aggro are engine switches rather than
+    permissions, so no body flag reaches them: a host who had fire on for an
+    event still had a burning world after typing /lockdown.
+
+    Derived from the MODE, which is the rule the tool guard learned the
+    expensive way. V52's lockdown WROTE four settings false and /unlock could
+    not put them back, so one lockdown disabled four tools for good. Nothing is
+    remembered here, so nothing has to be restored.
+
+    THIS CHECK RUNS THE APPLY FUNCTIONS, not Sv_HazardOff. The first version of
+    it asserted Sv_HazardOff( Get( key ) ) and passed with the helper removed
+    from every apply in the file -- proving only that the helper said what the
+    helper said. That is the V34 polish-profile mistake exactly, and it was
+    caught the way it always is: by putting the bug back and watching nothing
+    fail.
+    """
+    lua = fresh("Settings.lua")
+    S = lua.globals().Settings
+    S.Sv_Load(False)
+
+    # Aggro reaches the engine rather than a global, so catch the call.
+    lua.execute("""
+        _aggro = nil
+        sm.game.setEnableAggro = function( v ) _aggro = v end
+        _fireLimit = nil
+        sm.fire.setFireLimit = function( n ) _fireLimit = n end
+    """)
+
+    def applied():
+        S.Sv_ApplyHazards()
+        g = lua.globals()
+        return {
+            "fire": g.g_swFireEnabled,
+            "terraindamage": not g.g_swProtectTerrain,
+            "aggro": g._aggro,
+            "firelimit": g._fireLimit,
+        }
+
+    for key in ("fire", "terraindamage", "aggro"):
+        S.Sv_SetQuiet(key, True)
+
+    got = applied()
+    for key in ("fire", "terraindamage", "aggro"):
+        assert got[key] is True, f"{key} is off in an open world the host opened"
+    assert got["firelimit"] == FIRE_LIMIT, "fire is on and the limit is still zero"
+
+    S.Sv_SetQuiet("protection", "locked")
+    got = applied()
+    for key in ("fire", "terraindamage", "aggro"):
+        assert got[key] is False, (
+            f"the world is shut and {key} is still on -- a lockdown that only "
+            "walks bodies never reaches it, because it is not a permission")
+        assert S.Get(key) is True, (
+            f"locking the world WROTE {key} false. That is the V52 bug: /unlock "
+            "cannot put back what it does not know was changed, so a single "
+            "lockdown would disable it for good.")
+    assert got["firelimit"] == 0, "the world is shut and fire still has a budget"
+
+    S.Sv_SetQuiet("protection", "open")
+    got = applied()
+    for key in ("fire", "terraindamage", "aggro"):
+        assert got[key] is True, f"unlocking did not give {key} back"
+
+
+def every_protection_write_re_applies_the_derived_hazards():
+    """A derived value that nothing re-applies is a value that never changed.
+
+    Six places write the protection mode -- /lockdown, /unlock, the grief alarm
+    twice, the event clock and the new-world reset. Hooking the write itself is
+    the only version of this that cannot be forgotten at a seventh.
+    """
+    src = read("Settings.lua")
+    setter = src[src.index("function Settings.Sv_SetQuiet"):]
+    setter = setter[:setter.index(chr(10) + "end")]
+    assert "Sv_ApplyHazards" in setter, (
+        "Sv_SetQuiet no longer re-applies the derived hazards, so /lockdown "
+        "leaves fire and aggro exactly as they were")
+
+    writes = read("World.lua").count('Sv_SetQuiet( "protection"')
+    writes += read("Game.lua").count('Sv_SetQuiet( "protection"')
+    assert writes >= 4, (
+        f"only {writes} places write the protection mode -- if that really "
+        "dropped, check the hook is still what carries all of them")
 
 
 def both_files_agree_on_what_locked_means():
@@ -691,17 +1019,57 @@ def the_sentinel_tells_every_profile_apart():
     fields = re.findall(r"== p\.(\w+)", fn)
     assert len(fields) >= 4, f"could not read the sentinel's fields: {fields}"
 
-    seen = {}
+    # THE RULE IS PAIRWISE, NOT "every name is unique", and the difference
+    # arrived with the host bubble.
+    #
+    # `hostopen` carries `open`'s flags exactly. It is a deliberate alias: the
+    # only thing it changes is that it stays OUT of GROUND_FREE, so a plot slab
+    # inside the bubble gets the pinned twin and cannot be carried away during a
+    # lockdown. Two names with identical flags are not a bug -- there is nothing
+    # to switch. Two names that differ in a flag the sentinel cannot see is the
+    # bug, and it is the V15 one.
+    #
+    # So this compares the profiles a body can actually RECEIVE, which means the
+    # pinned twins as well, and demands the sentinel separate any two of them
+    # that are not the same profile.
+    apply_fn = src[src.index("local function applyProfile"):]
+    apply_fn = apply_fn[:apply_fn.index(chr(10) + "end")]
+    all_flags = list(dict.fromkeys(re.findall(r"p\.(\w+)", apply_fn)))
+    assert len(all_flags) == 8, f"applyProfile sets {all_flags}, expected all eight"
+
+    ground_free = set(re.findall(
+        r"(\w+) = true",
+        src[src.index("local GROUND_FREE = {"):src.index("-- Which trim profile")]))
+    assert "open" in ground_free and "hostopen" not in ground_free, (
+        "the host bubble is in GROUND_FREE, so a plot slab is liftable during a "
+        "lockdown -- which is the one thing pinning exists to stop")
+
+    effective = {}
     for name in profiles:
-        p = profiles[name]
-        key = tuple(p[f] for f in fields)
-        assert key not in seen, (
-            f"profiles {seen[key]!r} and {name!r} are indistinguishable to the "
-            f"sentinel {dict(zip(fields, key))} -- switching between them would "
-            "silently do nothing, because matchesProfile would find every body "
-            "already correct")
-        seen[key] = name
-    assert len(seen) >= 6, f"expected six profiles, found {len(seen)}"
+        flags = {f: profiles[name][f] for f in all_flags}
+        effective[name] = flags
+        # The pin only reaches a profile the ground test is allowed to twin.
+        if name not in ground_free:
+            twin = dict(flags)
+            twin["liftable"] = False
+            twin["convertibleToDynamic"] = False
+            effective[name + " on city floor"] = twin
+
+    names = sorted(effective)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            if effective[a] == effective[b]:
+                continue        # same profile under two names: nothing to switch
+            key_a = tuple(effective[a][f] for f in fields)
+            key_b = tuple(effective[b][f] for f in fields)
+            assert key_a != key_b, (
+                f"profiles {a!r} and {b!r} differ, but are indistinguishable to "
+                f"the sentinel {dict(zip(fields, key_a))} -- switching between "
+                "them would silently do nothing, because matchesProfile would "
+                "find every body already correct")
+    assert len(effective) >= 14, (
+        f"only {len(effective)} profiles a body can receive -- ten in the table "
+        "plus a pinned twin for each of the six the ground test can reach")
 
 
 def the_city_is_many_separate_bodies():
@@ -1554,7 +1922,9 @@ def the_city_floor_is_pinned_except_while_people_are_building():
     Prot.sv_setGroundTest(prot, lua.eval("function( b ) return g_swPlots:sv_isGround( b ) end"))
     Prot.sv_setResolver(prot, lua.execute("""
         return function( body )
-            if g_swPlots:sv_isScenery( body ) then return "locked" end
+            if g_swPlots:sv_isScenery( body ) and not Settings.CityIsOpen() then
+                return "locked"
+            end
             local zone = g_swPlots:sv_bodyIsOpen( body )
             if zone == "sweep" then return "sweep" end
             if Settings.Get( "buildopen" ) == false
@@ -1662,7 +2032,9 @@ def buffer_time_actually_reaches_the_polish_profile():
     # against the real source afterwards.
     resolver = lua.execute("""
         return function( body )
-            if g_swPlots:sv_isScenery( body ) then return "locked" end
+            if g_swPlots:sv_isScenery( body ) and not Settings.CityIsOpen() then
+                return "locked"
+            end
             local zone = g_swPlots:sv_bodyIsOpen( body )
             if zone == "sweep" then return "sweep" end
             if Settings.Get( "buildopen" ) == false
@@ -1766,7 +2138,9 @@ def unlock_actually_reopens_building():
     lua.globals().g_swProtection = prot
     Prot.sv_setResolver(prot, lua.execute("""
         return function( body )
-            if g_swPlots:sv_isScenery( body ) then return "locked" end
+            if g_swPlots:sv_isScenery( body ) and not Settings.CityIsOpen() then
+                return "locked"
+            end
             local zone = g_swPlots:sv_bodyIsOpen( body )
             if zone == "sweep" then return "sweep" end
             if Settings.Get( "buildopen" ) == false
@@ -2960,13 +3334,154 @@ def every_command_a_panel_sends_is_answered():
         "branch for it. The panel will close and nothing will happen.")
 
 
+# WHICH PANEL REACHES EACH CHAT COMMAND. The ledger for
+# every_command_is_on_the_menu below.
+#
+# REPORTED: "you have a bit too many commands that are not on menu? you know.
+# the point of menu was so theres no need to use the command line besides the
+# stuff you know /menu . I want the MENU to be the menu."
+#
+# Fair, and it had drifted a long way: 49 bound commands against 9 menu entries,
+# with /lockdown -- the panic button -- among the ones with no button at all.
+MENU_PATH = {
+    "/menu": "the front door itself",
+    "/myplot": "MY PLOT",
+    "/plotmenu": "CITY LAYOUT",      # NOT an alias of /myplot -- see Game.lua
+    "/plot": "MY PLOT -- CLAIM and GIVE IT UP",
+    "/home": "MY PLOT -- FIND MY PLOT",
+    "/why": "MY PLOT -- WHY CANNOT I BUILD",
+    "/budget": "MY PLOT -- MY LIMITS",
+    "/rules": "SERVER RULES",
+    "/players": "WHO IS HERE",
+    "/kick": "WHO IS HERE -- KICK",
+    "/ban": "BANS -- the BAN button on a row",
+    "/unban": "BANS -- the UNBAN button on a row",
+    "/banlist": "BANS -- the BANNED view",
+    "/known": "BANS -- the EVERYONE SEEN view, which is what it opens on",
+    "/allow": "WHO IS HERE -- ALLOW",
+    "/unallow": "WHO IS HERE -- REMOVE",
+    "/allowlist": "SERVER SETTINGS -- the allowlist toggle",
+    "/event": "EVENT CLOCK",
+    "/buildtime": "EVENT CLOCK",
+    "/protection": "PROTECTION -- the readout is the panel",
+    "/lockdown": "PROTECTION -- LOCK DOWN",
+    "/unlock": "PROTECTION -- UNLOCK",
+    "/nolift": "PROTECTION -- CLEAR STRANDED LIFTS",
+    "/clearclay": "PROTECTION -- CLEAR CLAY AROUND ME",
+    "/snapshot": "BACKUPS -- SAVE NOW",
+    "/snapshots": "BACKUPS -- the list is the panel",
+    "/restore": "BACKUPS -- RESTORE",
+    "/autosave": "SERVER SETTINGS -- the autosave row",
+    "/plots": "CITY LAYOUT",
+    "/plotgrid": "CITY LAYOUT",
+    "/plotbuild": "CITY LAYOUT -- BUILD CITY",
+    "/plotclear": "CITY LAYOUT -- CLEAR CITY",
+    "/citystyle": "CITY STYLE",
+    "/set": "SERVER SETTINGS",
+    "/settings": "SERVER SETTINGS",
+    "/settingslist": "SERVER SETTINGS",
+    "/preset": "SERVER SETTINGS -- the presets",
+    "/focus": "FOCUS PLAYER",
+    "/unfocus": "FOCUS PLAYER -- STOP",
+    "/check": "TESTING CHECKLIST",
+    "/developer": "SERVER SETTINGS -- the developer row, under OTHER",
+    "/crowd": "DEV TOOLS -- FAKE CROWD",
+    "/bench": "DEV TOOLS -- BENCHMARK",
+    "/bridge": "DEV TOOLS -- OUTSIDE CONTROL",
+}
+
+# The ones that stay typed, each with the reason. Short on purpose: this is the
+# list somebody has to justify adding to.
+CHAT_ONLY = {
+    # COMMANDS was a menu entry until V65 and lost its place to BANS. The column
+    # has a hard ceiling -- the canvas is 720 units tall -- so something had to
+    # go, and of everything on that panel this was the only entry whose entire
+    # content is obtainable by typing the thing it describes. Guests cannot type
+    # it at all any more, so it was a host reading a list of host commands.
+    "/sw": "a list of chat commands, for the one person who may type them. "
+           "Every control it names has a button of its own; this is the index, "
+           "and an index you can only reach by typing is no worse than the "
+           "commands it indexes",
+    "/swhelp": "the same list under a second name, for whichever one you "
+               "reach for first",
+    "/guitest": "a probe, not a feature -- five client-side experiments that "
+                "re-establish whether json GUI buttons work at all after a game "
+                "update. A button for it would be circular",
+    "/bptest": "a probe: can Lua read a blueprint file. Reads only",
+    "/bptest2": "a probe: will the engine blueprint browser open. May crash, "
+                "which is exactly why it is not one press away",
+    "/tool": "a diagnostic -- what is in your hand and what gates it. Its "
+             "answer is a chat log to paste, not a control",
+    "/purge": "the typed side of the Cleaner tool, and deliberately typed. "
+              "Both ignore every permission flag, which is what makes them the "
+              "only things that can remove stuck litter -- but the Cleaner "
+              "needs something to point AT, and /purge covers what it cannot "
+              "reach: a whole plot, a radius, or whatever you are carrying. "
+              "The SWEEP LITTER button was taken off the city panel on the "
+              "owner's instruction -- 'it just doesnt work as intended and "
+              "just deletes stuff' -- and putting the same shape back behind a "
+              "different label would undo that decision",
+}
+
+
+def every_command_is_on_the_menu():
+    """"I want the MENU to be the menu."
+
+    Every chat command is either reachable from a panel or explicitly listed as
+    chat-only WITH a reason. A new command that is neither fails this, which is
+    the point: the drift that produced the report was nine menu entries against
+    forty-nine commands, and nothing anywhere said that was wrong.
+
+    This is a ledger rather than a reachability proof -- it cannot follow a
+    button through the network to a world branch. What it does do is force a
+    decision, and the decision is the thing that was missing.
+    """
+    import re
+    bound = set()
+    for name in ("Game.lua", "World.lua"):
+        bound |= set(re.findall(r'bindChatCommand\(\s*"([^"]+)"', read(name)))
+    assert len(bound) > 30, f"only found {len(bound)} commands -- the scan is wrong"
+
+    classified = set(MENU_PATH) | set(CHAT_ONLY)
+
+    missing = sorted(bound - classified)
+    assert not missing, (
+        "these commands are neither on a panel nor listed as deliberately "
+        f"chat-only: {missing}. Put them on a panel, or add them to CHAT_ONLY "
+        "with the reason -- 'the point of menu was so theres no need to use the "
+        "command line'")
+
+    stale = sorted(classified - bound)
+    assert not stale, (
+        f"the ledger names commands that no longer exist: {stale}")
+
+    overlap = sorted(set(MENU_PATH) & set(CHAT_ONLY))
+    assert not overlap, f"listed as both on a panel and chat-only: {overlap}"
+
+    for cmd, why in CHAT_ONLY.items():
+        assert len(why) > 20, f"{cmd} is chat-only with no real reason given"
+
+    # And the panels it names have to be entries the menu actually offers, or
+    # the ledger is describing a menu that does not exist.
+    lua = gui_lua()
+    labels = {str(e["label"]) for e in lua.globals().MenuGui.ENTRIES.values()}
+    for cmd, where in MENU_PATH.items():
+        head = where.split(" -- ")[0]
+        if head in ("the front door itself", "CITY STYLE"):
+            continue          # the hub itself, and a panel reached from another
+        assert head in labels, (
+            f"{cmd} claims to be on {head!r}, which is not a menu entry. "
+            f"The menu offers {sorted(labels)}")
+
+
 def every_button_reaches_a_branch():
     """Every action a panel can emit is named in the script that handles clicks."""
     import re
     game = read("Game.lua")
     panels = ["MenuGui.lua", "PlotsGui.lua", "SettingsGui.lua",
               "EventGui.lua", "MyPlotGui.lua", "ConfirmGui.lua", "StyleGui.lua",
-              "FocusGui.lua", "ChecklistGui.lua"]
+              "FocusGui.lua", "ChecklistGui.lua", "ProtectionGui.lua",
+              "BackupsGui.lua", "PeopleGui.lua", "DevGui.lua", "DevGui.lua"]
     orphans = []
     for name in panels:
         for action in sorted(set(re.findall(r'action = "([^"]+)"', read(name)))):
@@ -3071,8 +3586,74 @@ def every_caption_can_be_drawn():
                 captions.append((where, font, cap))
 
     # Every panel, in the states that change what they say.
-    collect("menu(host)", lua.globals().MenuGui.Build(True))
-    collect("menu(guest)", lua.globals().MenuGui.Build(False))
+    for host in (True, False):
+        for dev in (True, False):
+            collect("menu(%s,dev=%s)" % (host, dev),
+                    lua.globals().MenuGui.Build(host, dev))
+
+    # The four panels V61 added. A font that is not real draws via fallback AND
+    # writes a Lua traceback on every render -- 3,600 an hour for a panel that
+    # redraws once a second -- so a new panel that skips this sweep is the
+    # largest performance bug this project has measured, waiting to happen.
+    for mode in ("open", "locked", "display"):
+        collect(f"protection/{mode}", lua.globals().ProtectionGui.Build(
+            lua.table_from({"mode": mode, "buildopen": mode == "open",
+                            "bubble": "open, 4.0m around the host",
+                            "guest": "lift claygun", "host": "nothing",
+                            "physics": "9", "status": "locked the world"})))
+    collect("protection/clock", lua.globals().ProtectionGui.Build(
+        lua.table_from({"mode": "display", "buildopen": False,
+                        "bubble": "shut -- somebody is standing in it",
+                        "clock": "build", "status": ""})))
+
+    for saves in ([], [{"name": "buildend-2026-08-24_2222", "count": 195},
+                       {"name": "manual-2026-08-31_1200", "count": 12}]):
+        collect(f"backups/{len(saves)}", lua.globals().BackupsGui.Build(
+            lua.table_from({
+                "saves": lua.table_from([lua.table_from(r) for r in saves]),
+                "autosave": 10, "status": "saved"})))
+    collect("backups/busy", lua.globals().BackupsGui.Build(lua.table_from({
+        "saves": lua.table_from([]), "autosave": 0,
+        "busy": "restoring: 40 of 195", "status": ""})))
+
+    people = [{"id": 1, "name": "CyberSlime2077", "perma": "p1", "host": True},
+              {"id": 2, "name": "A Guest", "perma": "p2", "plot": 7,
+               "allowed": True},
+              {"id": 3, "name": "Someone Else", "perma": "p3", "bot": True}]
+    bans = [{"perma": "p9", "name": "A Griefer", "reason": "wrecked the plaza"}]
+    known = [{"perma": "SW-0001", "name": "CyberSlime2077", "aliases": 0},
+             {"perma": "SW-0009", "name": "A Griefer", "aliases": 3,
+              "banned": True}]
+    for host in (True, False):
+        for view in ("here", "bans", "known"):
+            for allowlist in (True, False):
+                collect(f"people/{host}/{view}/{allowlist}",
+                        lua.globals().PeopleGui.Build(lua.table_from({
+                            "host": host, "view": view, "allowlist": allowlist,
+                            "players": lua.table_from(
+                                [lua.table_from(r) for r in people]),
+                            "bans": lua.table_from(
+                                [lua.table_from(r) for r in bans]),
+                            "known": lua.table_from(
+                                [lua.table_from(r) for r in known]),
+                            "status": "kicked somebody"})))
+    for view in ("here", "bans", "known"):
+        collect(f"people/empty/{view}", lua.globals().PeopleGui.Build(lua.table_from({
+            "host": True, "view": view, "players": lua.table_from([]),
+            "known": lua.table_from([]), "bans": lua.table_from([])})))
+    # ...and the emptiness that is a filter miss rather than an empty server,
+    # which is a different sentence and therefore a different set of glyphs.
+    collect("people/nomatch", lua.globals().PeopleGui.Build(lua.table_from({
+        "host": True, "view": "known", "query": "qqq",
+        "known": lua.table_from([lua.table_from(known[0])])})))
+
+    for mode in ("build", "churn", "off"):
+        for bridge in (True, False):
+            collect(f"dev/{mode}/{bridge}", lua.globals().DevGui.Build(
+                lua.table_from({"bots": 40, "mode": mode, "bridge": bridge,
+                                "bench": "running: stage 4 of 14",
+                                "status": "crowd set to 40"})))
+    collect("dev/empty", lua.globals().DevGui.Build(lua.table_from({})))
 
     G = lua.globals().SettingsGui
     values = lua.table_from({row["key"]: row["default"]
@@ -3266,7 +3847,7 @@ def gui_lua():
     lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Event.lua", "EventHud.lua",
                 "RosterHud.lua", "EventGui.lua", "ConfirmGui.lua",
                 "SettingsGui.lua", "PlotsGui.lua", "MenuGui.lua", "MyPlotGui.lua",
-                "StyleGui.lua", "FocusGui.lua",
+                "StyleGui.lua", "FocusGui.lua", "ProtectionGui.lua", "BackupsGui.lua", "PeopleGui.lua", "DevGui.lua",
                 "Checklist.lua", "ChecklistGui.lua")
     lua.globals().Settings.Sv_Load(False)
     return lua
@@ -3274,11 +3855,70 @@ def gui_lua():
 
 def the_menu_panel_fits():
     lua = gui_lua()
+    # Developer mode adds two host entries, so the tallest column this panel can
+    # ever draw is the one nobody sees by default. Checking only the default is
+    # how a panel overflows in the one state it is hardest to notice.
     for host in (True, False):
-        root = lua.globals().MenuGui.Build(host)
-        label = f"menu ({'host' if host else 'guest'})"
-        items = panel_fits(label, root, lua.globals().MenuGui.W, lua.globals().MenuGui.H)
-        no_button_is_buried(label, items, lua.globals().MenuGui.H)
+        for developer in (False, True):
+            root = lua.globals().MenuGui.Build(host, developer)
+            label = ("menu (%s%s)"
+                     % ("host" if host else "guest",
+                        ", developer" if developer else ""))
+            items = panel_fits(label, root, lua.globals().MenuGui.W,
+                               lua.globals().MenuGui.H)
+            no_button_is_buried(label, items, lua.globals().MenuGui.H)
+
+
+def the_new_panels_fit():
+    """Every panel V61 added, in the states that change its height.
+
+    The canvas is 1720x720 -- sm.jsonGui.getViewSize(), MEASURED, and half the
+    window it is drawn in -- so a panel taller than about 690 hangs off the
+    bottom of the screen with no error anywhere. This is the check that has
+    caught that on every panel so far, including the my-plot row the moment two
+    more buttons were put on it.
+    """
+    lua = gui_lua()
+
+    def fits(label, root, W, H):
+        items = panel_fits(label, root, W, H)
+        no_button_is_buried(label, items, H)
+
+    P = lua.globals().ProtectionGui
+    for mode in ("open", "locked", "display"):
+        fits(f"protection/{mode}", P.Build(lua.table_from({
+            "mode": mode, "buildopen": False, "clock": "build",
+            "bubble": "open", "guest": "lift", "host": "nothing",
+            "physics": "9", "status": "x"})), P.W, P.H)
+
+    B = lua.globals().BackupsGui
+    for n in (0, 3, 20):
+        saves = [{"name": f"save-{i}", "count": i} for i in range(n)]
+        for page in (1, 2, 99):
+            fits(f"backups/{n}/{page}", B.Build(lua.table_from({
+                "saves": lua.table_from([lua.table_from(r) for r in saves]),
+                "page": page, "autosave": 10})), B.W, B.H)
+
+    PG = lua.globals().PeopleGui
+    rows = [{"id": i, "name": f"Player {i}", "perma": f"p{i}"} for i in range(20)]
+    bans = [{"perma": f"b{i}", "name": f"Banned {i}"} for i in range(20)]
+    known = [{"perma": f"SW-{i:04d}", "name": f"Seen {i}", "aliases": i % 3,
+              "banned": i % 4 == 0} for i in range(40)]
+    for host in (True, False):
+        for view in ("here", "bans", "known"):
+            for page in (1, 3, 99):
+                fits(f"people/{host}/{view}/{page}", PG.Build(lua.table_from({
+                    "host": host, "view": view, "page": page, "allowlist": True,
+                    "players": lua.table_from([lua.table_from(r) for r in rows]),
+                    "known": lua.table_from([lua.table_from(r) for r in known]),
+                    "bans": lua.table_from([lua.table_from(r) for r in bans])})),
+                    PG.W, PG.H)
+
+    D = lua.globals().DevGui
+    for mode in ("build", "churn", "off"):
+        fits(f"dev/{mode}", D.Build(lua.table_from({
+            "bots": 128, "mode": mode, "bridge": True,
+            "bench": "running", "status": "x"})), D.W, D.H)
 
 
 def the_settings_panel_fits_on_every_page():
@@ -3729,7 +4369,9 @@ def _plot_fixture(lua):
 
     resolver = lua.execute("""
         return function( body )
-            if g_swPlots:sv_isScenery( body ) then return "locked" end
+            if g_swPlots:sv_isScenery( body ) and not Settings.CityIsOpen() then
+                return "locked"
+            end
             local zone = g_swPlots:sv_bodyIsOpen( body )
             if zone == "sweep" then return "sweep" end
             if Settings.Get( "buildopen" ) == false
@@ -4570,6 +5212,285 @@ GUEST_REACHABLE = {
 }
 
 
+def a_snapshot_is_the_whole_world_not_just_the_builds():
+    """REPORTED twice: "the backups need to be the full world backups", and then
+    "the world backups is a FULL SAVE BACKUP. and not build backup."
+
+    The first time, only the timestamped naming got done. A snapshot stayed a
+    list of creations, so /restore rebuilt every building and left the CLAIMS
+    wherever they had drifted to: the city came back and nobody owned any of it.
+    The grid matters just as much -- the creations in a snapshot were laid out
+    on one, and restoring a 96-plot city onto a 384-plot grid puts every piece
+    in the wrong place.
+
+    THREE call sites capture, not one: /snapshot, the autosave rotation, and the
+    event clock's per-phase saves. A save made by any of them has to be the same
+    kind of save, or "restore the autosave" quietly means something weaker than
+    "restore the one I made by hand".
+    """
+    import re
+    world = read("World.lua")
+    sites = [m.start() for m in re.finditer(r"sv_beginCapture\(", world)]
+    assert len(sites) == 3, (
+        f"expected three capture sites, found {len(sites)} -- if one was added, "
+        "it has to carry the world state like the others")
+    for at in sites:
+        # BALANCE THE BRACKETS. Slicing to the first ")" stops inside
+        # sv_autoName(), which made this check fail on a correct call site the
+        # first time it ran -- the same shape of mistake as reading a file
+        # without asking what is in it.
+        j, depth = world.index("(", at), 0
+        while j < len(world):
+            if world[j] == "(":
+                depth += 1
+            elif world[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        call = world[at:j]
+        assert "sv_serialise" in call, (
+            "a snapshot is being captured without the plot state, so restoring "
+            "it would rebuild the buildings and lose who owns them: "
+            + " ".join(call.split())[:120])
+
+    snaps = read("Snapshots.lua")
+    assert "plots = job.worldState" in snaps, (
+        "the capture no longer writes the world state into the payload")
+    assert "opts.restoreState" in snaps, (
+        "restore no longer puts the world state back, so a full save restores "
+        "as a build-only one")
+
+    # ...and a PER-PLOT repair must not rewrite everybody's claims. That is the
+    # whole reason per-plot restore exists: "it was only a little bit that got
+    # broken on my build".
+    guard = snaps[snaps.index("opts.restoreState"):]
+    guard = guard[:200]
+    assert "opts.plot == nil" in snaps[max(0, snaps.index("opts.restoreState") - 200):
+                                       snaps.index("opts.restoreState") + 200], (
+        "restoring ONE plot also rewrites every claim in the world")
+
+
+def clay_is_stopped_before_it_lands():
+    """REPORTED: "the clay wont go away."
+
+    It could not. MEASURED from vanilla's own source --
+    Data/Scripts/game/worlds/CreativeBaseWorld.lua:159 -- a clay shot calls
+    world:voxelDensityAddition, so clay is TERRAIN and not a body:
+
+      * destroyShape cannot touch it, so the Cleaner cannot remove it
+      * it carries no permission flags, so the whole protection system, every
+        profile and /lockdown itself say nothing about it
+      * the one call that removes terrain is sphereVoxelDensitySubtraction from
+        an explosion, which this mod deliberately declines in order to stop
+        cratering
+
+    Three correct decisions that together make clay permanent. The tool guard
+    does not help either: forceTool is client-side and "forced down" tier, so it
+    empties a hand a couple of ticks after the gun is picked up, which is not
+    the same as never firing.
+
+    So the server declines the projectile. This is what makes `claygun` a real
+    off switch rather than an inconvenience, and it is the only thing that makes
+    a lockdown mean anything about clay.
+    """
+    import re
+    world = read("World.lua")
+    m = re.search(r"^function\s+World\.server_onProjectile\s*\(", world, re.M)
+    assert m, (
+        "World no longer overrides server_onProjectile, so CreativeBaseWorld "
+        "makes clay unconditionally and nothing in this mod can remove it")
+    end = world.find(chr(10) + "function ", m.end())
+    body = world[m.end(): end if end != -1 else len(world)]
+
+    # The uuid is a constant declared just above the function, not inside it --
+    # so this asks the FILE for the uuid and the FUNCTION for the reference,
+    # rather than failing on correct code because of where a local sits.
+    assert "0ab670bb-5969-4ab4-87a3-435795392d5a" in world, (
+        "the clay projectile uuid is gone from World.lua")
+    assert "CLAY_PROJECTILE" in body, (
+        "the projectile guard no longer tests for clay")
+    assert 'Settings.Get( "claygun" )' in body, (
+        "the clay guard ignores the claygun setting")
+    assert "WorldIsShut()" in body, (
+        "clay is still made during a lockdown -- and it is terrain, so nothing "
+        "removes it afterwards")
+    assert "CreativeFlatWorld.server_onProjectile" in body, (
+        "the override never calls its parent, so flame, foam and cablebot "
+        "projectiles all stopped working")
+
+    # and there has to be a way out for clay already on the ground
+    assert "sphereVoxelDensitySubtraction" in world, (
+        "nothing in the mod can remove clay that is already down")
+
+
+def the_command_gate_is_default_deny():
+    """Everything is host-only unless it is named, and not the other way round.
+
+    A gate written as "if HOST_COMMANDS[cmd] and not isHost" fails open: every
+    command nobody classified becomes a guest command, and the day somebody adds
+    one is the day a guest can run it. Written the other way round, the same
+    forgetfulness produces a refusal on something harmless, which somebody
+    reports and which costs nothing.
+
+    V65 made the guest side much smaller -- "every command for players in the
+    chat shall also be disabled appart for host" -- but the DIRECTION of the
+    test is the part that matters and is unchanged.
+    """
+    game = read("Game.lua")
+    assert "if not isHost then" in game, "the command gate is gone entirely"
+    body = game[game.index("function Game.sv_n_adminCommand"):]
+    body = body[:body.index(chr(10) + "end" + chr(10))]
+    for needle in ("if not GUEST_TYPED[cmd] then",
+                   "elseif not GUEST_PANEL[cmd] then"):
+        assert needle in body, (
+            f"the command gate no longer reads {needle!r}. Both lists must be "
+            "'deny unless listed': anything nobody classified has to land on "
+            "the HOST side, never the guest one")
+
+
+def a_guest_types_nothing_but_the_way_in():
+    """"every command for players in the chat shall also be disabled appart for
+    host."
+
+    One exception, and it is forced: /menu is the only way into the menu. A Game
+    script is handed no key state at all -- F reaches Lua only through a tool's
+    equipped update -- so a guest with no commands whatsoever could not claim a
+    plot, read the rules or see who is here. Taking /menu away would not make
+    the server stricter, it would make it unusable.
+    """
+    import re
+    game = read("Game.lua")
+
+    block = game[game.index("local GUEST_TYPED = {"):]
+    block = block[:block.index("}")]
+    typed = set(re.findall(r'\["(/[a-z0-9]+)"\]', block))
+    assert typed == {"/menu"}, (
+        f"a guest may type {sorted(typed)}. The only entry may be /menu, which "
+        "is forced: it is the one way to reach the menu at all. Anything else "
+        "is a second, typo-prone route to something that already has a button")
+
+    # And the refusal has to point somewhere, or it is just a wall.
+    body = game[game.index("function Game.sv_n_adminCommand"):]
+    body = body[:body.index(chr(10) + "end" + chr(10))]
+    refusal = body[body.index("if not GUEST_TYPED[cmd] then"):]
+    refusal = refusal[:refusal.index("return")]
+    assert "/menu" in refusal, (
+        "the refusal a guest gets for typing a command does not name /menu, so "
+        "it tells them what they cannot do and not what they can")
+
+
+def guest_buttons_still_work_without_guest_commands():
+    """A button a guest can press must still run, now that typing it does not.
+
+    The agreement runs the opposite way from V61's, deliberately: sv_n_myPlotAction
+    is guest-reachable on purpose -- authority comes from where the sender is
+    standing -- so every command it forwards has to be classified as something a
+    PANEL may cause, or the button answers with a refusal.
+
+    And the panel flag has to be unforgeable, or the whole gate is decorative: a
+    network callback is handed exactly ( self, data, player ), so a fourth
+    parameter is something only this script can supply.
+    """
+    import re
+    game = read("Game.lua")
+
+    block = game[game.index("local GUEST_PANEL = {"):]
+    block = block[:block.index("}")]
+    allowed = set(re.findall(r'\["(/[a-z0-9]+)"\]', block))
+    assert allowed, "could not read GUEST_PANEL"
+
+    for handler in sorted(GUEST_REACHABLE):
+        m = re.search(r"^function\s+\w+\." + handler + r"\s*\(", game, re.M)
+        if not m:
+            continue
+        body = game[m.end(): game.find(chr(10) + "function ", m.end())]
+        for cmd in sorted(set(re.findall(r'sv_toWorld\(\s*"(/[a-z0-9]+)"', body))):
+            assert cmd in allowed, (
+                f"{handler} is guest-reachable and forwards {cmd}, which is not "
+                f"in GUEST_PANEL -- so the button answers a refusal while doing "
+                "nothing at all")
+
+    # Every sv_n_adminCommand call made on a guest's behalf must say so, or the
+    # button hits the typed gate and refuses.
+    router = game[game.index("function Game.sv_n_menuOpen"):]
+    router = router[:router.index(chr(10) + "end" + chr(10))]
+    for call in re.findall(r"sv_n_adminCommand\(([^\n]*)\)", router):
+        assert "player, true" in call, (
+            f"the menu router calls sv_n_adminCommand({call.strip()}) without "
+            "the panel flag, so a guest pressing that entry is refused")
+
+    # The flag itself: fourth parameter, which the network cannot reach.
+    sig = next(l for l in game.splitlines()
+               if l.startswith("function Game.sv_n_adminCommand("))
+    assert sig.count(",") == 3, (
+        f"sv_n_adminCommand's signature is {sig!r}. The panel flag has to be the "
+        "FOURTH parameter -- a network callback is handed ( self, data, player ) "
+        "and no more, which is the only reason a client cannot claim to be a panel")
+
+
+def the_probe_commands_never_reach_the_server():
+    """/guitest, /bptest and /bptest2 skip the gate, and may only do so while
+    they change nothing but the screen of whoever typed them.
+
+    They are bound to their own client callbacks rather than to
+    cl_onAdminCommand, so the host check never runs for them. That is fine for
+    an experiment that draws a widget tree on your own client and fine for one
+    that reads a blueprint file -- and it would not be fine the moment one of
+    them grew a sendToServer.
+    """
+    import re
+    game = read("Game.lua")
+    for name in ("cl_onBpTest", "cl_onBpTest2", "cl_onGuiTest"):
+        m = re.search(r"^function\s+Game\." + name + r"\s*\(", game, re.M)
+        assert m, f"{name} is gone -- is the command still bound?"
+        end = game.find(chr(10) + "function ", m.end())
+        body = game[m.end(): end if end != -1 else len(game)]
+        assert "sendToServer" not in body, (
+            f"{name} now talks to the server, but its command bypasses the "
+            "host gate entirely -- either route it through cl_onAdminCommand "
+            "or keep it client-only")
+    probe = read("GuiProbe.lua")
+    assert "sendToServer" not in probe, (
+        "GuiProbe reaches the server, and /guitest is not host gated")
+
+
+def guest_commands_match_the_guest_panels():
+    """A button a guest can press and the command behind it must agree.
+
+    sv_n_myPlotAction is in GUEST_REACHABLE on purpose -- a player acting on
+    their own plot, with authority coming from where they are standing. So every
+    command it forwards is a command a guest can cause to run, and if that
+    command is not in PLAYER_COMMANDS then typing it answers "Host only." while
+    pressing the button does the thing.
+
+    MEASURED, V61, by auditing rather than by anyone hitting it: /why was
+    host-only as a command while the new WHY CANNOT I BUILD button ran it for
+    anybody, and /plotmenu was host-only while its own alias /myplot was not.
+    Neither leaked anything -- the command was stricter than the button -- but
+    both would read as the mod being broken.
+    """
+    import re
+    game = read("Game.lua")
+
+    block = game[game.index("local PLAYER_COMMANDS = {"):]
+    block = block[:block.index("}")]
+    allowed = set(re.findall(r'\["(/[a-z0-9]+)"\]', block))
+    assert allowed, "could not read PLAYER_COMMANDS"
+
+    for handler in sorted(GUEST_REACHABLE):
+        m = re.search(r"^function\s+\w+\." + handler + r"\s*\(", game, re.M)
+        if not m:
+            continue
+        end = game.find(chr(10) + "function ", m.end())
+        body = game[m.end(): end if end != -1 else len(game)]
+        for cmd in sorted(set(re.findall(r'sv_toWorld\(\s*"(/[a-z0-9]+)"', body))):
+            assert cmd in allowed, (
+                f"{handler} is guest-reachable and forwards {cmd}, which is not "
+                f"in PLAYER_COMMANDS -- so the button runs it for a guest and "
+                f"typing {cmd} answers 'Host only.'")
+
+
 def every_network_handler_checks_the_sender():
     """The client half of this mod runs from the PLAYER'S disk.
 
@@ -4595,6 +5516,29 @@ def every_network_handler_checks_the_sender():
             end = src.find('\nfunction ', m.end())
             body = src[m.end(): end if end != -1 else len(src)]
             seen += 1
+
+            # A PLAYER SCRIPT'S HANDLER IS ALREADY SCOPED TO ITS OWNER, and it
+            # is the one place in this engine where that is structural rather
+            # than a convention. The engine instantiates one Player script per
+            # player and routes a client's sendToServer to THAT client's own
+            # instance -- so self.player is the sender, there is no third
+            # argument to test, and vanilla's own CreativePlayer.sv_n_unstuck
+            # takes ( self ) and nothing else.
+            #
+            # It holds only while the handler acts on self.player. The moment
+            # one reads a player out of its payload the guarantee is gone and it
+            # is an ordinary unguarded RPC again, so both halves are asserted.
+            if path.name == "Player.lua":
+                assert "self.player" in body, (
+                    f"Player.lua: {name} does not act on self.player, so nothing "
+                    "ties it to the client that sent it")
+                for forged in ("params.player", "data.player", "args.player"):
+                    assert forged not in body, (
+                        f"Player.lua: {name} reads {forged} from its payload. A "
+                        "player script's handler is safe only because it acts on "
+                        "its OWN player -- take an identity from the wire and any "
+                        "client can name anybody")
+                continue
 
             assert "player" in args, (
                 f"{path.name}: {name} does not take the sender as an argument, "
@@ -6750,7 +7694,8 @@ def the_checklist_draws_no_character_the_other_panels_have_not():
                     proven.add(ch)
 
     for host in (True, False):
-        note(lua.globals().MenuGui.Build(host))
+        for dev in (True, False):
+            note(lua.globals().MenuGui.Build(host, dev))
     cfg = {"plot": 20, "gap": 1, "cols": 10, "rows": 10, "roadevery": 0,
            "roadwidth": 6, "plazacells": 2, "claimed": {}}
     note(lua.globals().PlotsGui.Build(lua.table_from(
@@ -6877,11 +7822,27 @@ def the_bridge_is_shut_unless_somebody_opens_it():
     game = read("Game.lua")
     body = game[game.index("function Game.sv_bridgeTick"):]
     body = body[:body.index(chr(10) + "end")]
-    assert 'Settings.Get( "bridge" )' in body, (
+    assert "Settings.BridgeOpen()" in body, (
         "sv_bridgeTick does not consult the setting, so switching it off would "
         "not switch it off")
-    assert body.index('Settings.Get( "bridge" )') < body.index("Bridge.sv_poll"), (
+    assert body.index("Settings.BridgeOpen()") < body.index("Bridge.sv_poll"), (
         "the bridge polls before it checks whether it is switched on")
+
+    # BOTH switches, and neither may be written by the other. /developer off has
+    # to shut this door -- it is the loudest thing behind that switch -- and it
+    # has to shut it by DERIVING, so that /developer on gives the host back the
+    # channel they actually chose. Writing `bridge = false` instead is exactly
+    # the mistake V52's lockdown made with four tool settings and could not undo.
+    S = lua.globals().Settings
+    for bridge in (True, False):
+        for dev in (True, False):
+            S.Sv_SetQuiet("bridge", bridge)
+            S.Sv_SetQuiet("developer", dev)
+            assert bool(S.BridgeOpen()) is (bridge and dev), (
+                f"bridge={bridge} developer={dev} -- BridgeOpen said "
+                f"{S.BridgeOpen()}")
+            assert bool(S.Get("bridge")) is bridge, (
+                "asking whether the door is open changed the host's own switch")
     assert "sm.player.getHostPlayer()" in body, (
         "the bridge does not resolve a host, so it would run commands as nobody "
         "-- every host gate in the mod depends on that player being the host")
@@ -7031,6 +7992,1225 @@ def the_bridge_runs_inside_its_own_pcall():
     assert "pcall" in line, f"the bridge is driven without a pcall: {line.strip()!r}"
 
 
+# ------------------------------------------------------- developer mode ---
+#
+# ASKED FOR: "add a /developer on feature that adds the developer buttons to the
+# menu. it is off by default", alongside "make sure there arent unecesary
+# buttons in menu. buttons are good. but too many buttons is too much."
+#
+# The four things behind the switch are the four an event does not survive: a
+# hundred and twenty-eight bots, a benchmark that walks that number up on its
+# own for several minutes, a channel that runs host commands from outside the
+# game, and a checklist whose items run whatever command they name.
+#
+# So the switch has to be more than tidying, and these checks are what says so:
+# the entries are gone by default, the doors behind them are shut as well, and
+# -- the part that is easy to get wrong -- every dev tool can still be TURNED
+# OFF while the mode is off, or switching the mode off with a crowd standing
+# would strand it.
+
+
+def the_dev_tools_are_off_the_menu_until_somebody_asks_for_them():
+    lua = gui_lua()
+    M = lua.globals().MenuGui
+    dev = {str(e["label"]) for e in M.ENTRIES.values() if e["dev"]}
+    assert dev == {"DEV TOOLS", "TESTING CHECKLIST"}, (
+        f"the menu marks {sorted(dev)} as developer entries -- expected the "
+        "crowd/benchmark/bridge panel and the checklist")
+
+    def labels(host, developer):
+        left, right = M.Columns(host, developer)
+        return ([str(e["label"]) for e in left.values()],
+                [str(e["label"]) for e in right.values()])
+
+    for developer in (False, None):
+        _, right = labels(True, developer)
+        assert not (set(right) & dev), (
+            f"developer={developer!r} and the host is still offered "
+            f"{sorted(set(right) & dev)}")
+    _, right_on = labels(True, True)
+    assert dev <= set(right_on), "/developer on does not put the dev entries back"
+
+    # A guest never sees them either way -- they are host entries as well.
+    for developer in (True, False):
+        left, _ = labels(False, developer)
+        assert not (set(left) & dev), "a guest is offered a developer entry"
+
+    # AND THE COUNT IS THE POINT. "too many buttons is too much": the default
+    # host menu is what somebody actually running an event looks at.
+    left, right = labels(True, False)
+    assert len(left) + len(right) <= 10, (
+        f"the default host menu has {len(left) + len(right)} entries. Every one "
+        "of them has to earn its place -- put new ones behind /developer, or on "
+        "the panel they belong to")
+
+
+def hiding_a_button_is_not_the_same_as_shutting_a_door():
+    """The menu is drawn on the player's own machine, so hiding an entry hides
+    nothing from a modified client. Every route to a dev panel asks the server.
+    """
+    game = read("Game.lua")
+    for func, needles in (
+            ("sv_n_menuOpen", ('what == "dev"', 'what == "checklist"')),
+            ("sv_n_openPanel", ('data.panel == "dev"',)),
+    ):
+        body = game[game.index("function Game." + func):]
+        body = body[:body.index(chr(10) + "end" + chr(10))]
+        for needle in needles:
+            line = next((l for l in body.splitlines() if needle in l), None)
+            assert line, f"{func} no longer routes {needle}"
+            assert "Settings.DeveloperOn()" in line, (
+                f"{func} opens {needle} without asking whether developer mode "
+                f"is on: {line.strip()!r}. Hiding the button is not enough")
+
+    # And once more at the far end. A client that never opened the menu can send
+    # sv_n_devGuiAction or sv_n_checklistAction straight at the server, so the
+    # panel openers and the action handlers ask for themselves rather than
+    # trusting that a panel was ever drawn.
+    for func in ("sv_openDevGui", "sv_n_devGuiAction",
+                 "sv_openChecklistGui", "sv_n_checklistAction"):
+        body = game[game.index("function Game." + func):]
+        body = body[:body.index(chr(10) + "end" + chr(10))]
+        assert "Settings.DeveloperOn()" in body, (
+            f"{func} never asks whether developer mode is on, so a client that "
+            "skips the menu reaches the dev tools on an event server")
+
+
+def a_dev_tool_can_always_be_switched_off():
+    """"A rule must never forbid its own remedy."
+
+    This project has paid for that once already: going over the per-plot part
+    budget returned the LOCKED profile, so the one action that could satisfy the
+    limit was the action the limit forbade. Turn developer mode off with a
+    hundred bots on the city and it is the same shape -- unless every dev
+    command keeps its OFF switch reachable, which is what this asserts.
+    """
+    lua = fresh("Settings.lua")
+    S = lua.globals().Settings
+    S.Sv_Load(False)
+    assert S.Get("developer") is False, (
+        "developer mode is ON in a fresh settings file -- an event server would "
+        "come up with the crowd, the benchmark and the outside channel reachable")
+
+    def allowed(*words):
+        return bool(S.DevCommandAllowed(lua.table_from(list(words))))
+
+    # OFF: the dev commands refuse, and their escapes do not.
+    assert not allowed("/crowd", "40"), "/crowd started a crowd with developer off"
+    assert not allowed("/bench", "start"), "/bench ran with developer off"
+    assert not allowed("/bridge", "on"), "/bridge opened with developer off"
+    assert not allowed("/check"), "the checklist opened with developer off"
+    for escape in (("/crowd", "off"), ("/crowd", "0"), ("/bench", "stop"),
+                   ("/bridge", "off")):
+        assert allowed(*escape), (
+            f"{' '.join(escape)} is refused while developer mode is off, so a "
+            "crowd raised before the switch was flipped could never be cleared")
+
+    # And an ordinary command is untouched in either mode.
+    for cmd in ("/lockdown", "/menu", "/plot", "/snapshot"):
+        assert allowed(cmd), f"{cmd} was caught by the developer gate"
+
+    S.Sv_SetQuiet("developer", True)
+    for words in (("/crowd", "40"), ("/bench", "start"), ("/bridge", "on"),
+                  ("/check",)):
+        assert allowed(*words), f"{words[0]} still refuses with developer mode ON"
+
+    # The gate has to run BEFORE the world forward, or /crowd and /bench are
+    # already gone: they are WORLD_COMMANDS and leave this script on the line
+    # above the elseif chain.
+    game = read("Game.lua")
+    body = game[game.index("function Game.sv_n_adminCommand"):]
+    assert body.index("Settings.DevCommandAllowed") < body.index("WORLD_COMMANDS[cmd]"), (
+        "the developer gate runs after the world forward, so /crowd and /bench "
+        "are handed off before anything checks the mode")
+
+
+# ------------------------------------------------------------ the ban list ---
+
+
+def banning_never_requires_typing_a_name():
+    """REPORTED: "nicks in scrap mechanic to ban needs to be writen exactly.
+    since names can be strange. this wont work."
+
+    Exactly right, and worse than awkward: a Scrap Mechanic display name can
+    hold characters that are not on the host's keyboard at all, so for some
+    players there is no string a host could enter. The engine's own /kick has
+    the same disease.
+
+    So EVERY route to a ban on this panel carries a PERMA ID -- SW-0007, always
+    ASCII, and the id the ban is filed under -- and the host picks a row rather
+    than describing one. This is the check that stops a text box creeping back.
+    """
+    lua = gui_lua()
+    PG = lua.globals().PeopleGui
+
+    known = [{"perma": "SW-0007", "name": "\u2588\u2588 xX", "aliases": 2,
+              "banned": False},
+             {"perma": "SW-0002", "name": "A Griefer", "aliases": 0,
+              "banned": True}]
+
+    def build(**over):
+        st = {"host": True, "view": "known",
+              "known": lua.table_from([lua.table_from(r) for r in known]),
+              "bans": lua.table_from([]), "players": lua.table_from([])}
+        st.update(over)
+        return PG.Build(lua.table_from(st))
+
+    acts = [n["onClickData"] for n in walk_raw(build())
+            if n["onClick"] is not None and n["onClickData"] is not None
+            and str(n["onClickData"]["action"] or "") in ("ban", "unban")]
+    assert len(acts) == len(known), (
+        f"{len(acts)} ban/unban buttons for {len(known)} known players -- every "
+        "row must carry one, or the only way to reach somebody is to type them")
+
+    carried = {str(a["name"]) for a in acts}
+    assert carried == {"SW-0007", "SW-0002"}, (
+        f"the buttons carry {sorted(carried)}. They must carry perma ids: a "
+        "display name is the one thing about a player a host may be unable to "
+        "reproduce, and it is not what the ban is stored under")
+
+    # Already banned shows the way back out on the SAME row, so a host never has
+    # to work out which tab undoes what they just did.
+    by_id = {str(a["name"]): str(a["action"]) for a in acts}
+    assert by_id["SW-0002"] == "unban", "a banned player still offers BAN"
+    assert by_id["SW-0007"] == "ban", "an unbanned player does not offer BAN"
+
+    # And the roster view still bans the person in front of you.
+    here = [n["onClickData"] for n in walk_raw(PG.Build(lua.table_from(
+        {"host": True, "view": "here", "known": lua.table_from([]),
+         "players": lua.table_from([lua.table_from(
+             {"id": 3, "name": "A Guest", "perma": "SW-0009"})])})))
+        if n["onClick"] is not None and n["onClickData"] is not None]
+    assert any(str(a["action"] or "") == "ban" for a in here), (
+        "the roster view lost its BAN button")
+
+
+def the_people_box_filters_and_never_bans():
+    """One EditBox per tree, its handler draws nothing, and -- this panel's own
+    rule -- it is a FILTER rather than a target.
+
+    The first two were paid for by the event clock, which crashed the game twice
+    over typed input. The third is what makes the panel usable at all: if the
+    box were the target, a name the host cannot type would be a player the host
+    cannot ban, which is the bug this whole view exists to remove. Typing only
+    ever narrows the list; the click is what acts.
+    """
+    lua = gui_lua()
+    PG = lua.globals().PeopleGui
+
+    def boxes(view):
+        return [n for n in walk_raw(PG.Build(lua.table_from(
+            {"host": True, "view": view, "known": lua.table_from([]),
+             "bans": lua.table_from([]), "players": lua.table_from([])})))
+            if n["Type"] == "EditBox"]
+
+    assert len(boxes("known")) == 1, "EVERYONE SEEN has no single filter box"
+    for view in ("here", "bans"):
+        assert not boxes(view), (
+            f"the {view} view has an EditBox too -- moving focus between two of "
+            "them in one tree is what crashed the game")
+    guest = [n for n in walk_raw(PG.Build(lua.table_from(
+        {"host": False, "view": "known", "known": lua.table_from([])})))
+        if n["Type"] == "EditBox"]
+    assert not guest, "a guest is given the filter box"
+
+    box = boxes("known")[0]
+    assert str(box["Name"]) == str(PG.SEARCH_BOX), (
+        "the box's name does not match PeopleGui.SEARCH_BOX, so the handler "
+        "cannot tell which box was typed into")
+    assert box["Static"] is False, "the filter box is Static -- it would never take text"
+    assert box["NeedKey"] is True, "the filter box cannot take the keyboard"
+    assert box["onTextEnter"] is not None, "the filter box has no onTextEnter"
+
+    game = read("Game.lua")
+    handler = game[game.index("function Game.cl_onPeopleSearchTyped"):]
+    handler = handler[:handler.index(chr(10) + "end")]
+    for banned in ("cl_showPanel", "cl_renderLater", "cl_closeLater", ":render("):
+        assert banned not in handler, (
+            f"cl_onPeopleSearchTyped calls {banned} -- a text callback that "
+            "touches the GUI crashed the game twice, and deferring was not enough")
+    assert '"search"' in handler and '"ban"' not in handler, (
+        "the typed box reaches a ban. It may only ever filter")
+
+    # The filter itself: any fragment of a name OR of the perma. The perma half
+    # is the one that matters -- it is always ASCII, so it is the only handle on
+    # a player whose display name the host cannot type a character of.
+    rows = lua.table_from([lua.table_from(r) for r in (
+        {"perma": "SW-0007", "name": "\u2588\u2588 xX"},
+        {"perma": "SW-0011", "name": "June Carya"},
+        {"perma": "SW-0012", "name": "zeb"})])
+
+    def names(q):
+        return sorted(str(r["perma"]) for r in PG.Filter(rows, q).values())
+
+    assert names("") == ["SW-0007", "SW-0011", "SW-0012"], "an empty filter hides people"
+    assert names("  ") == ["SW-0007", "SW-0011", "SW-0012"], "whitespace is not trimmed"
+    assert names("sw-0007") == ["SW-0007"], "a perma id does not match, case-insensitively"
+    assert names("SW-00") == ["SW-0007", "SW-0011", "SW-0012"], "a perma prefix does not match"
+    assert names("carya") == ["SW-0011"], "part of a name does not match"
+    assert names("CARYA") == ["SW-0011"], "the filter is case sensitive"
+    assert names("qqq") == [], "a filter that matches nothing still returns rows"
+
+    # And the geometry follows the box, or the bottom row sits under the footer.
+    assert int(PG.RowsFor("known")) < int(PG.RowsFor("here")), (
+        "EVERYONE SEEN shows as many rows as the roster, but it spends a row's "
+        "height on the filter box")
+
+
+def a_perma_id_finds_the_player_wearing_it():
+    """The panel sends perma ids, so the ban path has to turn one back into a
+    live player -- or banning somebody standing in front of you would file them
+    correctly and never call sm.game.banPlayer, leaving them in the world.
+    """
+    game = read("Game.lua")
+    body = game[game.index("local function resolveTarget("):]
+    body = body[:body.index(chr(10) + "end")]
+    assert "Identity.Sv_NameOf" in body, (
+        "resolveTarget cannot turn a perma id into a name, so every button on "
+        "the people panel misses anybody who is currently online")
+    assert body.index("Identity.Sv_NameOf") < body.rindex("getAllPlayers"), (
+        "resolveTarget resolves the perma but never looks for that player among "
+        "the people who are here")
+
+
+def the_allow_list_can_actually_be_filled_in():
+    """REPORTED with a screenshot: the allow list was ON, one player was online
+    (the host), and there was no way to put anybody on the list at all.
+
+    That is the whole feature missing, not a rough edge. The allow list names
+    everyone who MAY come in -- so unlike a ban, it has to be filled in BEFORE
+    an event, and a control that only reaches people already standing in the
+    world can never do that. It is also the strongest tool this mod has: a ban
+    loses to a rename, an allow list cannot, because a new name is simply a name
+    that is not on it.
+    """
+    lua = gui_lua()
+    PG = lua.globals().PeopleGui
+    known = [{"perma": "SW-0007", "name": "Somebody", "allowed": False},
+             {"perma": "SW-0008", "name": "A Regular", "allowed": True}]
+
+    def build(allowlist):
+        return PG.Build(lua.table_from({
+            "host": True, "view": "known", "allowlist": allowlist,
+            "known": lua.table_from([lua.table_from(r) for r in known]),
+            "bans": lua.table_from([]), "players": lua.table_from([])}))
+
+    def actions(root):
+        return [n["onClickData"] for n in walk_raw(root)
+                if n["onClick"] is not None and n["onClickData"] is not None]
+
+    on = actions(build(True))
+    by = {}
+    for a in on:
+        act = str(a["action"] or "")
+        if act in ("allow", "unallow"):
+            by[str(a["name"])] = act
+    assert by == {"SW-0007": "allow", "SW-0008": "unallow"}, (
+        f"the picker offers {by} -- every row must be able to be added to the "
+        "allow list and taken off it again, and by PERMA ID, because a display "
+        "name is the thing a host may be unable to type")
+
+    # ...and NOT while the list is switched off, or it is a button that appears
+    # to do nothing -- the failure this project has already paid for three times.
+    off = [str(a["action"]) for a in actions(build(False))]
+    assert "allow" not in off and "unallow" not in off, (
+        "the allow/remove buttons are drawn while the allow list is switched "
+        "off, so pressing one changes a list nothing consults")
+
+    # The switch itself has to be reachable from the same panel. Managing members
+    # without being able to see or flip the switch is half a feature.
+    toggles = [a for a in actions(build(False)) if str(a["action"] or "") == "allowlist"]
+    assert toggles, "there is no way to turn the allow list on from the panel"
+    assert toggles[0]["on"] is True, "the toggle does not offer the opposite state"
+    assert [a for a in actions(build(True))
+            if str(a["action"] or "") == "allowlist"][0]["on"] is False, (
+        "the toggle does not offer to turn a live allow list off again")
+
+    # And it must go through the ordinary Sv_Set, or two ways to write one
+    # setting drift apart.
+    game = read("Game.lua")
+    body = game[game.index("function Game.sv_n_peopleGuiAction"):]
+    body = body[:body.index(chr(10) + "end" + chr(10))]
+    branch = body[body.index('data.action == "allowlist"'):]
+    assert 'Settings.Sv_Set( "allowlist"' in branch, (
+        "the panel writes the allowlist setting some other way than Sv_Set, so "
+        "it will not broadcast, log, or reach the world the way /set does")
+
+
+def the_host_is_never_shown_as_locked_out_of_their_own_server():
+    """The host row read "HOST   NOT on the allow list" -- the server appearing
+    to say it will throw its own owner out.
+
+    It will not: server_onPlayerJoined tests `player ~= host` before it consults
+    the list at all. The row was describing a fact that has no consequence, in
+    words that suggested a serious one.
+    """
+    lua = gui_lua()
+    PG = lua.globals().PeopleGui
+    line = str(PG.Subtitle(lua.table_from(
+        {"perma": "SW-0001", "host": True, "allowed": False}), True))
+    assert "NOT on the allow list" not in line, (
+        f"the host row still reads {line!r}")
+    assert "always allowed" in line, (
+        f"the host row does not say the host is exempt: {line!r}")
+
+    # ...and the exemption it is describing has to be real.
+    game = read("Game.lua")
+    join = game[game.index("function Game.server_onPlayerJoined"):]
+    join = join[:join.index(chr(10) + "end" + chr(10))]
+    gate = next(l for l in join.splitlines() if 'Settings.Get( "allowlist" )' in l)
+    assert "player ~= host" in gate, (
+        f"the join check no longer exempts the host: {gate.strip()!r} -- the "
+        "panel would be telling the truth about a server that locks its owner out")
+
+
+def the_mod_adds_no_work_to_a_join():
+    """A JOIN IS THE ONE MOMENT THIS ENGINE IS KNOWN TO BE FRAGILE.
+
+    MEASURED by somebody else, on a 40-player survival stream: two people
+    joining at the same time was enough for the network handshake to fail and
+    for NEITHER to get in. The whole event had to move to invite-only with
+    invites sent one at a time. That is engine-side and this mod cannot fix it.
+
+    What it can do is not make it worse. server_onPlayerJoined used to broadcast
+    the roster to every client on every join -- N x N messages during a burst,
+    from a mod, on top of an engine already failing -- and write the whole
+    players file to disk each time. Both are now on the once-a-second tick,
+    which was already running and already sends nothing when nothing moved.
+
+    This is a check about a cost, so it reads the join path rather than a value:
+    what matters is that the expensive calls are NOT there.
+    """
+    game = read("Game.lua")
+    join = game[game.index("function Game.server_onPlayerJoined"):]
+    join = join[:join.index(chr(10) + "end" + chr(10))]
+    code = chr(10).join(l for l in join.splitlines()
+                        if l.strip() and not l.strip().startswith("--"))
+
+    assert "sv_pushRoster( player )" in code, (
+        "the joining player is no longer sent the roster, so their HUD is blank "
+        "until the next tick")
+    assert "sv_pushRoster()" not in code.replace("sv_pushRoster( player )", ""), (
+        "server_onPlayerJoined broadcasts the roster to everybody. That is one "
+        "message per client per join -- N x N during exactly the burst this "
+        "engine cannot survive. The tick already pushes it once a second")
+    assert "Sv_SavePlayers" not in code, (
+        "the join path writes the whole players file synchronously. It grows "
+        "with every player ever seen, and it is written at the worst instant")
+
+    # ...and the deferred work has to actually be picked up, or it is not
+    # deferred, it is dropped.
+    tick = game[game.index("function Game.server_onFixedUpdate"):]
+    tick = tick[:tick.index(chr(10) + "end" + chr(10))]
+    assert "sv_pushRoster()" in tick, "nothing pushes the roster any more"
+    assert "Sv_FlushPlayers" in tick, (
+        "nothing flushes the players file, so a deferred write is a lost write")
+
+    ident = read("Identity.lua")
+    assert "function Identity.Sv_FlushPlayers" in ident, "the flush does not exist"
+    touch = ident[ident.index("function Identity.Sv_Touch"):]
+    touch = touch[:touch.index(chr(10) + "end")]
+    assert "playersDirty = true" in touch, "Sv_Touch does not mark the file dirty"
+    # A ban is not deferred. It is typed while something is going wrong.
+    # The open paren matters: "Identity.Sv_Ban" is a prefix of "Sv_BanEntry",
+    # which is defined earlier, so the loose name slices the wrong function and
+    # the check fails against perfectly good code.
+    ban = ident[ident.index("function Identity.Sv_Ban( "):]
+    ban = ban[:ban.index(chr(10) + "end")]
+    assert "Sv_SaveBans" in ban, (
+        "banning no longer writes immediately -- a ban placed a second before a "
+        "crash is exactly the ban that mattered")
+
+
+def the_host_can_see_who_is_allowed_to_join():
+    """"if server is set to public only up to 6 players can join."
+
+    The cap itself is not ours to change -- see CLAUDE.md -- but a host who
+    cannot see which mode the world is in cannot tell "nobody else can join"
+    from "nobody else is trying", and only one of those is fixable by them.
+
+    `Multiplayer` is a real key in the game's own settings table, measured
+    sitting beside PhysicsQuality in the executable, so getSettingValue reads it
+    the same way /protection already reads PhysicsQuality.
+    """
+    lua = fresh("Settings.lua")
+    S = lua.globals().Settings
+    modes = {int(k): str(v) for k, v in S.JOIN_MODES.items()}
+    assert set(modes.values()) == {"Private", "Invite only", "Friends",
+                                   "Friends of friends", "Public"}, (
+        f"the join modes are {modes} -- the game ships exactly five, named by "
+        "MENU_OPTIONS_GAMEPLAY_MULTIPLAYER_* in InterfaceTags.txt")
+
+    # An unreadable setting must say so rather than inventing a mode.
+    assert "unreadable" in str(S.JoinModeLine()), (
+        "with no game to ask, the readout claims to know who can join")
+
+    # ...and with the setting readable, it has to name the mode AND show the raw
+    # number. The label ordering is a GUESS -- nothing in the string table fixes
+    # it -- so a line that printed only the label could be confidently wrong
+    # forever, with nothing in a session able to correct it.
+    for raw, label in sorted(modes.items()):
+        lua.execute(
+            "sm.game = sm.game or {}; "
+            f"sm.game.getSettingValue = function( k ) return {raw} end")
+        line = str(S.JoinModeLine())
+        assert "who can join" in line, f"the readout says nothing useful: {line!r}"
+        assert label in line, f"value {raw} did not report as {label!r}: {line!r}"
+        assert f"Multiplayer = {raw}" in line, (
+            f"the readout hides the raw setting value: {line!r}. The label order "
+            "is unverified, so the number has to be visible or nothing can "
+            "correct it")
+        # The one mode that has been reported to stall has to say so on the line
+        # itself. A host reading "who can join: Public" and nothing else has been
+        # told the fact and not the consequence.
+        warned = "6" in line or "stall" in line
+        assert warned == (label == "Public"), (
+            f"{label} line reads {line!r} -- only Public has been reported to "
+            "stop letting people in, and only Public should say so")
+
+    for where, src in (("/protection", read("World.lua")),
+                       ("the people panel", read("Game.lua"))):
+        assert "JoinModeLine()" in src, (
+            f"{where} does not report who can join")
+
+
+def changing_who_can_join_is_never_silent():
+    """MEASURED, from this owner's own logs rather than from reasoning --
+    game-20260710-192923.log, one host, five players:
+
+        19:52:45  user X   Connecting -> None        turned away
+        ...seven attempts over fifty seconds, all refused...
+        19:53:35  Multiplayer: Multiplayer(3)        the host widens it
+        19:53:36  user X   Finding Route -> Connected
+
+        20:22:39  Multiplayer: Multiplayer(0)        the host narrows it
+        20:22:39  User A is not authenticated        ONE TICK LATER
+        20:22:39  A, B: Connected -> None            both thrown out
+
+    Two things nobody is told. Somebody who cannot join retries in silence --
+    seven times, with no message on either end. And narrowing the setting while
+    people are in the world REMOVES them, reported as an authentication failure
+    rather than as anything to do with the setting that caused it.
+
+    The mod cannot change the setting -- getSettingValue exists and no setter
+    does -- so it says what happened. That is still the difference between "the
+    server is broken" and "I pressed something".
+    """
+    game = read("Game.lua")
+    assert "function Game.sv_checkJoinMode" in game, (
+        "nothing watches the multiplayer setting, so a host who narrows it "
+        "mid-event sees people vanish with no explanation anywhere")
+
+    body = game[game.index("function Game.sv_checkJoinMode"):]
+    body = body[:body.index(chr(10) + "end" + chr(10))]
+    assert "Settings.JoinMode()" in body, "the watcher does not read the setting"
+    assert "sm.log.info" in body, (
+        "a change is not logged, and the log is where every other piece of "
+        "evidence about a session already is")
+    assert "getHostPlayer" in body, (
+        "the warning is not aimed at the host -- a guest being told the rules "
+        "moved as they are thrown out is noise at the worst moment")
+    assert "getAllPlayers" in body, (
+        "the warning does not say whether anybody is in the world to lose")
+
+    # ...and it has to be driven, or it is a function nothing calls.
+    tick = game[game.index("function Game.server_onFixedUpdate"):]
+    tick = tick[:tick.index(chr(10) + "end" + chr(10))]
+    assert "sv_checkJoinMode" in tick, "nothing drives the watcher"
+    line = next(l for l in tick.splitlines() if "sv_checkJoinMode" in l)
+    assert "pcall" in line, (
+        f"the watcher runs without a pcall: {line.strip()!r} -- it reads an "
+        "engine setting every second and must never take the tick down")
+
+    # The first read must not announce itself as a change, or every world load
+    # would warn about a setting nobody touched.
+    assert "self.sv.joinMode == nil" in body, (
+        "the watcher has no first-read case, so loading a world reports the "
+        "setting as having just changed")
+
+
+def free_build_reaches_every_square_that_is_not_a_plot():
+    """"make sure you can place and break blocks on everything when the free
+    build on the city is on."
+
+    EVERYTHING. The first version of citybuild named plaza, road and corner and
+    left the filler seams between plots to fall through to the teaming rule, so
+    the strips between plots stayed shut with the city wide open -- which is the
+    one part of "everything" you find by walking into it.
+
+    So this does not check three zone kinds by name. It sweeps the whole grid,
+    collects every kind Layout actually produces, and demands all of them open.
+    A new zone kind is covered the day it is added rather than the day somebody
+    reports it.
+    """
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Plots.lua")
+    S, P, L = lua.globals().Settings, lua.globals().Plots, lua.globals().Layout
+    S.Sv_Load(False)
+
+    # A grid with ROADS in it. The default has roadevery = 0, so a sweep over it
+    # finds only plaza and plot and would pass while proving nothing -- which is
+    # exactly how the gap this check exists for got shipped.
+    plots = lua.eval("Plots()")
+    P.sv_onCreate(plots, lua.table_from({"grid": lua.table_from(
+        {"plot": 8, "gap": 1, "cols": 8, "rows": 8, "roadevery": 3,
+         "roadwidth": 4, "plazacells": 1}), "enabled": True}))
+    plots["enabled"] = True
+    block = float(P.BLOCK)
+
+    make = lua.execute("""
+        return function( x, y )
+            return { worldPosition = { x = x, y = y, z = 1.5 },
+                     getShapes = function() return { { shapeUuid = "x" } } end,
+                     getWorldAabb = function()
+                         return { x = x, y = y, z = 1.5 }, { x = x, y = y, z = 2.5 }
+                     end }
+        end
+    """)
+
+    # One probe per zone kind, found by walking the grid rather than guessed at.
+    probes = {}
+    g = plots["layout"]
+    # Step 1: a filler seam is ONE block wide, so anything coarser walks over
+    # the zone kind this check was written for.
+    for bx in range(-90, 91):
+        for by in range(-90, 91):
+            z = L.locate(g, bx, by)
+            if z is None:
+                continue
+            kind = str(z["kind"])
+            probes.setdefault(kind, make(bx * block, by * block))
+    assert len(probes) >= 4, (
+        f"only found zone kinds {sorted(probes)} -- the sweep is too coarse to "
+        "prove anything about 'everything'")
+    assert "plot" in probes, "the sweep never landed on a plot"
+
+    # OFF: the city is scenery. Nothing but a plot may be built on.
+    S.Sv_SetQuiet("citybuild", False)
+    for kind, body in sorted(probes.items()):
+        v = P.sv_bodyIsOpen(plots, body)
+        if kind == "plot":
+            continue
+        assert v != True, (  # noqa: E712 -- Lua true, not truthiness
+            f"{kind} is buildable with citybuild OFF, so a plot event does not "
+            "protect the ground between the plots")
+
+    # ON: every square that is not a plot is ordinary buildable ground.
+    S.Sv_SetQuiet("citybuild", True)
+    shut = [k for k, b in sorted(probes.items())
+            if k != "plot" and P.sv_bodyIsOpen(plots, b) != True]  # noqa: E712
+    assert not shut, (
+        f"free build is on and {shut} are still not buildable. 'Everything' has "
+        f"to mean every zone kind the layout produces, which is {sorted(probes)}")
+
+    # AND THE VERDICT HAS TO REACH A PROFILE THAT LETS YOU BOTH PLACE AND BREAK,
+    # or "you can build on the plaza" is only half true.
+    #
+    # Through the real resolver rather than the table -- the lesson the polish
+    # profile taught, where a correct profile that nothing could reach passed a
+    # check which only ever proved the data said what the data said.
+    lua2 = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Plots.lua",
+                 "Protection.lua")
+    S2, P2, Prot = (lua2.globals().Settings, lua2.globals().Plots,
+                    lua2.globals().Protection)
+    S2.Sv_Load(False)
+    S2.Sv_SetQuiet("citybuild", True)
+    plots2 = lua2.eval("Plots()")
+    P2.sv_onCreate(plots2, lua2.table_from({"grid": lua2.table_from(
+        {"plot": 8, "gap": 1, "cols": 8, "rows": 8, "roadevery": 3,
+         "roadwidth": 4, "plazacells": 1}), "enabled": True}))
+    plots2["enabled"] = True
+    lua2.globals().g_swPlots = plots2
+
+    prot = lua2.eval("Protection()")
+    Prot.sv_onCreate(prot, "open")
+    lua2.globals().g_swProtection = prot
+    Prot.sv_setResolver(prot, lua2.execute("""
+        return function( body )
+            if g_swPlots:sv_isScenery( body ) and not Settings.CityIsOpen() then
+                return "locked"
+            end
+            local zone = g_swPlots:sv_bodyIsOpen( body )
+            if zone == "sweep" then return "sweep" end
+            if Settings.Get( "buildopen" ) == false
+                and not g_swProtection:sv_modeClosesBuilding() then
+                return false
+            end
+            return zone
+        end
+    """))
+
+    make2 = lua2.execute("""
+        return function( x, y )
+            return { worldPosition = { x = x, y = y, z = 1.5 },
+                     getShapes = function() return { { shapeUuid = "x" } } end,
+                     getWorldAabb = function()
+                         return { x = x, y = y, z = 1.5 }, { x = x, y = y, z = 2.5 }
+                     end }
+        end
+    """)
+    g2 = plots2["layout"]
+    seen = {}
+    for bx in range(-90, 91):
+        for by in range(-90, 91):
+            z = lua2.globals().Layout.locate(g2, bx, by)
+            if z is None or str(z["kind"]) == "plot":
+                continue
+            seen.setdefault(str(z["kind"]), (bx, by))
+    for kind, (bx, by) in sorted(seen.items()):
+        # profileFor returns ( profile, name ), so lupa hands back a tuple
+        got = Prot.sv_profileForTest(prot, make2(bx * block, by * block))
+        prof = got[0] if isinstance(got, tuple) else got
+        assert prof["buildable"] is True, (
+            f"with free build ON, a {kind} resolves to a profile that cannot "
+            "PLACE blocks")
+        assert prof["erasable"] is True, (
+            f"with free build ON, a {kind} resolves to a profile that cannot "
+            "BREAK blocks -- half of 'place and break on everything'")
+
+
+def no_diagnostic_runs_in_ordinary_play():
+    """Scaffolding that outstayed its welcome is a performance bug waiting.
+
+    MEASURED, from the owner's log on 2026-09-01: 140 `lift-trace` lines from
+    one session of repeated NOTlift imports -- one 25-second, per-change trace
+    started by EVERY import, in a session whose tick rate fell to about 0.6 Hz.
+    The trace did not cause that (the content did), but log spam is the largest
+    performance bug this project has ever measured -- the 1.79 GB single-player
+    log -- and a diagnostic that fires hardest exactly when the server is
+    already struggling is the wrong thing to leave switched on.
+
+    The rule this encodes: anything that logs per ACTION rather than per event
+    has to be behind /developer, which is off by default.
+    """
+    world = read("World.lua")
+    body = world[world.index("function World.sv_traceStart"):]
+    body = body[:body.index(chr(10) + "end" + chr(10))]
+    assert "DeveloperOn" in body, (
+        "the lift trace runs in ordinary play. Every import starts a 25-second "
+        "per-change trace, on a server that may already be struggling")
+    # ...and the gate has to come before the work, not after it.
+    assert body.index("DeveloperOn") < body.index("sm.log.info"), (
+        "the trace logs before it checks whether it should be running")
+
+
+def the_alarm_never_cries_wolf_at_our_own_rollback():
+    """MEASURED, 2026-09-01, through the bridge on a live world.
+
+    A /restore of a 96-plot city reported `195 of 195 creations` and then:
+
+        *** 274 blocks have disappeared ***
+        BUILDS LOCKED automatically -- 195 bodies, 195 changed [locked 195]
+
+    The alarm locked the world by itself, seconds after a rollback the host had
+    just asked for. At an event that is the worst possible moment: you restore
+    because something went wrong, and the mod's answer is to freeze everybody.
+
+    Being quiet WHILE the job runs was already there and was never enough. The
+    alarm compares the present against the PEAK inside a 20-second window, so
+    the moment it starts listening again the window can still hold samples from
+    before the clear -- a peak the rebuilt world will never match. The
+    comparison straddles the job.
+
+    So the fix is the TRANSITION, not a longer duration: when a wholesale job
+    stops, throw the window away and count from what is actually there.
+    """
+    world = read("World.lua")
+    fn = world[world.index("function World.sv_checkGriefAlarm"):]
+    fn = fn[:fn.index(chr(10) + "end" + chr(10))]
+
+    assert "alarmWasBusy" in fn, (
+        "the alarm does not notice a wholesale job ENDING, so its window can "
+        "still straddle the clear and fire at the rebuilt world")
+    assert "sv_busy()" in fn, "the alarm no longer knows a snapshot job is running"
+    assert "cityJob" in fn, (
+        "building the city is a wholesale job too and the alarm does not know "
+        "about it -- /plotbuild clears the old city first")
+
+    # THE GUARD ITSELF, not just the assignment inside it. A break that turned
+    # `if self.sw.alarmWasBusy then` into `if false then` left every string this
+    # check looked for exactly where it was, and the check passed.
+    assert "if self.sw.alarmWasBusy then" in fn, (
+        "nothing tests the busy->idle transition, so the reset below it is dead "
+        "code -- verified by breaking it exactly that way")
+
+    # The baseline has to be thrown away on the transition, not merely delayed.
+    tail = fn[fn.index("alarmWasBusy = false"):]
+    assert "censusLog = {" in tail, (
+        "the alarm resumes without resetting its window, so the peak from "
+        "before the clear is still in it")
+    # ...and the reset has to happen BEFORE the peak is computed, or it is
+    # pointless.
+    assert fn.index("alarmWasBusy = false") < fn.index("local peak"), (
+        "the baseline is reset after the peak has already been taken")
+
+
+def the_build_preset_leaves_nothing_dangerous_on():
+    """BUILD is the one preset pressed with a lobby already in the world.
+
+    ASKED FOR: "the building preset shall disable explosives. clay gun, fires.
+    damage. and other stuff we talked about."
+
+    A preset only writes the keys it names; everything else keeps whatever the
+    host last set. "Whatever it was last time" is not a safety position, and it
+    is how `destructible` -- the switch whose help reads "let explosives and the
+    sledgehammer actually break builds" -- stayed ON through build events. It was
+    on in this owner's live settings when this check was written.
+
+    Runs the real Sv_ApplyPreset from a WORST CASE: every dangerous setting
+    turned on first. Reading the preset table would only prove the table says
+    what it says; this proves what a host is left holding.
+    """
+    lua = fresh("Settings.lua")
+    S = lua.globals().Settings
+    S.Sv_Load(False)
+
+    # Everything that can hurt a build, a player, the ground, or an event.
+    MUST_BE_OFF = {
+        "fire": "fire spreads",
+        "terraindamage": "explosions crater the ground",
+        "aggro": "tapebots attack people",
+        "destructible": "THE DAMAGE SWITCH -- explosives and the sledgehammer break builds",
+        "claygun": "the clay gun, and clay is terrain nothing can remove",
+        "firelauncher": "a flamethrower by another name",
+        "extinguisher": "foam over everything",
+        "cornades": "explosives",
+        "beacons": "rule 12",
+        "fireworks": "rule 11",
+        "plasmadrills": "rule 11",
+        "radios": "rule 5, and they cannot be muted",
+        "horns": "rule 7, noise",
+        "developer": "the crowd, the benchmark and the outside channel, one press away",
+    }
+    # ...and the three tools that do more in one press than a guest should hold.
+    MUST_BE_HOST_ONLY = ("hostcleaner", "hostlift", "hostnotlift")
+
+    # WORST CASE FIRST. A preset that simply agreed with the defaults would pass
+    # a check that started from the defaults.
+    for k in MUST_BE_OFF:
+        S.Sv_SetQuiet(k, True)
+    for k in MUST_BE_HOST_ONLY:
+        S.Sv_SetQuiet(k, False)
+    S.Sv_SetQuiet("maxjoints", 0)
+    S.Sv_SetQuiet("maxbots", 0)
+    S.Sv_SetQuiet("maxlights", 0)
+
+    ok = S.Sv_ApplyPreset("build")
+    assert ok, "the build preset did not apply"
+
+    still_on = {k: why for k, why in MUST_BE_OFF.items() if S.Get(k) is not False}
+    assert not still_on, (
+        "the BUILD preset leaves these on, so an event inherits them from "
+        "whatever the host last did: "
+        + "; ".join(f"{k} ({why})" for k, why in still_on.items()))
+
+    open_tools = [k for k in MUST_BE_HOST_ONLY if S.Get(k) is not True]
+    assert not open_tools, (
+        f"BUILD leaves {open_tools} open to guests. The cleaner ignores every "
+        "permission flag, the lift carries whole creations and NOTlift spawns "
+        "one out of nothing")
+
+    # The rules board has to be true. /rules reads the live settings, so a limit
+    # left at 0 makes the server announce a rule it is not enforcing.
+    for k in ("maxjoints", "maxbots", "maxlights"):
+        assert int(S.Get(k)) > 0, (
+            f"BUILD leaves {k} at 0, so /rules announces a limit that is not "
+            "being enforced")
+
+    # And building has to be OPEN, or the preset named for building does not.
+    assert S.Get("buildopen") is True, "BUILD does not open building"
+    assert str(S.Get("protection")) == "open", "BUILD does not unlock the world"
+
+    # THE BRIDGE MUST NOT BE WRITTEN. It is derived from `developer`, so turning
+    # developer back on must give the host the channel they chose rather than
+    # one this preset quietly took away -- the V52 lockdown mistake.
+    import re
+    src = read("Settings.lua")
+    block = src[src.index("\tbuild = {"):]
+    block = block[:block.index("\t},")]
+    assert not re.search(r"^\s*bridge\s*=", block, re.M), (
+        "the BUILD preset writes `bridge`. It is derived from `developer` -- "
+        "writing it means /developer on cannot give it back")
+
+
+def the_ban_ui_is_on_the_menu(): 
+    """ASKED FOR TWICE. "make it accesible via menu", and then, with a
+    screenshot of a menu that did not have it: "where is the ban? I want the ban
+    UI to be in the menu."
+
+    Both times the ban UI existed and was one tab inside WHO IS HERE, and both
+    times the honest answer was that one tab in is not on the menu. Moderation
+    is reached for while something is going wrong, which is the worst possible
+    moment to be hunting through a panel for a view.
+
+    So: a top-level entry, and it opens on the view that can actually ban
+    somebody rather than on the list of people already banned.
+    """
+    lua = gui_lua()
+    entries = {str(e["label"]): e for e in lua.globals().MenuGui.ENTRIES.values()}
+    assert "BANS" in entries, (
+        f"there is no BANS entry on the menu. It offers {sorted(entries)}")
+    e = entries["BANS"]
+    assert e["host"] is True, "BANS is offered to guests"
+    assert e["panel"] is True, (
+        "BANS is not marked as opening a panel, so the menu will queue a close "
+        "that races the panel it just asked for")
+    assert e["dev"] is None or e["dev"] is False, (
+        "BANS is behind /developer, so it is invisible on a live event -- which "
+        "is the one place moderation is needed")
+
+    # ...and the entry has to land on the picker. The BANNED view cannot ban
+    # anybody; landing there would put a click between the host and the only
+    # action they opened it for.
+    game = read("Game.lua")
+    router = game[game.index("function Game.sv_n_menuOpen"):]
+    router = router[:router.index(chr(10) + "end" + chr(10))]
+    branch = router[router.index('what == "bans"'):]
+    branch = branch[:branch.index("elseif")] if "elseif" in branch else branch
+    assert "sv_openPeopleGui" in branch, "the BANS entry opens no panel"
+    assert '"known"' in branch, (
+        "BANS does not open on EVERYONE SEEN. That view is a superset of the "
+        "ban list -- it shows who is banned AND is the only place one can be "
+        "added -- so opening anywhere else costs a click for nothing")
+
+
+# --------------------------------------------------------- work in progress ---
+
+
+def the_mod_says_it_is_unfinished():
+    """ASKED FOR: "add a disclaimer that the mod is a WORK IN PROGRESS."
+
+    In both places somebody arrives: the join message, which everyone sees once
+    and which scrolls away, and the front of the menu, which is what they are
+    looking at when something behaves oddly. A guest who hits a rough edge and
+    has not been told will report a broken server rather than an unfinished mod.
+    """
+    lua = gui_lua()
+    captions = " ".join(
+        str(w["caption"] or "")
+        for host in (True, False)
+        for w in walk_full(lua.globals().MenuGui.Build(host, False)))
+    assert "WORK IN PROGRESS" in captions, (
+        "the menu does not say the mod is a work in progress, in either audience")
+
+    game = read("Game.lua")
+    welcome = game[game.index("function Game.client_welcome"):]
+    welcome = welcome[:welcome.index(chr(10) + "end")]
+    assert "WORK IN PROGRESS" in welcome, (
+        "the join message does not say the mod is a work in progress")
+    assert "/menu" in welcome, (
+        "the join message does not mention /menu -- 'I want the MENU to be the "
+        "menu', and this is the one line a new arrival is guaranteed to read")
+
+
+# ------------------------------------------------------------- the city ------
+
+
+def the_city_can_be_opened_up_and_is_shut_by_default():
+    """ASKED FOR: "add a settings that alows for the city to be modified too.
+    because in the stream. the host allowed to modify the plaza. and the road."
+
+    Off by default, because the default is a plot event and the whole reason a
+    plot event works is that the ground between the plots belongs to nobody.
+
+    Runs the real zone verdict rather than reading the table -- the lesson the
+    polish profile taught, where a correct profile nothing could reach passed a
+    check that only ever proved the data said what the data said.
+    """
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Plots.lua")
+    S, P = lua.globals().Settings, lua.globals().Plots
+    S.Sv_Load(False)
+    assert S.Get("citybuild") is False, (
+        "the city is modifiable by default -- a plot event would start with the "
+        "roads and the plaza open to everybody")
+
+    plots = lua.eval("Plots()")
+    P.sv_onCreate(plots, lua.table_from({"grid": lua.table_from({}), "enabled": True}))
+    plots["enabled"] = True
+
+    # The ORIGIN is the plaza. That is what makes it the right probe here and
+    # the wrong one for a plot check.
+    body = lua.execute("""
+        return { worldPosition = { x = 0, y = 0, z = 1.5 },
+                 getShapes = function() return { { shapeUuid = "not-ours" } } end,
+                 getWorldAabb = function()
+                     return { x = 0, y = 0, z = 1.5 }, { x = 0, y = 0, z = 2.5 }
+                 end }
+    """)
+    zone = P.sv_bodyZone(plots, body)
+    assert zone is not None and str(zone["kind"]) == "plaza", (
+        f"the probe is standing on {zone and zone['kind']!r}, not the plaza -- "
+        "this check would prove nothing")
+
+    assert P.sv_bodyIsOpen(plots, body) == "sweep", (
+        "shared ground is not sweepable with citybuild off. Sweep is what makes "
+        "a craftbot dropped on the plaza removable by anybody")
+
+    S.Sv_SetQuiet("citybuild", True)
+    assert P.sv_bodyIsOpen(plots, body) is True, (
+        "the plaza is still only sweepable with citybuild ON, so nobody can "
+        "build on it -- which is the whole request")
+
+    # ...and the same for a road, so this is about shared ground rather than
+    # about one square of it.
+    for kind in ("road", "corner"):
+        S.Sv_SetQuiet("citybuild", False)
+        found = None
+        for n in range(1, 400):
+            probe = lua.execute("""
+                return function( x, y )
+                    return { worldPosition = { x = x, y = y, z = 1.5 },
+                             getShapes = function() return { { shapeUuid = "x" } } end,
+                             getWorldAabb = function()
+                                 return { x = x, y = y, z = 1.5 },
+                                        { x = x, y = y, z = 2.5 }
+                             end }
+                end
+            """)(n * float(P.BLOCK), 0.0)
+            z = P.sv_bodyZone(plots, probe)
+            if z is not None and str(z["kind"]) == kind:
+                found = probe
+                break
+        if found is None:
+            continue                      # this grid has no such zone; fine
+        assert P.sv_bodyIsOpen(plots, found) == "sweep", f"{kind} is not sweep by default"
+        S.Sv_SetQuiet("citybuild", True)
+        assert P.sv_bodyIsOpen(plots, found) is True, (
+            f"a {kind} does not open up with citybuild on")
+
+
+def opening_the_city_is_not_a_way_round_a_lockdown():
+    """The decking is protected by exactly one thing -- sv_isScenery returning
+    "locked" from the resolver -- so the switch has to be there, and WHERE it is
+    decides whether it can be abused.
+
+    After the host's bubble and before everything else: a lockdown still freezes
+    the city, because a locked mode never consults the zone verdict at all.
+    Opening the city is permission to build on it, never permission to ignore
+    the protection mode.
+    """
+    world = read("World.lua")
+    body = world[world.index("g_swProtection:sv_setResolver("):]
+    body = body[:body.index("end )")]
+    # ORDERING IS ABOUT CODE, and this resolver is four fifths prose -- the note
+    # explaining why the bubble comes first mentions sv_isScenery two lines
+    # ABOVE the bubble itself. Comparing raw offsets would compare comments.
+    code = chr(10).join(l for l in body.splitlines()
+                        if l.strip() and not l.strip().startswith("--"))
+
+    # CODE, not comments. The resolver explains itself at length and the first
+    # mention of sv_isScenery is a note about the host bubble -- a scan that
+    # takes it is reading prose and reporting on the code.
+    line = next((l for l in body.splitlines()
+                 if "sv_isScenery" in l and not l.strip().startswith("--")), None)
+    assert line and "CityIsOpen" in line, (
+        "the resolver locks the decking without asking whether the city is "
+        f"open, so citybuild cannot reach it: {line and line.strip()!r}")
+
+    assert code.index("sv_hostReaches") < code.index("sv_isScenery"), (
+        "the host bubble no longer comes first. The plaza IS scenery and it is "
+        "where everyone spawns, so a bubble that lost to it would do nothing at "
+        "the first place anybody tried")
+    assert code.index("sv_isScenery") < code.index("sv_bodyIsOpen"), (
+        "the scenery test moved after the zone verdict")
+
+    # And a locked mode short-circuits before any of it. This is what makes the
+    # ordering above sufficient rather than merely tidy.
+    prot = read("Protection.lua")
+    pf = prot[prot.index("local function profileFor("):]
+    pf = pf[:pf.index(chr(10) + "end")]
+    assert pf.index("isLockedMode( self.mode )") < pf.index("self.resolver"), (
+        "a locked mode no longer short-circuits ahead of the resolver, so a "
+        "verdict could reopen a world the host has shut")
+
+
+# ------------------------------------------------------------------ bans -----
+
+
+def the_ban_list_carries_across_worlds():
+    """ASKED FOR: "perma ban list caries on accros worlds."
+
+    It does, and for a reason that is a BUG everywhere else in this mod: every
+    state file lives in $CONTENT_DATA, one folder shared by every world ever made
+    from this mod. That sharing is what made a fresh world come up locked with
+    claims on plots that did not exist -- and it is exactly what a ban list
+    wants. A ban describes a PERSON, not a world.
+
+    So this drives the real reset and asks the real ban list afterwards, rather
+    than reading the source and trusting that a reset which does not mention
+    Identity cannot reach it.
+    """
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Event.lua",
+                "Plots.lua", "Identity.lua")
+    S, I = lua.globals().Settings, lua.globals().Identity
+    S.Sv_Load(False)
+    I.Sv_Load()
+
+    I.Sv_Touch(lua.table_from({"name": "A Griefer", "id": 4}))
+    # Sv_Ban returns ok, detail, record -- three, and lupa unpacks all of them.
+    banned = I.Sv_Ban("A Griefer", "wrecked the plaza")
+    ok, detail = banned[0], banned[1]
+    assert ok, f"the fixture could not ban anybody: {detail}"
+    perma = str(I.Sv_KnownList()[1]["perma"])
+
+    # A brand new world, through the real path.
+    S.Sv_ResetWorldState("a-completely-different-world")
+    lua.globals().Plots.Sv_ResetFile()
+    lua.globals().Event.Sv_ResetFile()
+
+    bans = I.Sv_BanList()
+    assert len(bans) == 1, (
+        f"{len(bans)} bans survived a new world. A ban list that resets with the "
+        "world is not a ban list -- the person it names is still out there")
+    assert str(bans[1]["perma"]) == perma, "the ban lost the id it was filed under"
+
+    # Sv_IsBanned returns ok, entry -- two, so the truth is the first of them.
+    assert I.Sv_IsBanned(lua.table_from({"name": "A Griefer"}))[0] is True, (
+        "the banned player is no longer recognised after a new world")
+
+    # The PERMA IDS have to survive too, or the ban survives and nothing can be
+    # matched to it: a ban is filed under an id that only Players.json knows.
+    assert str(I.Sv_NameOf(perma)) == "A Griefer", (
+        "the player records were cleared by the world reset, so the surviving "
+        "ban names an id nothing can resolve")
+
+    # And the files have to be in the shared folder for any of that to hold.
+    for path in (str(I.PLAYERS), str(I.BANS)):
+        assert path.startswith("$CONTENT_DATA/"), (
+            f"{path} is not in the mod-wide folder, so it would be per world")
+
+
+# ------------------------------------------------------------ host only ------
+
+
+def a_guest_can_open_no_host_panel():
+    """"host only tools in menu work because for non host the buttons shall not
+    be seen and not accesible."
+
+    Two halves, and the menu only does the first. The panel tree is built on the
+    player's own machine, so a modified client can draw itself any button it
+    likes and send whatever the button would have sent. The opener is the single
+    choke point every route ends at -- gating there cannot be forgotten by a new
+    caller the way gating each route can.
+    """
+    game = read("Game.lua")
+    GUEST_PANELS = {"sv_openPeopleGui"}      # roster: fair for a lobby to see
+    openers = sorted(set(re.findall(r"^function\s+Game\.(sv_open\w+Gui)\s*\(",
+                                    game, re.M)))
+    assert len(openers) >= 8, f"only found {openers} -- the scan is wrong"
+    for name in openers:
+        if name in GUEST_PANELS:
+            continue
+        body = game[game.index("function Game." + name):]
+        body = body[:body.index(chr(10) + "end" + chr(10))]
+        head = body[:body.index(chr(10) + chr(10))] if chr(10) + chr(10) in body else body
+        assert "getHostPlayer" in head, (
+            f"{name} does not check the sender before it sends the panel. A "
+            "guest cannot see the button, and that is not the same as not being "
+            "able to press it")
+
+    # MY PLOT is the one panel a guest is entitled to, and it is reached through
+    # the world rather than an opener -- so the router's guest branch is checked
+    # separately, and every other branch must name isHost.
+    router = game[game.index("function Game.sv_n_menuOpen"):]
+    router = router[:router.index(chr(10) + "end" + chr(10))]
+    GUEST_ENTRIES = {"myplot", "rules", "players", "plot"}
+    for m in re.finditer(r'what == "(\w+)"([^\n]*)', router):
+        what, rest = m.group(1), m.group(2)
+        if what in GUEST_ENTRIES:
+            continue
+        assert "isHost" in rest, (
+            f"the menu router opens {what!r} without checking isHost: "
+            f"{m.group(0).strip()!r}")
+
+
+# --------------------------------------------------------------- unstuck -----
+
+
+def the_unstuck_button_lands_in_the_middle_of_the_city():
+    """REPORTED: "when I load into the world I spawn in the middle. but when I
+    use the unstuck button I spawn not in the middle. but in the same spot every
+    time."
+
+    Both halves right, and the second explains the first. Vanilla's
+    CreativePlayer.sv_n_unstuck is hard-coded to x = 16, y = 16 -- the corner of
+    the first cell of a vanilla creative world -- while this mod centres its city
+    on the origin and overrides the JOIN spawn only. Two spawn points, one of
+    them moved.
+    """
+    player = read("Player.lua")
+    assert "function Player.sv_n_unstuck" in player, (
+        "the unstuck button is not overridden, so it still sends people to 16,16")
+    body = player[player.index("function Player.sv_n_unstuck"):]
+    body = body[:body.index(chr(10) + "end")]
+    assert "sv_e_swUnstuck" in body, "the override does not reach the world"
+    assert "16" not in body, "the override still names vanilla's fixed spot"
+
+    world = read("World.lua")
+    assert "function World.sv_e_swUnstuck" in world, "the world has no handler"
+    handler = world[world.index("function World.sv_e_swUnstuck"):]
+    handler = handler[:handler.index(chr(10) + "end" + chr(10))]
+    assert "sv_unstuckPoint" in handler, "the handler picks its own destination"
+
+    point = world[world.index("function World.sv_unstuckPoint"):]
+    point = point[:point.index(chr(10) + "end" + chr(10))]
+    assert "sv_spawnPoint" in point, (
+        "the unstuck point is not derived from the same spawn point the join "
+        "and /home use. Two spawn points that can disagree is the bug itself")
+    assert "UNSTUCK_BLOCKS" in point, "no clearance above whatever is there"
+    assert "spherecast" in point, (
+        "a fixed height cannot promise you are above anything -- the middle of "
+        "the city is the plaza, and by the end of an event it may have a good "
+        "deal standing on it")
+
+    n = int(re.search(r"World\.UNSTUCK_BLOCKS = (\d+)", world).group(1))
+    assert n >= 20, f"the clearance is {n} blocks; the ask was 20"
+
+    # And the destination really is the middle of the city, run rather than read.
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Plots.lua")
+    lua.globals().Settings.Sv_Load(False)
+    plots = lua.eval("Plots()")
+    lua.globals().Plots.sv_onCreate(
+        plots, lua.table_from({"grid": lua.table_from({}), "enabled": True}))
+    spawn = lua.globals().Plots.sv_spawnPoint(plots)
+    assert abs(float(spawn.x)) < 1e-9 and abs(float(spawn.y)) < 1e-9, (
+        f"the spawn point is ({spawn.x},{spawn.y}), not the middle of the city")
+
+    game = read("Game.lua")
+    join = game[game.index("function Game.sv_createNewPlayer"):]
+    join = join[:join.index(chr(10) + "end")]
+    assert "x = 0, y = 0" in join, (
+        "the JOIN spawn is no longer the origin, so it and the unstuck spawn "
+        "have drifted apart again")
+
+
+# ---------------------------------------------------------------- canvas -----
+
+
+def no_panel_is_taller_than_the_canvas():
+    """sm.jsonGui.getViewSize() is 1720x720 -- MEASURED, and half the window it
+    is drawn in. So a panel over about 690 tall hangs off the bottom of the
+    screen with no error anywhere, and every fits check in this file measures a
+    panel against ITSELF and would happily pass a panel of 900.
+
+    That gap was real: the menu grew to 680 in this build and nothing in the
+    suite would have noticed 780.
+    """
+    lua = gui_lua()
+    CANVAS_W, CANVAS_H = 1720, 720
+    MARGIN = 30                       # the panel is centred, so this is per edge
+    for name in ("MenuGui", "PeopleGui", "SettingsGui", "PlotsGui", "EventGui",
+                 "MyPlotGui", "StyleGui", "FocusGui", "ProtectionGui",
+                 "BackupsGui", "DevGui", "ConfirmGui"):
+        g = lua.globals()[name]
+        if g is None or g.W is None or g.H is None:
+            continue
+        assert int(g.H) <= CANVAS_H - MARGIN, (
+            f"{name} is {int(g.H)} tall against a {CANVAS_H} canvas -- the "
+            "bottom of it, including its CLOSE button, is off the screen")
+        assert int(g.W) <= CANVAS_W - MARGIN, (
+            f"{name} is {int(g.W)} wide against a {CANVAS_W} canvas")
+
+
 def main():
     check("rules: over budget still lets you trim", over_budget_still_lets_you_trim)
     check("rules: over budget never opens somebody else's plot",
@@ -7155,13 +9335,25 @@ def main():
     check("settings: values round-trip and bad input is refused", settings_round_trip)
     check("settings: survive a restart", settings_persist_across_a_reload)
     check("settings: presets differ the way they claim", presets_differ_in_the_direction_they_claim)
+    check("settings: the build preset leaves nothing dangerous on",
+          the_build_preset_leaves_nothing_dangerous_on)
     check("tools: hazards bind the host too", hazard_tools_bind_the_host_too)
     check("tools: the lift is never treated as a hazard", the_lift_is_never_a_hazard)
-    check("lockdown: takes the tools off everyone, host included",
-          a_locked_world_takes_the_tools_off_everyone_including_the_host)
+    check("lockdown: every tool off a guest, none off the host",
+          a_locked_world_takes_every_tool_off_a_guest_and_none_off_the_host)
     check("lockdown: you can still clear litter", a_locked_world_still_lets_you_clear_litter)
     check("lockdown: unlocking gives back the tools you chose",
           unlocking_gives_the_host_back_the_tools_they_chose)
+    check("lockdown: the host can build where they stand",
+          the_host_can_build_where_they_stand_in_a_locked_world)
+    check("lockdown: strict leaves nothing a guest can touch",
+          a_strict_lockdown_leaves_nothing_a_guest_can_touch)
+    check("lockdown: the bubble is asked before the decking",
+          the_bubble_is_the_first_thing_the_resolver_asks)
+    check("lockdown: fire and aggro go off without being written",
+          a_shut_world_forces_the_hazards_off_without_writing_them)
+    check("lockdown: every protection write re-applies them",
+          every_protection_write_re_applies_the_derived_hazards)
     check("lockdown: both files agree what locked means", both_files_agree_on_what_locked_means)
     check("lockdown: every mode change tells the clients",
           every_mode_change_tells_the_clients)
@@ -7290,11 +9482,62 @@ def main():
     check("plumbing: every command a panel sends is answered",
           every_command_a_panel_sends_is_answered)
     check("plumbing: every button reaches a branch", every_button_reaches_a_branch)
+    check("menu: every command is on the menu", every_command_is_on_the_menu)
+    check("menu: the dev tools are off it until somebody asks",
+          the_dev_tools_are_off_the_menu_until_somebody_asks_for_them)
+    check("menu: hiding a button is not the same as shutting a door",
+          hiding_a_button_is_not_the_same_as_shutting_a_door)
+    check("menu: a dev tool can always be switched off",
+          a_dev_tool_can_always_be_switched_off)
+    check("menu: the mod says it is a work in progress",
+          the_mod_says_it_is_unfinished)
+    check("menu: a guest can open no host panel", a_guest_can_open_no_host_panel)
+    check("gui: no panel is taller than the canvas", no_panel_is_taller_than_the_canvas)
+    check("city: it can be opened up, and is shut by default",
+          the_city_can_be_opened_up_and_is_shut_by_default)
+    check("city: opening it is not a way round a lockdown",
+          opening_the_city_is_not_a_way_round_a_lockdown)
+    check("city: free build reaches every square that is not a plot",
+          free_build_reaches_every_square_that_is_not_a_plot)
+    check("spawn: unstuck lands in the middle of the city",
+          the_unstuck_button_lands_in_the_middle_of_the_city)
+    check("bans: banning never requires typing a name",
+          banning_never_requires_typing_a_name)
+    check("bans: the box filters and never bans",
+          the_people_box_filters_and_never_bans)
+    check("bans: a perma id finds the player wearing it",
+          a_perma_id_finds_the_player_wearing_it)
+    check("bans: the list carries across worlds", the_ban_list_carries_across_worlds)
+    check("bans: the ban UI is on the menu", the_ban_ui_is_on_the_menu)
+    check("bans: the allow list can actually be filled in",
+          the_allow_list_can_actually_be_filled_in)
+    check("bans: the host is never shown as locked out",
+          the_host_is_never_shown_as_locked_out_of_their_own_server)
+    check("joins: the mod adds no work to a join", the_mod_adds_no_work_to_a_join)
+    check("joins: the host can see who is allowed to join",
+          the_host_can_see_who_is_allowed_to_join)
+    check("joins: changing who can join is never silent",
+          changing_who_can_join_is_never_silent)
+    check("polish: no diagnostic runs in ordinary play",
+          no_diagnostic_runs_in_ordinary_play)
+    check("alarm: it never cries wolf at our own rollback",
+          the_alarm_never_cries_wolf_at_our_own_rollback)
     check("plumbing: no gui callback closes or redraws its own panel",
           no_gui_callback_touches_its_own_panel)
     check("plumbing: the panels share one interactive gui",
           only_one_interactive_gui_exists)
 
+    check("backups: a save is the whole world, not just the builds",
+          a_snapshot_is_the_whole_world_not_just_the_builds)
+    check("clay: stopped before it lands, because it is terrain",
+          clay_is_stopped_before_it_lands)
+    check("access: the command gate is default deny", the_command_gate_is_default_deny)
+    check("access: a guest types nothing but the way in",
+          a_guest_types_nothing_but_the_way_in)
+    check("access: the probes never reach the server",
+          the_probe_commands_never_reach_the_server)
+    check("access: guest buttons work without guest commands",
+          guest_buttons_still_work_without_guest_commands)
     check("access: every server handler checks the sender",
           every_network_handler_checks_the_sender)
     check("access: no handler trusts an identity from its payload",
@@ -7303,6 +9546,7 @@ def main():
     check("gui: the menu fits, for host and guest", the_menu_panel_fits)
     check("gui: every settings page fits and nothing is buried",
           the_settings_panel_fits_on_every_page)
+    check("gui: the panels added for the menu fit", the_new_panels_fit)
     check("gui: the city panel fits at every value it can be stepped to",
           the_city_panel_fits_at_every_setting)
     check("gui: the city map stays inside its box", the_city_map_never_leaves_its_box)
@@ -7359,11 +9603,23 @@ def main():
     check("bridge: every reply funnel tells it", every_reply_funnel_tells_the_bridge)
     check("bridge: runs inside its own pcall", the_bridge_runs_inside_its_own_pcall)
 
+    # A FAILURE MESSAGE MUST NOT BE ABLE TO KILL THE REPORT.
+    #
+    # MEASURED, and it is the same bug the ban picker exists for: this console
+    # is cp1251, an assertion that quoted a player name full of block-drawing
+    # characters raised UnicodeEncodeError from print() itself, and the whole
+    # run died with a traceback instead of naming the check that failed. A
+    # suite that cannot report a failure involving a strange name is no use to
+    # a mod whose hardest bug is strange names.
+    def say(line):
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(line.encode(enc, "replace").decode(enc, "replace"))
+
     width = max(len(n) for n in PASS + [n for n, _ in FAIL])
     for name in PASS:
-        print(f"  ok    {name}")
+        say(f"  ok    {name}")
     for name, why in FAIL:
-        print(f"  FAIL  {name:<{width}}  {why}")
+        say(f"  FAIL  {name:<{width}}  {why}")
     print()
     if FAIL:
         print(f"{len(FAIL)} of {len(PASS) + len(FAIL)} checks FAILED")

@@ -45,7 +45,7 @@ Checklist = {}
 
 -- Bumped with VERSION. dev/test_logic.py fails if the two disagree, because a
 -- stale build number silently mislabels every result recorded after it.
-Checklist.BUILD = 59
+Checklist.BUILD = 73
 
 Checklist.FILE = "$CONTENT_DATA/Checklist.json"
 
@@ -86,7 +86,7 @@ Checklist.GROUPS = {
 	{ id = "tools",   label = "TOOLS",     blurb = "the Cleaner, NOTlift, Focus and the lift" },
 	{ id = "backup",  label = "SAVES",     blurb = "saving the world, and putting it back again" },
 	{ id = "admin",   label = "BANS",      blurb = "kicking, banning, and the guest list" },
-	{ id = "crowd",   label = "FAKE CROWD", blurb = "filling the city with fake players to see what breaks" },
+	{ id = "crowd",   label = "FAKE CROWD", blurb = "filling the city with fake players. Needs /developer on" },
 	{ id = "guest",   label = "TWO PEOPLE", blurb = "these need somebody else in the world with you" },
 }
 
@@ -438,9 +438,39 @@ Checklist.ITEMS = {
 	--[[ protection ]]
 
 	{ id = "prot-lockdown", group = "protect",
-	  title = "/lockdown freezes everything",
-	  steps = { "type /lockdown", "try to place a block, then try to break one" },
-	  pass = "neither works",
+	  title = "/lockdown freezes everything a guest can touch",
+	  steps = { "type /lockdown",
+	            "walk WELL away from anything you care about -- 5 metres or more",
+	            "try to place a block, then try to break one",
+	            "check your hotbar: the lift, the paint tool and the rest are "
+	            .. "still yours" },
+	  pass = "neither placing nor breaking works out there, and you still have "
+	      .. "every tool. A lockdown takes everything off a GUEST and nothing "
+	      .. "off you",
+	  run = { "/lockdown" } },
+
+	{ id = "prot-hostbuild", group = "protect",
+	  title = "You can still fix things where you stand",
+	  steps = { "with the world still locked, walk up to something and try to "
+	            .. "place a block on it",
+	            "walk 10 metres away and try the same thing again",
+	            "type /protection" },
+	  pass = "close up it works, far away it does not, and /protection says the "
+	      .. "bubble is open. There is no way to give ONE person permission in "
+	      .. "this engine -- a block is placeable by everybody or by nobody -- "
+	      .. "so the mod unlocks the few metres around you and locks them again "
+	      .. "when you walk off. If somebody else is standing next to you it "
+	      .. "stays shut, and /protection says so",
+	  run = { "/protection" } },
+
+	{ id = "prot-lockdown-fire", group = "protect",
+	  title = "A lockdown puts the fire out too",
+	  steps = { "/set fire on", "/unlock", "/lockdown", "/protection",
+	            "then /unlock again and check /settings" },
+	  pass = "fire is off while the world is shut and back to ON when you "
+	      .. "unlock. Fire, cratering and tapebots are engine switches rather "
+	      .. "than block permissions, so freezing every body never touched "
+	      .. "them. Your own setting is never overwritten",
 	  run = { "/lockdown" } },
 
 	{ id = "prot-unlock", group = "protect",
@@ -475,9 +505,11 @@ Checklist.ITEMS = {
 	{ id = "prot-litter", group = "protect",
 	  title = "Dropped junk can always be cleared away",
 	  steps = { "drop a craftbot on the plaza", "type /lockdown",
-	            "delete it with the Cleaner tool" },
-	  pass = "it goes, even though the world is locked. Otherwise dropped junk "
-	      .. "would be stuck there forever" },
+	            "try to delete it by hand, then delete it with the Cleaner tool" },
+	  pass = "by hand it will NOT go -- a strict lockdown means nothing works -- "
+	      .. "and the Cleaner takes it anyway, because the Cleaner ignores every "
+	      .. "permission. So dropped junk is never stuck, it is just yours to "
+	      .. "clear while the world is shut" },
 
 	{ id = "prot-ground-pin", group = "protect",
 	  title = "Nobody can carry a plot away outside build time",
@@ -611,6 +643,15 @@ Checklist.ITEMS = {
 	      .. "name has a space in it",
 	  run = { "/players" } },
 
+	{ id = "guest-nocommands", group = "guest",
+	  title = "A guest has no chat commands except /menu",
+	  steps = { "have them type /plot claim, /players and /rules",
+	            "have them type /menu" },
+	  pass = "the first three are refused and point them at /menu, which opens. "
+	      .. "Everything they need is on it -- if anything is NOT, that is the "
+	      .. "bug, not the refusal",
+	  needs = "guest" },
+
 	{ id = "admin-names", group = "admin",
 	  title = "You can kick somebody whose name has a space in it",
 	  steps = { "try to kick or ban somebody with a space in their name" },
@@ -636,14 +677,105 @@ Checklist.ITEMS = {
 	  steps = { "type /unban and their name", "type /banlist" },
 	  pass = "they are gone from the list" },
 
-	{ id = "admin-allow", group = "admin",
-	  title = "The guest list keeps everyone else out",
-	  steps = { "type /allow and a name", "type /set allowlist on" },
-	  pass = "only people on the list can join. Stronger than banning, and "
-	      .. "never tried",
+	{ id = "admin-ban-offline", group = "admin",
+	  title = "You can ban somebody who has left, without typing their name",
+	  steps = { "open /menu and press BANS",
+	            "find somebody who is not online and press BAN on their row",
+	            "press BANNED and check they are on the list" },
+	  pass = "they are on the ban list, filed under their SW- id. Nothing was "
+	      .. "typed -- which is the whole point, because a Scrap Mechanic name "
+	      .. "can hold characters you cannot type at all" },
+
+	{ id = "admin-ban-find", group = "admin",
+	  title = "The FIND box narrows the list and never bans anything",
+	  steps = { "open /menu, BANS, type part of a name into FIND and press Enter",
+	            "type an SW- id instead",
+	            "clear the box and press Enter" },
+	  pass = "the list narrows, then narrows differently, then comes back whole. "
+	      .. "Pressing Enter must never ban anybody by itself" },
+
+	{ id = "admin-joinmode", group = "admin",
+	  title = "The panel names the right multiplayer mode",
+	  steps = { "set Options, Gameplay, Multiplayer to Public",
+	            "open /menu, BANS, and read the line in the top right",
+	            "set it to Invite Only and look again" },
+	  pass = "it names the mode you actually chose. The order is a guess -- the "
+	      .. "five names are certain, the number behind each is not, so write "
+	      .. "down the number it prints beside each mode and this gets fixed",
+	  run = { "/protection" } },
+
+	{ id = "admin-joinchange", group = "admin",
+	  title = "Changing who can join warns you, and says who it will drop",
+	  steps = { "with somebody else in the world, open Options, Gameplay",
+	            "change Multiplayer to a narrower setting" },
+	  pass = "you get a chat warning within a second naming the new mode and how "
+	      .. "many other players are in the world. This is measured, not a "
+	      .. "guess: narrowing it throws out everyone the new setting does not "
+	      .. "allow, one tick later, and the game itself says nothing useful",
 	  needs = "guest" },
 
+	{ id = "admin-ban-across-worlds", group = "admin",
+	  title = "A ban survives making a brand new world",
+	  steps = { "ban somebody, then check WHO IS HERE, BANNED",
+	            "quit, make a NEW world from this mod",
+	            "check BANNED again" },
+	  pass = "the same names are still there. A ban describes a person, not a "
+	      .. "world -- unlike the plot claims and the clock, which SHOULD reset" },
+
+	{ id = "admin-allow", group = "admin",
+	  title = "The guest list keeps everyone else out",
+	  steps = { "open /menu, BANS, and press the allow list switch to turn it on",
+	            "press ALLOW on the people who should be let in",
+	            "have somebody not on the list try to join" },
+	  pass = "only people on the list can join, and your own row says you are "
+	      .. "always allowed rather than claiming you are locked out. Stronger "
+	      .. "than banning, and never tried",
+	  needs = "guest" },
+
+	{ id = "admin-allow-before", group = "admin",
+	  title = "The allow list can be filled in before anybody arrives",
+	  steps = { "with nobody else online, open /menu, BANS",
+	            "turn the allow list on and press ALLOW on somebody" },
+	  pass = "it works with an empty server. That is the whole point of an "
+	      .. "allow list -- it has to be ready BEFORE the event, not built "
+	      .. "during one" },
+
+	{ id = "prot-citybuild", group = "protect",
+	  title = "The city can be opened up for building, and is shut by default",
+	  steps = { "try to place a block on a road or the plaza -- it should refuse",
+	            "open /menu, SERVER SETTINGS, PLOTS, and turn citybuild on",
+	            "try again" },
+	  pass = "off, the roads and the plaza cannot be built on or erased. On, "
+	      .. "they behave like ordinary ground. A /lockdown must still freeze "
+	      .. "them either way",
+	  run = { "/set", "citybuild", "on" } },
+
+	{ id = "prot-citybuild-all", group = "protect",
+	  title = "Free build reaches every part of the city, seams included",
+	  steps = { "turn citybuild on",
+	            "place and break a block on a road, on the plaza, and on the "
+	            .. "one block wide seam between two plots" },
+	  pass = "all three take a block and give it back. The seams are the ones "
+	      .. "to check -- they were left out of the first version of this and "
+	      .. "nothing on screen would tell you which square is a seam" },
+
+	{ id = "boot-unstuck", group = "boot",
+	  title = "The unstuck button drops you above the middle of the city",
+	  steps = { "walk well away from the middle",
+	            "open the game menu and press the unstuck button" },
+	  pass = "you land on the plaza, in the middle, with a short drop. Vanilla "
+	      .. "sent you to 16,16 -- the same wrong spot every time, off the city" },
+
 	--[[ load test ]]
+
+	{ id = "crowd-developer", group = "crowd",
+	  title = "/developer on puts the dev tools on the menu, off takes them away",
+	  steps = { "type /menu and count the buttons on the right",
+	            "close it, type /developer on, open /menu again",
+	            "type /developer off, and try /crowd 5" },
+	  pass = "DEV TOOLS and TESTING CHECKLIST appear only while it is on, and "
+	      .. "/crowd refuses while it is off. /crowd off must still work either way",
+	  run = { "/developer", "on" } },
 
 	{ id = "crowd-spawn", group = "crowd",
 	  title = "/crowd puts fake players on the city",

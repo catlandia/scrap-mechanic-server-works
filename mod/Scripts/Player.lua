@@ -51,6 +51,28 @@ function Player.server_onCreate( self )
 	end
 end
 
+--[[ unstuck ]]
+
+-- VANILLA SENDS YOU TO 16,16. This city is centred on the origin, so the button
+-- whose entire job is "put me somewhere sensible" put you in a field outside it,
+-- at the same wrong spot every time. See World.sv_e_swUnstuck for the whole
+-- report and why the destination is computed rather than fixed.
+--
+-- The override is the whole of the fix: CreativePlayer.sv_n_unstuck is a plain
+-- method on a plain Lua class, so replacing it here replaces it everywhere,
+-- including for the popup the engine itself puts on screen.
+function Player.sv_n_unstuck( self )
+	local character = self.player:getCharacter()
+	if not character then
+		-- No character to move and nothing to be stuck in. Fall back to the base
+		-- class rather than doing nothing: it is the path that can create one.
+		return CreativePlayer.sv_n_unstuck( self )
+	end
+	sm.event.sendToWorld( character:getWorld(), "sv_e_swUnstuck",
+		{ player = self.player } )
+end
+
+
 --[[ the button probe, player half ]]
 
 -- The other side of /guitest. Every jsonGui callback in the base game belongs to

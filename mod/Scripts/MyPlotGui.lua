@@ -181,6 +181,22 @@ function MyPlotGui.Build( state )
 		"SecondaryButton", { action = "find" } )
 	kids[#kids + 1] = button( "Leave", "GIVE IT UP", PAD + 384, by, 150, 34,
 		"SecondaryButton", { action = "leave" } )
+	-- THE TWO QUESTIONS A BUILDER ACTUALLY ASKS, and both were chat commands
+	-- nobody knew existed. "why cant I place this" is the single most common
+	-- thing a plot system has to answer, and /why answered it to a chat log that
+	-- is behind the panel.
+	--
+	-- Under the MAP rather than in the button row: the row is full at five, and
+	-- the layout check said so the first time these were added to it -- "Budget
+	-- runs 36px past the right edge". The map ends at y 420 and the hint starts
+	-- at by - 22, so this band is the free space on the panel.
+	local qy = MyPlotGui.H - 130
+	kids[#kids + 1] = button( "Why", "WHY CANNOT I BUILD",
+		MyPlotGui.W - PAD - MAP, qy, 200, 32, "SecondaryButton",
+		{ action = "why" } )
+	kids[#kids + 1] = button( "Budget", "MY LIMITS",
+		MyPlotGui.W - PAD - 110, qy, 110, 32, "SecondaryButton",
+		{ action = "budget" } )
 	kids[#kids + 1] = button( "Back", "BACK", MyPlotGui.W - PAD - 268, by, 120, 34,
 		"SecondaryButton", { action = "back" } )
 	kids[#kids + 1] = button( "Close", "CLOSE", MyPlotGui.W - PAD - 130, by, 130, 34,

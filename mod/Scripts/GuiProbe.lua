@@ -262,13 +262,37 @@ GuiProbe.BP_UUID = "009d9686-c13e-4cb4-b01a-a74eda26b3fb"  -- not game content
 -- returned false" is indistinguishable from "fileExists does not work the way I
 -- think". Our own Settings.json is written by the game itself, so if the control
 -- is false the probe is broken and no other row means anything.
+-- Fill this in to test whether an ABSOLUTE path can be read -- your own
+-- User_<steamid> folder, forward slashes, no trailing slash. Left empty on
+-- purpose: see the note in BlueprintPaths.
+GuiProbe.ABS_USER = ""
+
 function GuiProbe.BlueprintPaths( uuid )
 	uuid = uuid or GuiProbe.BP_UUID
-	local user = "C:/Users/CyberSlime2077/AppData/Roaming/Axolot Games/Scrap Mechanic/User/User_76561198845810186"
-	return {
+	-- NOT HARD-CODED TO ANYBODY'S MACHINE. This used to hold the author's own
+	-- Windows username and Steam id, which is a thing to notice before pressing
+	-- publish: a probe does not need to ship somebody's home directory to the
+	-- Workshop.
+	--
+	-- It cannot be derived either -- the sandbox has no env vars and no way to
+	-- ask where the user folder is (see docs/MODS-AND-TRUST.md). So the two
+	-- absolute rows are SKIPPED unless somebody fills this in, rather than
+	-- faked: a made-up path would come back refused because it does not exist,
+	-- which is a different answer from "absolute paths are refused" and would
+	-- quietly turn the probe into a test of nothing.
+	local user = GuiProbe.ABS_USER
+	local rows = {
 		{ "CONTROL our own file", "$CONTENT_DATA/Settings.json" },
-		{ "absolute, forward /",  user .. "/Blueprints/" .. uuid .. "/blueprint.json" },
-		{ "absolute, back \\",    ( user .. "/Blueprints/" .. uuid .. "/blueprint.json" ):gsub( "/", "\\" ) },
+	}
+	if user ~= nil and user ~= "" then
+		rows[#rows + 1] = { "absolute, forward /",
+			user .. "/Blueprints/" .. uuid .. "/blueprint.json" }
+		rows[#rows + 1] = { "absolute, back \\",
+			( user .. "/Blueprints/" .. uuid .. "/blueprint.json" ):gsub( "/", "\\" ) }
+	else
+		rows[#rows + 1] = { "absolute paths SKIPPED -- set GuiProbe.ABS_USER", "" }
+	end
+	local more = {
 		{ "$BLUEPRINT_DATA",      "$BLUEPRINT_DATA/" .. uuid .. "/blueprint.json" },
 		{ "$USER_DATA",           "$USER_DATA/Blueprints/" .. uuid .. "/blueprint.json" },
 		{ "$CONTENT_DATA reach",  "$CONTENT_DATA/../../Blueprints/" .. uuid .. "/blueprint.json" },
@@ -277,4 +301,6 @@ function GuiProbe.BlueprintPaths( uuid )
 		-- sandbox is on sm.json specifically, not on the path.
 		{ "$SURVIVAL_DATA sample", "$SURVIVAL_DATA/LocalBlueprints/craftbot.blueprint" },
 	}
+	for _, row in ipairs( more ) do rows[#rows + 1] = row end
+	return rows
 end

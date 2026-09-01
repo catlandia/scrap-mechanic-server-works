@@ -425,10 +425,106 @@ Two tools survive a lockdown and both are load-bearing: **the cleaner**, because
 it is the only thing that can remove a dropped craftbot and the world stays
 locked *between* events, and **focus**, because it changes nothing in the world.
 
-And it binds the HOST. The host keeps every build tool normally -- that bypass
-exists so whoever runs the event can place and clear things -- and it has to stop
-applying the moment the world is shut, or `/lockdown` stops the lobby and not the
-person who called it.
+**It does NOT bind the host, and that is a reversal.** V53 folded the lockdown
+set into `Sv_HazardTools()` -- the one list that guards the host -- on the
+reasoning that otherwise `/lockdown` stops the lobby and not the person who
+called it. The owner's correction, 2026-08-31: *"I should be able to build and
+delete stuff anywhere. and place lift."*
+
+The report that produced the V53 behaviour (*"I still could use the lift, and
+the clay gun"*) was about GUESTS keeping tools, and `Sv_BlockedTools()` is the
+list that answers it. Folding it into the host's list as well broke the lift
+specifically, in exactly the way the check sitting beside it already warned
+about: a hazard-listed tool is force-unequipped on your own client every tick,
+so the blueprint menu has nothing to hand a creation to. The host running an
+event could not move a creation during the one mode where moving creations is
+most of what a host does.
+
+The split now: **a guest loses every tool, the host loses none.** The host's own
+off switches still bind them -- that rule is older and unchanged.
+
+### A lockdown has to reach three things, and only one of them is a body
+
+"LOCK down EVERYTHING" is three separate mechanisms, and V53 had one:
+
+| what | mechanism | reaches |
+|---|---|---|
+| placing, erasing, painting, seats | the eight body flags | every body the patrol walks |
+| holding a tool | `forceTool`, client side | every tool with a uuid |
+| **fire, cratering, unit aggro** | engine switches | nothing else touches them |
+
+The third row is the one that was missing. Fire is not a permission -- no body
+flag reaches it -- so a host who had turned fire on for an event still had a
+burning world after typing `/lockdown`. Same for explosion cratering and
+tapebots.
+
+They are **derived from the mode** now (`Settings.Sv_HazardOff`), never written,
+which is the same rule the tool guard learned the expensive way above. And a
+derived value only reaches the engine when something re-applies it, so the
+re-apply is hooked to `Sv_SetQuiet` on the `protection` key rather than repeated
+at each of the six places that write it -- `/lockdown`, `/unlock`, the grief
+alarm twice, the event clock and the new-world reset. Hooking the write is the
+only version of that which cannot be forgotten at a seventh call site.
+
+**What a lockdown still cannot stop, and it is an engine limit rather than a
+gap.** A block placed on bare terrain makes a NEW body, and no flag on an
+existing body has anything to say about it. `enableBuildOnSurface` is the switch
+that would, and it is a World class field read once when the world is created
+(`LuaWorldScript.cpp`), not a runtime setting. The patrol catches the new body
+within a fraction of a second and sweeps or locks it; the placement itself
+happens. Same family as "there is no block-placed callback".
+
+### THE HOST'S BUBBLE: the only way one player can be exempt from anything
+
+**MEASURED, from the executable.** `dev/dump_api.py Body` lists 39 bindings.
+Every one of the eight setters takes a flag and nothing else, and **no binding
+in any module takes a player and a permission.** `Player` has 40 bindings and
+not one of them is about building.
+
+So *"the lobby is locked out and the host is not"* is not something this engine
+can be told. A body is buildable by everybody or by nobody, which is the same
+wall `setBuildableBy` ran into for plot ownership -- and the answer is the same
+one: **presence**.
+
+A locked world unlocks the few metres around the host and locks them again as
+they walk away. `Plots.sv_hostReaches`, `Plots.HOST_BUBBLE = 4.0` metres, fed by
+the occupancy pass that already runs every tick, and consulted by the resolver
+in `World.lua` as its **first** question.
+
+Three things about it are load-bearing:
+
+- **It is asked before `sv_isScenery`.** The plaza IS scenery and it is where
+  everyone spawns, so a bubble that lost to the decking would do nothing at the
+  first place anybody tried it -- and "nothing happens where I am standing" is
+  indistinguishable from "this is broken". Same class as the panel that closed
+  on every click whether or not the button worked.
+- **Another PLAYER standing in it shuts it.** This is the hole, stated plainly
+  because it cannot be closed: while the bubble is open its bodies are open to
+  anyone who can reach them. A crowd bot does not shut it -- a bench of 128
+  would otherwise mean the host never has a bubble, and a bot is not a griefer.
+- **`/protection` prints which of the three states it is in.** Open, off, or
+  shut because somebody is standing in it. A host who cannot build has to be
+  able to tell those apart.
+
+`hostopen` is its own profile rather than a reuse of `open` for one reason: the
+GROUND. `open` is in `GROUND_FREE` -- build time is exactly when a plot slab is
+meant to be liftable -- and a lockdown is the opposite case, so `hostopen` stays
+out of it and a plot floor inside the bubble gets the pinned twin. Nobody
+carries a plot away during a lockdown, host included.
+
+**And that exposed a latent bug in the sentinel.** `matchesProfile` compared six
+flags, not eight -- `liftable` and `convertibleToDynamic` were missing. It never
+mattered while no two profiles a body could move between differed only in the
+pin; every real transition also changed one of the six. `hostopen` is the first
+that does not, so a slab going from build time into a lockdown bubble would have
+been found "already correct" and left liftable. Both flags are in the sentinel
+now.
+
+The check that caught it is worth copying: it is **pairwise over the profiles a
+body can actually receive** -- every profile plus its pinned twin -- and it
+demands the sentinel separate any two that are not the same profile. Two names
+with identical flags are not a bug; two names that differ in a flag the sentinel
+cannot see always is.
 
 ### THE TOOL GUARD RUNS ON THE CLIENT, SO THE CLIENT'S LIST IS LOAD-BEARING
 
@@ -611,8 +707,24 @@ separate places all locked shared ground, and each one alone was enough.
    permanent. The zone verdict is asked for first now, and a `"sweep"` verdict
    wins.
 3. **A locked mode short-circuited before the resolver ran at all.** `/lockdown`
-   froze the rubbish along with the builds. A `"sweep"` verdict now escapes even
-   a locked world; nothing else does.
+   froze the rubbish along with the builds. A `"sweep"` verdict escapes a closed
+   world; nothing else does.
+
+   **REVISED V60: it escapes `display`, and it does NOT escape `locked`.**
+   *"if the lock down is a proper lock down. like you cant interact like at all.
+   then its good to go for testing"* -- and `sweep` is `erasable = true`, so it
+   was the last thing in a strict lockdown that a guest could still act on.
+
+   Note what the tool guard could not do about that. **Placing and removing are
+   the build HAND, not a uuid**, so `forceTool` never reaches them: a guest with
+   literally no tools in a shut world could still delete anything the resolver
+   called litter. The only thing standing between them and it was the profile.
+
+   The bug this escape exists for lives in the states that close building
+   *without* being strict -- prep, the buffer, the end of an event, the gap
+   between events -- and it still escapes all of those. What it costs is that
+   junk dropped during a strict `/lockdown` is the host's to clear, with the
+   Cleaner or `/purge`. Both ignore every permission flag, so it is never stuck.
 
 **Carryable props are a separate problem with no script fix.** Gems, crates and
 harvestables are *picked up* by the remove tool rather than erased, so making
@@ -1524,6 +1636,428 @@ Corollary: **an `onClose` handler must only drop the handle**, never call
 The check forbids any `cl_on*` handler from calling `cl_showPanel` or a closer
 directly.
 
+### THE MENU IS THE SURFACE, AND A LEDGER IS WHAT KEEPS IT ONE
+
+REPORTED: *"the point of menu was so theres no need to use the command line
+besides the stuff you know /menu . I want the MENU to be the menu."*
+
+Measured before arguing: **49 bound chat commands, 9 menu entries.** Five whole
+areas had no button -- protection, backups, moderation, the builder's own two
+questions, and the test tools -- and `/lockdown` was among them.
+
+The structural fix is not the four panels, it is
+`dev/test_logic.py:every_command_is_on_the_menu`: every bound command is either
+reachable from a named panel or listed as chat-only **with a written reason**,
+and a command that is neither fails the suite. It cannot follow a button through
+the network into a world branch, so it is a ledger rather than a proof -- but
+the thing that was missing was never a proof, it was that nothing anywhere said
+nine against forty-nine was wrong.
+
+Six stay typed and the reasons are in the check: `/guitest` `/bptest` `/bptest2`
+`/tool` are probes whose answer is a log to paste rather than a control,
+`/known` is a history, and **`/purge` stays chat-only on the owner's earlier
+instruction** about the SWEEP LITTER button.
+
+**The menu had to grow sideways.** `getViewSize()` is 1720x720, so a panel over
+~690 tall is off screen -- one column at a 54 pitch ran out at nine entries and
+twelve were needed. Two columns, split by AUDIENCE: guest entries left, host
+entries right, so a guest sees one column and no gap where the other would be.
+
+### A REFUSED JOIN IS THE VISIBILITY SETTING, AND IT IS SILENT ON BOTH ENDS
+
+**MEASURED**, from this owner's own log archive -- 340 logs, 50 connections, 10
+refusals. The signature first, because it is exact:
+
+    Connecting -> Finding Route -> Connected      somebody got in
+    Connecting -> None                            somebody was TURNED AWAY
+
+A real connection routes. A state line that falls back to `None` straight from
+`Connecting` never got that far, so it was refused before routing rather than
+dropped after it. `game-20260710-192923.log` has eight of the ten:
+
+    19:52:45 .. 19:53:30   user X refused SEVEN times, alone, over fifty seconds
+    19:53:35               Multiplayer: Multiplayer(3)   -- the host widens it
+    19:53:36               user X: Finding Route -> Connected
+
+One person, retrying by themselves, failing every time, in the moment the
+setting did not allow them -- and in on the first attempt after it did. **Not a
+cap, not a storm, not the network. A permission.**
+
+**And narrowing the setting removes people who are already in.** Same session:
+
+    20:22:39   Multiplayer: Multiplayer(0)
+    20:22:39   User A is not authenticated      <- one tick later
+    20:22:39   User B is not authenticated
+    20:22:39   A, B: Connected -> None
+
+Two users failing authentication in one tick reads exactly like "two people
+joined at once and broke it". It is not: they were already connected, and the
+setting change evicted them. The engine reports it as an authentication failure
+and names nothing about the setting.
+
+**Both are silent.** The person retrying gets no message; the host sees no
+message; the only trace is these log lines. That is the whole reason
+`Game.sv_checkJoinMode` exists -- it cannot change the setting (there is no
+setter) so it says what happened, to the host, within a second.
+
+`dev/session_stats.py` prints the whole connection story for any log: the
+setting and when it moved, who connected, who was refused and under which mode,
+and who was dropped as unauthenticated.
+
+**What this does and does not settle.** It does not disprove the video's
+concurrency claim -- no session here has two people genuinely joining at once.
+It does show that **every refusal in this archive is explained by visibility**,
+and that the one same-tick double failure in it was an eviction rather than a
+join. Combined with there being no cap in the binary at all, "public is limited
+to six" should be treated as unexplained rather than as a fact to design around.
+
+### THE PUBLIC PLAYER LIMIT: THERE IS NO NUMBER TO CHANGE, AND THAT IS MEASURED
+
+REPORTED, from Dr Pixel Plays' 40-player survival stream (`caT2XoxGVvg`, the
+transcript is in `youtube/`): *"if server is set to public only up to 6 players
+can join"*, and the event had to move to invite-only with invites sent one at a
+time. Asked: can we change that number?
+
+**No, and four independent facts say so.** All from this build's executable:
+
+| what was looked for | result |
+|---|---|
+| `SteamAPI_ISteamMatchmaking_*`, any `SteamMatchMaking` interface | **absent** |
+| Steam interfaces the game *does* load | `SteamClient020` `SteamFriends017` `SteamNetworkingSockets012` `SteamNetworkingUtils004` `SteamUser021` `SteamUtils010` |
+| `MaxPlayers` `maxPlayers` `MAX_PLAYERS` `maxConnections` `MemberLimit` | **zero hits** |
+| a "server full" refusal string next to the other refusals | **absent** |
+
+The last one is the strongest. `SteamNetworkServer.cpp` has a complete set of
+connection-refusal literals -- `Denied`, `Banned`, `Kicked`,
+`InvalidPassphrase`, `Unrecognized connection`, `is not authenticated`,
+`Failed to accept connection from`, `Failed to request authentication
+passphrase` -- and **not one of them is about being full**. A game that enforced
+a player cap would have a string for saying so.
+
+And **Scrap Mechanic does not use Steam lobbies at all.** It is
+`SteamNetworkingSockets` peer-to-peer, so there is no `SetLobbyMemberLimit` to
+raise and no lobby type to widen. The five modes (Private, Invite Only, Friends,
+Friends of Friends, Public) are the game's own `Multiplayer` setting.
+
+**The whole `sm.game` binding list for this build**, which settles the Lua half:
+
+    getEnableRestrictions setEnableRestrictions setEnableAmmoConsumption
+    getEnableAmmoConsumption setEnableFuelConsumption getEnableFuelConsumption
+    setEnableUpgrade getEnableUpgrade setEnableAggro getEnableAggro
+    setEnableRecipes getRecipesEnabled setLimitedInventory getLimitedInventory
+    getServerTick getCurrentTick getDifficulty getSettingString
+    getSettingBoolean getSettingValue saveWatchedTutorials loadWatchedTutorials
+    setTimeOfDay getTimeOfDay bindChatCommand kickPlayer banPlayer pauseSaving
+    resumeSaving exitToMenu exitToMenuWithEndCredits
+
+Nothing about connections, visibility or limits. `dev/dump_api.py` reports
+`Game (0)` because the Game wrapper's literals sit *before* its source-path
+marker rather than after; read them by hand around the `wrap_Game.cpp` string.
+
+**WHAT THE VIDEO ACTUALLY MEASURED IS DIFFERENT FROM WHAT IT GUESSED, and the
+difference is the whole finding.** The six-player figure is presented in the
+video as chat's hypothesis -- *"people pointed out that maybe the public
+multiplayer setting has a built-in player limit"*. What was **observed** is:
+
+- on Public, through a Steam group, joining stopped working;
+- switching to Friends and then to Invite Only got them to 10, 20, then 40;
+- *"when two people try to join your world at the same time, the network code
+  just gets overwhelmed and nobody gets to join"*;
+- the fix that worked was **serialising joins** -- one invite at a time.
+
+Those are consistent without any cap. Public plus a Steam group means dozens of
+people clicking join within seconds of each other, which is the join storm; a
+friends list you accept one at a time arrives serialised by hand. The experiment
+changed the mode and the arrival pattern together, so it cannot separate them --
+and the refusal-string evidence says there is no cap to find.
+
+**So the fixable problem is the join burst, not a number.** A Custom Game cannot
+touch the handshake: `server_onPlayerJoined` fires after the client is already
+connected. What it CAN do is not pile on -- see the next section.
+
+### A JOIN IS THE ONE MOMENT THIS ENGINE IS KNOWN TO BE FRAGILE
+
+Two people arriving at once is enough to fail the handshake for both. So the
+rule for anything this mod does on join is: **do the least possible, and defer
+whatever the tick can pick up.**
+
+Two things were violating that and both were N-shaped:
+
+- **`server_onPlayerJoined` broadcast the roster to every client.** One message
+  per client per join, so forty people arriving through a Steam group was up to
+  1,600 messages from this mod, on top of an engine already failing. It bought
+  at most one second of freshness, because `server_onFixedUpdate` already pushes
+  the roster once a second and already sends nothing when no number moved.
+- **`Identity.Sv_Touch` wrote the whole players file, synchronously, per join.**
+  It grows with every player ever recorded.
+
+Both are on the once-a-second tick now. `Identity.playersDirty` +
+`Sv_FlushPlayers` is the deferral; what is risked is one second of `lastSeen` on
+a hard crash and a brand new perma id that is regenerated on the next join
+anyway. **Bans are deliberately NOT deferred** -- `Sv_Ban` and `Sv_SetAllowed`
+still write immediately, because those are the ones somebody types while
+something is going wrong.
+
+The general rule, worth more than the fix: **a cost that scales with player
+count belongs on a clock, not on the event.** A check reads the join path and
+asserts the expensive calls are absent from it.
+
+### `Multiplayer` IS A READABLE SETTING, LIKE `PhysicsQuality`
+
+MEASURED: the key `Multiplayer` sits directly beside `PhysicsQuality` in the
+executable's run of setting names, with its five option labels around it. So
+`sm.game.getSettingValue( "Multiplayer" )` reads it exactly the way
+`/protection` already reads `PhysicsQuality`.
+
+There is no setter, so this is a readout and not a control -- but "nobody else
+can join" and "nobody else is trying" look identical from inside a world, and
+only one of them is something a host can act on. `Settings.JoinModeLine()` is on
+`/protection` and in the header of the people panel.
+
+**The label ordering is a GUESS and the line says the raw number for that
+reason.** The five names are certain; nothing in the string table fixes which
+integer means which. A readout that printed only a guessed label could be
+confidently wrong forever with nothing able to correct it. The `admin-joinmode`
+checklist item settles it in one session.
+
+### A GUEST HAS ONE COMMAND, AND IT HAS TO BE `/menu`
+
+ASKED FOR: *"every command for players in the chat shall also be disabled appart
+for host."* Done, and the exception is forced rather than chosen.
+
+**A Game script is handed no key state at all.** `client_onAction` exists only on
+interactables that lock the player, and `ForceBuild` (F) reaches Lua solely
+through a tool's `client_onEquippedUpdate` -- see the keybind section above. So
+there is no way to open the menu except by typing for it, and a guest with
+literally no commands could not claim a plot, read the rules or see who is here.
+Taking `/menu` away does not make the server stricter; it makes it unusable.
+
+**Two lists, because they are two questions**, and after this change they have
+very different answers:
+
+    GUEST_TYPED   may a guest TYPE this          -- /menu, and nothing else
+    GUEST_PANEL   may a guest PANEL run this     -- /plot /rules /why /budget ...
+
+Both stay deny-unless-listed. A command nobody classifies lands on the host side
+of both, which produces a refusal on something harmless rather than a guest
+running something nobody thought about.
+
+**`viaPanel` is the fourth parameter of `sv_n_adminCommand`, and that is what
+makes it trustworthy.** A network callback is handed exactly
+`( self, data, player )` -- the engine supplies the third and there is no fourth
+-- so a client cannot claim to be a panel. Only code inside the script can, and
+the only code that does is the menu router acting for whoever pressed the button.
+
+Two consequences worth keeping. **COMMANDS is a host entry now**: a list of things
+you may type is worse than useless to somebody who may type none of them, it is
+an invitation to try. And the **join message is audience-aware** -- naming `/sw`
+to a guest would be advertising a refusal, which is precisely the shape of thing
+that gets reported as the mod being broken.
+
+### GATE A PANEL AT ITS OPENER, NOT AT ITS ROUTES
+
+*"host only tools in menu work because for non host the buttons shall not be seen
+and not accesible."* Two halves; `MenuGui.Columns` does the first.
+
+Three openers had no host test -- `sv_openSettingsGui`, `sv_openPlotsGui`,
+`sv_openStyleGui` -- and `sv_n_menuOpen` routed `event` without one. Nothing
+leaked, because every route *into* them was gated. But the panel tree is built on
+the player own machine, so relying on the routes is relying on the client, and
+routes multiply: a panel reachable from the menu, from `sv_n_openPanel`, from a
+chat command and from another panel needs the same test written four times.
+
+**The opener is the single choke point every route ends at.** Gating there cannot
+be forgotten by a new caller the way gating each route can. `sv_openPeopleGui` is
+the one deliberate exception, and it gates the BUTTONS instead -- a lobby knowing
+who is in it is fair.
+
+### OPENING THE CITY FOR BUILDING COSTS THE LITTER ESCAPE, AND THAT IS UNAVOIDABLE
+
+ASKED FOR: *"add a settings that alows for the city to be modified too. because
+in the stream. the host allowed to modify the plaza. and the road."* That is
+`citybuild`, off by default.
+
+**Two switches, because the city is protected in two places.** `sv_zoneVerdict`
+stops calling shared ground `"sweep"`, and the resolver in `World.lua` stops
+locking `sv_isScenery` bodies -- and that second one is the **only** thing
+protecting the decking, so without it a road plate stays locked however open the
+zone underneath says it is.
+
+**It is not a way round a lockdown.** The switch sits after the host bubble and
+before everything else, and `profileFor` short-circuits on a locked mode ahead of
+the resolver entirely. Opening the city is permission to build on it, never
+permission to ignore the mode.
+
+**And here is the part that cannot be designed away.** The roads and the plaza
+are the only ground this mod can be *sure* is litter -- a craftbot on a road is
+rubbish precisely because nothing legitimate can be built there. That is the
+whole basis of the `sweep` verdict and of the craftbot fix. Allow building there
+and the mod can no longer tell a dropped craftbot from somebody sculpture, so
+shared ground has to behave like an unclaimed plot instead: open while building
+is open, locked when it is not. Junk dropped on a road during prep becomes the
+host job to clear.
+
+You cannot have *anyone may clear anything here* and *anyone may build anything
+here* about the same square of ground. The setting help text says so, and so does
+`Settings.CityIsOpen`.
+
+### TWO SPAWN POINTS, AND ONLY ONE OF THEM HAD BEEN MOVED
+
+REPORTED: *"when I load into the world I spawn in the middle. but when I use the
+unstuck button I spawn not in the middle. but in the same spot every time."*
+
+Both halves are right and the second explains the first. Vanilla, at
+`Data/Scripts/game/CreativePlayer.lua:13`:
+
+    local params = { player = self.player, x = 16, y = 16 }
+
+`16,16` is the corner of the first cell of a vanilla creative world. This mod
+centres its city on the **origin** and overrides `sv_createNewPlayer` -- so
+joining put you on the plaza and unstuck put you in a field, at the same wrong
+spot every time. Nothing was broken; the two disagreed, and only one had ever
+been moved. **When a feature has two entry points, moving one is a bug in the
+other.**
+
+`Player.sv_n_unstuck` overrides it; `World.sv_e_swUnstuck` does the work, because
+`sm.character.createCharacter` wants a world and a Player script has none -- the
+same reason the compass marker had to leave `Player.lua`.
+
+**Why it spherecasts as well as adding a clearance.** A fixed height cannot
+promise you are above anything: the middle of the city is the plaza, and by the
+end of an event it may have a good deal standing on it. So it finds the top of
+whatever is actually there -- the way vanilla own spawn does -- and *then* adds
+`World.UNSTUCK_BLOCKS = 20`. The destination is derived from
+`Plots.sv_spawnPoint`, the same point the join and `/home` use, so the two cannot
+drift apart again.
+
+### A PLAYER SCRIPT `sv_n_` HANDLER IS ALREADY SCOPED TO ITS OWNER
+
+The one place in this engine where "who sent this" is answered structurally
+rather than by a check. The engine instantiates one Player script per player and
+routes a client `sendToServer` to **that client own instance**, so `self.player`
+*is* the sender -- there is no third argument to test, and vanilla own
+`CreativePlayer.sv_n_unstuck` takes `( self )` and nothing else.
+
+It holds only while the handler acts on `self.player`. Read a player out of the
+payload and the guarantee is gone and it is an ordinary unguarded RPC again. The
+sender check enforces both halves for `Player.lua` and the ordinary rule
+everywhere else.
+
+### DEVELOPER MODE: hiding a button is not the same as shutting a door
+
+The menu reached twelve entries and two of them had no business being on an
+event server. ASKED FOR: *"add a /developer on feature that adds the developer
+buttons to the menu. it is off by default ... make sure there arent unecesary
+buttons in menu. buttons are good. but too many buttons is too much."*
+
+The four things behind the switch are not merely noisy. Each is one misclick
+from something an event does not survive:
+
+| behind `/developer` | what one press does |
+|---|---|
+| `/crowd` | stands up to 128 characters on the city |
+| `/bench` | walks that number up on its own for several minutes, ending with a full city |
+| `/bridge` | opens a channel that runs host commands from **outside the game** |
+| `/check` | runs whatever command the item under the cursor happens to name |
+
+**So it is a gate, in four places, not a filter in one.** `MenuGui.Columns`
+decides which entries exist, and `sv_n_menuOpen`, `sv_n_openPanel` and the
+command gate in `sv_n_adminCommand` each ask `Settings.DeveloperOn()` again. The
+menu tree is built on the player's own machine, so a modified client can always
+draw itself the two entries; what is hidden is a button, and what is shut is the
+door. A check asserts every route asks.
+
+**THE ESCAPE IS THE HALF THAT IS EASY TO GET WRONG.** *A rule must never forbid
+its own remedy* -- the same lesson the per-plot part budget taught, where going
+over the limit returned the LOCKED profile and the one action that could satisfy
+the limit was the action the limit forbade. Switch developer mode off with a
+hundred bots standing and it is that shape again. So `Settings.DEV_COMMANDS`
+maps each command to **the word that stops it** and that word always works:
+
+    ["/crowd"] = "off"    ["/bench"] = "stop"    ["/bridge"] = "off"
+    ["/check"] = false                           -- nothing to stop
+
+`/crowd 0` counts as `off`, because a panel that steps a bot count down sends
+the number rather than the word. You can always stop a dev tool; you just cannot
+start one.
+
+**The bridge is DERIVED from both switches, never written by either.**
+`Settings.BridgeOpen()` is `bridge and developer`. Writing `bridge = false` on
+`/developer off` is precisely the mistake V52's lockdown made -- it wrote four
+tool settings false, `/unlock` had no idea what to restore, and one lockdown
+disabled four tools permanently. Derived instead, `/developer on` gives back
+exactly the channel the host chose. `/bridge status` prints both halves because
+they can disagree, and *"it says it is on and nothing happens"* is the report
+that follows when only one is shown.
+
+`developer` survives a new world (`Sv_ResetWorldState` clears what describes a
+WORLD; this describes the HOST), and a check caps the default host menu at ten
+entries so the next thing that wants a button has to earn it.
+
+### A DISPLAY NAME IS NOT SOMETHING A HOST CAN BE ASKED TO TYPE
+
+REPORTED, about a text box that had just been added for banning: *"nicks in
+scrap mechanic to ban needs to be writen exactly. since names can be strange.
+this wont work."*
+
+Correct, and the reason is stronger than inconvenience: a Scrap Mechanic display
+name can contain characters that are not on the host's keyboard at all, so for
+some players **there is no string the host could enter**. Vanilla's own `/kick`
+has this problem and additionally splits on spaces with no quoting. A better
+text box cannot fix a problem whose shape is *this value cannot be reproduced by
+hand*.
+
+The general rule, worth more than the feature: **when the user has to identify
+something, offer a list, not a field.** A field asks them to reproduce a value;
+a list asks them to recognise one. Only the second works when the value is not
+reproducible.
+
+`PeopleGui`'s third view, EVERYONE SEEN, is every player `Identity` has ever
+recorded (`Identity.Sv_KnownList`, newest first), one row each, BAN on the row.
+Three things about it are load-bearing:
+
+- **The button carries the PERMA ID, never the name.** `SW-0007` is what the ban
+  is filed under, so the value clicked and the value recorded are identical --
+  and it is the only one of the two that is always ASCII.
+- **A banned row shows UNBAN instead**, in place. The whole lifecycle is one
+  screen, so nobody has to work out which tab undoes what they just did.
+- **The typed box is a FILTER, never a target.** It narrows the list; the click
+  is what acts, so a stray Return costs a narrowed list and nothing else. It
+  matches a fragment of a name *or of the perma*, and the perma half is the one
+  that matters: it is the only handle on a player whose name the host cannot
+  type a character of.
+
+**A perma id has to resolve to the player wearing it right now.** `resolveTarget`
+matched a session id or an exact online name, so a perma only ever hit the
+OFFLINE branch -- banning somebody standing in front of you would file them
+correctly and never call `sm.game.banPlayer`. It resolves the perma to a current
+name and searches the roster again.
+
+The earlier half of the same fix still stands: every ban button used to hang off
+a roster row, so the panel could only ban whoever was online, while `/ban` has
+always worked on somebody already gone. That is backwards for the case bans
+exist for.
+
+One `EditBox` per tree still holds -- the box is in EVERYONE SEEN only and a
+guest gets neither -- and that view derives six rows where the others show
+seven rather than a second constant going stale.
+
+### A FAILURE MESSAGE MUST NOT BE ABLE TO KILL THE REPORT
+
+Found while writing the check above by breaking the code, which is the practice
+this project already relies on. The broken build failed exactly as intended, and
+then `dev/test_logic.py` **died with a traceback and named no check at all**:
+the assertion quoted a player name made of block-drawing characters, this
+console is cp1251, and `print()` raised `UnicodeEncodeError`.
+
+The bug looked identical to "my new check does not work". Two of them were
+written off as useless before the tail of the output was read.
+
+`main()` encodes through `sys.stdout.encoding` with `errors="replace"` now. The
+general form: **a test runner's reporting path must tolerate any bytes the code
+under test can produce**, and it is worth an explicit thought whenever the thing
+being tested is itself about awkward input.
+
 ### A panel that closes on every click cannot be told from a broken one
 
 REPORTED: *"you should fix the buttons. since they sadly dont work. like I mean I
@@ -1646,7 +2180,7 @@ not assumed.)
 ### The engine hands over ONE multiplayer number, and it needs exactly one guest
 
     WARNING: NetworkServer.cpp:231 Skip sending unreliable network data
-             to client 76561199070209586 Budget is currently: -280930
+             to client 765611990XXXXXXXX Budget is currently: -280930
 
 The host giving up on sending a client its state for that tick, because that
 client's send budget is exhausted. One line is one tick a player never received.
@@ -1952,6 +2486,10 @@ credit it with fixing the thing that actually degraded.
     mod/Scripts/StyleGui.lua    what the city is made of: block list + paint palette
     mod/Scripts/MyPlotGui.lua   the panel players use: claim, find, team, leave
     mod/Scripts/FocusGui.lua    who the lobby should be looking at: search + list
+    mod/Scripts/ProtectionGui.lua  the panic button, and what /protection printed
+    mod/Scripts/BackupsGui.lua  save the world, list saves, put one back
+    mod/Scripts/PeopleGui.lua   who is here -- and kick, ban, unban, allow
+    mod/Scripts/DevGui.lua      the crowd, the benchmark and the bridge
     mod/Scripts/Focus.lua       the marker itself, on every client. Driven from
                                 World.lua -- the compass needs a world
     mod/Scripts/PlotMarker.lua  "find my plot", on the game's own compass HUD
@@ -1970,7 +2508,7 @@ credit it with fixing the thing that actually degraded.
     mod/Scripts/Bridge.lua      /bridge -- a file the mod watches, so a running
                                 world can be driven from outside the game
 
-    mod/Scripts/Checklist.lua   the dev checklist: 83 things nobody has tested,
+    mod/Scripts/Checklist.lua   the dev checklist: 94 things nobody has tested,
                                 what to do, and what counts as a pass
     mod/Scripts/ChecklistGui.lua the panel that answers them -- /check
 
@@ -1986,8 +2524,13 @@ credit it with fixing the thing that actually degraded.
     dev/check_lua.py            compiles every mod script through a real Lua parser
     dev/check_uuids.py          every uuid the mod names, against the install
     dev/test_layout.py          runs Layout.lua and proves the city is a partition
-    dev/test_logic.py           runs the mod's rules and panel layouts (164 checks)
+    dev/test_logic.py           runs the mod's rules and panel layouts (217 checks)
     dev/sync_mod.py             repo -> game Mods folder (preserves live BanList.json)
+    dev/backup_world.py         copies the game's OWN Save/<world>.db. The only
+                                real whole-world backup -- a /snapshot is
+                                buildings plus plot ownership and nothing else.
+                                --watch backs up every time the game closes,
+                                which is the only moment a SQLite copy is whole
     dev/session_stats.py        tick/FPS reconstruction from any game log,
                                 plus the per-client network budget skips
     dev/bench_report.py         the table /bench wrote, out of Bench.json
@@ -2026,8 +2569,15 @@ is host-gated by `hostlift`.
 Commands, all host-only: `/lockdown` `/unlock` `/protection` `/buildtime` `/autosave`
 `/snapshot` `/snapshots` `/restore` `/players` `/ban` `/unban` `/banlist` `/kick`
 `/citystyle` `/nolift` `/crowd` `/bench` `/focus` `/unfocus` `/check`
-`/bridge`. `/budget`
+`/bridge` `/developer`. `/budget`
 and `/players` are open to everyone.
+
+**Four of those are behind `/developer on`, which is off by default** --
+`/crowd` `/bench` `/bridge` `/check`. See the developer-mode section below.
+
+**And a GUEST may type exactly one command: `/menu`.** Everything else, including
+`/plot`, `/players` and `/rules`, is host-only typed and reachable by a guest
+only through a button. See "a guest has one command" below.
 
 Diagnostics, kept because they settle questions in one command rather than
 an argument: `/guitest` (json GUI buttons), `/bptest` and `/bptest2` (can we read a

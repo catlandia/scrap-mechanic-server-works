@@ -17,6 +17,10 @@ dofile( "$CONTENT_DATA/Scripts/EventGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/ConfirmGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/MyPlotGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/FocusGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/ProtectionGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/BackupsGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/PeopleGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/DevGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/Checklist.lua" )
 dofile( "$CONTENT_DATA/Scripts/ChecklistGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/Bridge.lua" )
@@ -56,7 +60,7 @@ local TOOL_CHECK_TICKS = 2
 -- Commands that need a world. Forwarded rather than handled here.
 local WORLD_COMMANDS = {
 	["/lockdown"] = true, ["/unlock"] = true, ["/protection"] = true,
-	["/nolift"] = true,
+	["/nolift"] = true, ["/clearclay"] = true,
 	["/buildtime"] = true, ["/snapshot"] = true, ["/snapshots"] = true,
 	["/restore"] = true, ["/purge"] = true, ["/plot"] = true,
 	["/plots"] = true, ["/plotgrid"] = true, ["/home"] = true,
@@ -66,13 +70,55 @@ local WORLD_COMMANDS = {
 	["/crowd"] = true, ["/bench"] = true,
 }
 
--- Commands a guest may use. Everything else is host-only.
-local PLAYER_COMMANDS = {
-	["/sw"] = true, ["/swhelp"] = true, ["/plot"] = true, ["/players"] = true,
-	["/budget"] = true,
-	["/rules"] = true, ["/home"] = true, ["/menu"] = true, ["/myplot"] = true,
-	["/tool"] = true,
+-- WHAT A GUEST MAY TYPE, AND WHAT A GUEST'S PANEL MAY RUN. Two lists, because
+-- they are two different questions, and after this build they have two very
+-- different answers.
+--
+-- ASKED FOR: "every command for players in the chat shall also be disabled
+-- appart for host." So the typed list is ONE entry -- and it has to be that one,
+-- because /menu is the only way into the menu. There is no key a Game script can
+-- see (F reaches Lua only through a tool's equipped update, see CLAUDE.md), so a
+-- guest with no commands at all would have no way to claim a plot, read the
+-- rules or see who is here. Taking /menu away does not make the server stricter;
+-- it makes it unusable.
+--
+-- That is the whole shape of the change: a guest still DOES everything they
+-- could do before, through buttons. What they no longer have is a second,
+-- undocumented, typo-prone way in -- which is the point of the menu existing.
+local GUEST_TYPED = {
+	["/menu"] = true,
 }
+
+-- What a guest's own panels may cause on their behalf. Reached only with
+-- viaPanel = true, which the network cannot set -- see sv_n_adminCommand.
+--
+-- IT HAS TO AGREE WITH THE PANELS, and the agreement is now the other way round
+-- from V61's: the button works and the typed command does not, deliberately. A
+-- command that a guest panel forwards and that is missing from here is a button
+-- that answers "Host only", which is the failure this list exists to catch.
+local GUEST_PANEL = {
+	["/sw"] = true, ["/swhelp"] = true, ["/plot"] = true, ["/players"] = true,
+	["/budget"] = true, ["/why"] = true,
+	["/rules"] = true, ["/home"] = true, ["/menu"] = true, ["/myplot"] = true,
+}
+
+-- /plotmenu IS NOT ON THAT LIST, AND IT USED TO BE.
+--
+-- V61 added it to the guest set with the note "a plain alias of /myplot, which
+-- is on this list". It is not: it runs sv_openPlotsGui, which is the CITY
+-- LAYOUT panel -- the grid, every claim, and who owns each one. So any guest
+-- who typed it read the whole city configuration. Nothing could be CHANGED
+-- that way, because every action behind that panel tests the sender; what
+-- leaked was the reading, which is the same leak sv_n_openPanel was written to
+-- close and which this one walked straight past.
+--
+-- Found by auditing rather than by anyone hitting it, and found only because
+-- gating the OPENER made the question "which panel does this actually open"
+-- worth asking about every command in the list. The gate in sv_openPlotsGui
+-- closes it even if this list is wrong again.
+--
+-- /tool went too: it is a diagnostic nothing forwards, so listing it claimed a
+-- panel that does not exist.
 
 -- How many words a player name may contain. bindChatCommand splits arguments on
 -- spaces and the parser has no quoting, so a name like "June Carya" arrives as
@@ -111,7 +157,23 @@ local function resolveTarget( token )
 	for _, p in ipairs( sm.player.getAllPlayers() ) do
 		if string.lower( p.name ) == key then return p, p.name end
 	end
-	return nil, Identity.Sv_NameOf( token ) or token
+
+	-- A PERMA ID RESOLVES TO WHOEVER IS WEARING IT RIGHT NOW.
+	--
+	-- The people panel sends permas rather than names, because a Scrap Mechanic
+	-- display name can hold characters a host cannot type. Without this step a
+	-- perma only ever matched the OFFLINE path: banning somebody standing in
+	-- front of you would file them correctly and never call sm.game.banPlayer,
+	-- so they would stay in the world until they happened to reconnect.
+	local named = Identity.Sv_NameOf( token )
+	if named ~= nil then
+		local alias = string.lower( named )
+		for _, p in ipairs( sm.player.getAllPlayers() ) do
+			if string.lower( p.name ) == alias then return p, p.name end
+		end
+		return nil, named
+	end
+	return nil, token
 end
 
 
@@ -429,6 +491,7 @@ function Game.server_onFixedUpdate( self, dt )
 		-- one sm.exists call a second, and only while somebody is focused.
 		pcall( function() self:sv_checkFocusAlive() end )
 		pcall( function() self:sv_pushRoster() end )
+		pcall( function() self:sv_checkJoinMode() end )
 	end
 
 	-- A CLIENT THAT JOINED MID-FOCUS HAS NEVER BEEN TOLD. The marker is pushed
@@ -445,6 +508,12 @@ function Game.server_onFixedUpdate( self, dt )
 	end
 
 	-- Re-read the ban file so a tool outside the game can push a ban mid-event.
+	-- Deferred from the join path, for the reason written at Identity.Sv_Touch.
+	if tick >= ( self.sv.nextIdentityFlush or 0 ) then
+		self.sv.nextIdentityFlush = tick + TICKS_PER_SECOND
+		pcall( Identity.Sv_FlushPlayers )
+	end
+
 	if tick >= self.sv.nextBanReload then
 		self.sv.nextBanReload = tick + Identity.RELOAD_SECONDS * TICKS_PER_SECOND
 		pcall( Identity.Sv_Reload )
@@ -578,6 +647,64 @@ function Game.sv_rosterCounts( self )
 	-- they are. They are NOT written to Players.json -- see Identity -- so the
 	-- real resident count is exactly what it was the moment they are cleared.
 	return online, math.max( 0, #records - banned ) + bots, bots
+end
+
+-- WATCH WHO IS ALLOWED TO JOIN, BECAUSE CHANGING IT MID-SESSION KICKS PEOPLE.
+--
+-- MEASURED, from this owner's own log archive rather than from reasoning --
+-- game-20260710-192923.log, five players, one host:
+--
+--   19:52:45  user X   Connecting -> None      turned away
+--   19:52:59  user X   Connecting -> None      ...and again, six more times
+--   19:53:35  Multiplayer: Multiplayer(3)      the host widens the setting
+--   19:53:35  user X   Connecting -> Finding Route
+--   19:53:36  user X   Finding Route -> Connected
+--
+--   20:22:39  Multiplayer: Multiplayer(0)      the host narrows it again
+--   20:22:39  User A is not authenticated      ONE TICK LATER
+--   20:22:39  User B is not authenticated
+--   20:22:39  A, B:  Connected -> None         both thrown out
+--
+-- Two facts, both worth more than the guess they replace. Somebody who cannot
+-- join retries silently and the host sees nothing at all -- seven attempts over
+-- fifty seconds, no message anywhere. And narrowing the setting while people
+-- are in the world REMOVES them, one tick later, reported as an authentication
+-- failure rather than as anything to do with the setting.
+--
+-- The mod cannot change the setting -- there is no setter, only
+-- getSettingValue -- so this says what happened rather than preventing it. That
+-- is still the whole difference between "the server is broken" and "I pressed
+-- something".
+function Game.sv_checkJoinMode( self )
+	local label, raw = Settings.JoinMode()
+	if raw == nil then return end
+	local key = tostring( raw )
+	if self.sv.joinMode == nil then
+		self.sv.joinMode = key
+		sm.log.info( "[ServerWorks] " .. Settings.JoinModeLine() )
+		return
+	end
+	if self.sv.joinMode == key then return end
+
+	local was = self.sv.joinMode
+	self.sv.joinMode = key
+	sm.log.info( string.format( "[ServerWorks] MULTIPLAYER SETTING CHANGED: %s -> %s  (%s)",
+		was, key, tostring( label ) ) )
+
+	-- Only the host can have changed it, and only the host can do anything
+	-- about it. A guest being told the rules moved as they are thrown out is
+	-- noise at the worst moment.
+	local host = sm.player.getHostPlayer()
+	if host == nil or not sm.exists( host ) then return end
+	local others = math.max( 0, #sm.player.getAllPlayers() - 1 )
+	self.network:sendToClient( host, "client_showMessage",
+		"Multiplayer setting changed -- " .. Settings.JoinModeLine() )
+	if others > 0 then
+		self.network:sendToClient( host, "client_showMessage", string.format(
+			"  %d other player(s) are in the world. Anyone the new setting does not "
+			.. "allow is dropped within a second, reported as 'not authenticated'.",
+			others ) )
+	end
 end
 
 function Game.sv_pushRoster( self, player )
@@ -799,11 +926,26 @@ function Game.server_onPlayerJoined( self, player, newPlayer )
 		perma = rec.perma,
 		plots = Settings.Get( "plots" ) == true,
 		event = g_swEvent and g_swEvent.phase or "off",
+		-- So the one message everybody reads does not advertise commands the
+		-- reader is not allowed to type. Telling a guest to use /sw and then
+		-- refusing them is exactly the shape of thing that gets reported as the
+		-- mod being broken.
+		host = ( player == host ),
 	} )
 	self:sv_pushEvent( player )
 	self:sv_pushRoster( player )
-	-- ...and everybody else, because the online count just went up.
-	self:sv_pushRoster()
+	-- EVERYBODY ELSE IS NOT TOLD HERE, and that is the fix rather than an
+	-- omission. server_onFixedUpdate already pushes the roster once a second
+	-- and already sends nothing when no number moved, so this broadcast bought
+	-- at most one second of freshness -- and it cost one message to every
+	-- client for every join.
+	--
+	-- That is N x N during exactly the window this engine cannot take it.
+	-- Dr Pixel Plays' stream could not get two people in at the same time
+	-- without the handshake failing; forty people arriving through a Steam
+	-- group is a burst of forty joins, which was a burst of up to 1,600 roster
+	-- messages from this mod alone, on top of whatever the engine was already
+	-- failing to do. The count is still correct within a second.
 
 	-- The single most confusing state this mod can be in: a clock nobody knew
 	-- was running has shut building, so the remove tool draws no red preview and
@@ -856,15 +998,20 @@ function Game.client_welcome( self, data )
 	local lines = {
 		"------------------------------------------",
 		"  Welcome. This server runs SERVER WORKS.",
+		-- SAID ON THE WAY IN, and said to everyone rather than only the host.
+		-- A guest who hits a rough edge has no way of knowing whether the mod
+		-- is unfinished or the server is broken, and they will report the
+		-- second. Also on the front of /menu, because this scrolls away.
+		"  It is a WORK IN PROGRESS -- expect rough edges.",
 		string.format( "  Your permanent id is %s.", tostring( data.perma ) ),
 		"",
 	}
 	if data.plots then
 		lines[#lines + 1] = "  This is a PLOT event:"
-		lines[#lines + 1] = "   1. Stand on an empty plot and type  /plot claim"
+		lines[#lines + 1] = "   1. Stand on an empty plot and press CLAIM on the MY PLOT panel."
 		lines[#lines + 1] = "   2. You can only build on your own plot."
 		lines[#lines + 1] = "   3. Walk onto someone else's plot and you get pushed off."
-		lines[#lines + 1] = "   4. To build with a neighbour, both type  /plot team <them>"
+		lines[#lines + 1] = "   4. To build with a neighbour, both press TEAM UP on that panel."
 		lines[#lines + 1] = "      Only front, behind, left or right -- never corner to corner."
 		lines[#lines + 1] = "      Teams chain: team your neighbour, they team theirs, all three share."
 		lines[#lines + 1] = "      Then the gap between your plots becomes shared ground."
@@ -872,7 +1019,16 @@ function Game.client_welcome( self, data )
 		lines[#lines + 1] = "  Free build. The host may lock builds at any time."
 	end
 	lines[#lines + 1] = ""
-	lines[#lines + 1] = "  /sw for commands, /rules for the server rules."
+	-- /menu FIRST, and for a guest it is the ONLY one. "the point of menu was so
+	-- theres no need to use the command line besides the stuff you know /menu",
+	-- and chat commands are host-only now -- so naming /sw to somebody who
+	-- cannot run it would be advertising a refusal.
+	lines[#lines + 1] = "  /menu   everything on buttons -- your plot, the rules, who is here."
+	if data.host then
+		lines[#lines + 1] = "  /sw for commands, /rules for the server rules."
+	else
+		lines[#lines + 1] = "  That is the only command you need -- everything else is on it."
+	end
 	lines[#lines + 1] = "------------------------------------------"
 
 	for _, line in ipairs( lines ) do
@@ -1095,12 +1251,23 @@ function Game.client_onFixedUpdate( self, dt )
 
 	-- One message per pickup, not one per tick. The server strips the item on its
 	-- own poll; this just makes the hand empty immediately.
-	if self.cl.lastBlockedWarn ~= name then
-		self.cl.lastBlockedWarn = name
-		sm.gui.chatMessage( ( name == "lift" )
-			and "The lift is host only on this server."
-			or string.format( "The %s is disabled on this server.", name ) )
-	end
+	-- ONE KEY FOR BOTH PATHS. There are two, and they say the same sentence:
+	-- this client tick, and client_dropTool sent by the server's own poll when
+	-- it catches a blocked tool in a hand. Each used to keep its own dedupe key,
+	-- so every blocked tool was announced TWICE -- MEASURED, from a screenshot
+	-- with "The claygun is disabled on this server." three times in six lines.
+	self:cl_sayToolBlocked( name )
+end
+
+-- The one place either path speaks. Returns having said it at most once per
+-- tool, whichever path got here first.
+function Game.cl_sayToolBlocked( self, name )
+	if self.cl == nil then self.cl = {} end
+	if self.cl.lastBlockedWarn == name then return end
+	self.cl.lastBlockedWarn = name
+	sm.gui.chatMessage( ( name == "lift" )
+		and "The lift is host only on this server."
+		or string.format( "The %s is disabled on this server.", tostring( name ) ) )
 end
 
 --[[ the frame-rate probe ]]
@@ -1200,6 +1367,34 @@ function Game.cl_warnIfBuildingIsShut( self, uuid )
 	if self.cl.liftWarned then return end
 	self.cl.liftWarned = true
 
+	-- THE HOST GETS A DIFFERENT SENTENCE, because V60 made it a different fact.
+	--
+	-- MEASURED, from a screenshot: the host typed /lockdown and was told "The
+	-- lift will not place anything ... It works again the moment building opens"
+	-- -- which is the message written for a GUEST, and which now contradicts the
+	-- thing V60 was built for: "I should be able to build and delete stuff
+	-- anywhere. and place lift."
+	--
+	-- What is actually true for the host is narrower than "it works" and wider
+	-- than "it will not place anything", so it says the narrow true thing: the
+	-- world is shut, you kept every tool, and the ground is only unlocked within
+	-- a few metres of you. Whether a lift can PLACE inside that bubble has not
+	-- been measured, so it is not claimed.
+	-- pcall: this runs on a CLIENT, and both halves are bindings a client half
+	-- of a Game script has never been asked for here before. Getting it wrong
+	-- must cost the right sentence, never the whole handler.
+	local okHost, amHost = pcall( function()
+		return sm.localPlayer.getPlayer() == sm.player.getHostPlayer()
+	end )
+	if okHost and amHost then
+		sm.gui.chatMessage(
+			"The world is locked, and you still have every tool." )
+		sm.gui.chatMessage(
+			"  Bodies are only unlocked within a few metres of you -- "
+				.. "/menu, PROTECTION says whether that is open." )
+		return
+	end
+
 	local why = ( e.phase == "ended" and "the event has ended" )
 		or ( e.phase == "prep" and "it is prep time" )
 		or ( e.phase == "buffer" and "it is buffer time" )
@@ -1218,15 +1413,9 @@ function Game.client_dropTool( self, data )
 	-- of the inventory; this is what clears it from the hand this instant.
 	pcall( sm.tool.forceTool, nil )
 
-	if self.cl == nil then self.cl = {} end
-	if self.cl.lastDropWarn == name then
-		return                      -- do not narrate the same ban over and over
-	end
-	self.cl.lastDropWarn = name
-
-	sm.gui.chatMessage( ( name == "lift" )
-		and "The lift is host only on this server."
-		or string.format( "The %s is disabled on this server.", tostring( name ) ) )
+	-- The SAME dedupe key the client tick uses, not a second one of its own.
+	-- Two keys meant two announcements for one tool.
+	self:cl_sayToolBlocked( name )
 end
 
 function Game.client_onCreate( self )
@@ -1305,6 +1494,12 @@ function Game.client_onCreate( self )
 	-- The dev checklist. Two optional words, so /check on its own opens the
 	-- panel and /check pass <id> answers one without leaving the chat box.
 	-- The outside-the-game control channel. Off by default; see Bridge.lua.
+	sm.game.bindChatCommand( "/clearclay", { { "number", "radius", true } },
+		"cl_onAdminCommand",
+		"Host: level the ground around you -- the only way to remove clay" )
+	sm.game.bindChatCommand( "/developer",
+		{ { "string", "onoff", true, { "on", "off" } } }, "cl_onAdminCommand",
+		"Host: show or hide the dev tools -- /developer on|off. Off by default" )
 	sm.game.bindChatCommand( "/bridge",
 		{ { "string", "onoff", true, { "on", "off", "status" } } }, "cl_onAdminCommand",
 		"Host: let this world be driven from outside the game -- /bridge on|off" )
@@ -1402,7 +1597,12 @@ end
 -- asks, the server decides and saves, the server sends the new values back and
 -- the panel re-renders. That keeps a guest's client from ever being the
 -- authority on what the server allows.
+-- HOST ONLY, AT THE OPENER. "for non host the buttons shall not be seen and not
+-- accesible" -- the menu already does the not-seen half, and this is the other
+-- one. The opener is the single choke point every route ends at, so gating it
+-- here cannot be forgotten by a new caller the way gating each route can.
 function Game.sv_openSettingsGui( self, player, group, page, status )
+	if player ~= sm.player.getHostPlayer() then return end
 	local values = {}
 	for _, row in ipairs( Settings.SCHEMA ) do
 		values[row.key] = Settings.Get( row.key )
@@ -1549,6 +1749,7 @@ end
 -- places -- the settings nav and the city layout panel -- and BACK that always
 -- went to the same one would be wrong from whichever place it was not.
 function Game.sv_openStyleGui( self, player, piece, status, back )
+	if player ~= sm.player.getHostPlayer() then return end
 	local style = {}
 	for _, p in ipairs( Palette.PIECES ) do
 		style[p.key] = {
@@ -2107,12 +2308,19 @@ end
 -- a user interface. A guest is only shown what a guest may open, so nobody is
 -- offered a button that answers "Host only."
 function Game.sv_openMenu( self, player )
-	self.network:sendToClient( player, "client_openMenu",
-		{ host = ( player == sm.player.getHostPlayer() ) } )
+	self.network:sendToClient( player, "client_openMenu", {
+		host = ( player == sm.player.getHostPlayer() ),
+		-- THE SERVER DECIDES, not the client. The menu is drawn client side, so
+		-- a modified client could always draw itself the two dev buttons -- and
+		-- that is fine, because sv_n_menuOpen, sv_n_openPanel and the command
+		-- gate each ask Settings.DeveloperOn again. What is hidden here is a
+		-- button; what is shut is the door behind it.
+		developer = Settings.DeveloperOn(),
+	} )
 end
 
 function Game.client_openMenu( self, data )
-	self:cl_showPanel( "menu", MenuGui.Build( data.host ) )
+	self:cl_showPanel( "menu", MenuGui.Build( data.host, data.developer ) )
 end
 
 -- The hub is the one panel that DOES close on a click, because what it opens
@@ -2157,22 +2365,30 @@ function Game.sv_n_menuOpen( self, data, player )
 		self:sv_openSettingsGui( player, "safety", 1 )
 	elseif what == "city" and isHost then
 		self:sv_openPlotsGui( player )
-	elseif what == "event" then
+	elseif what == "event" and isHost then
 		self:sv_openEventGui( player )
 	elseif what == "focus" and isHost then
 		self:sv_openFocusGui( player )
-	elseif what == "checklist" and isHost then
+	elseif what == "checklist" and isHost and Settings.DeveloperOn() then
 		self:sv_openChecklistGui( player )
+	elseif what == "protection" and isHost then
+		self:sv_openProtectionGui( player )
+	elseif what == "backups" and isHost then
+		self:sv_openBackupsGui( player )
+	elseif what == "dev" and isHost and Settings.DeveloperOn() then
+		self:sv_openDevGui( player )
 	elseif what == "myplot" then
 		self:sv_toWorld( "/myplot", {}, player )
 	elseif what == "rules" then
-		self:sv_n_adminCommand( { "/rules" }, player )
-	elseif what == "help" then
-		self:sv_n_adminCommand( { "/sw" }, player )
+		-- viaPanel: a guest may press this and may not type it. See the two
+		-- command tables at the top of this file.
+		self:sv_n_adminCommand( { "/rules" }, player, true )
+	elseif what == "bans" and isHost then
+		-- Straight to the picker. It lists everyone the server has ever seen,
+		-- says which of them are banned, and is the only view that can add one.
+		self:sv_openPeopleGui( player, nil, "known" )
 	elseif what == "players" then
-		self:sv_n_adminCommand( { "/players" }, player )
-	elseif what == "plot" then
-		self:sv_toWorld( "/myplot", {}, player )
+		self:sv_openPeopleGui( player )
 	end
 end
 
@@ -2180,6 +2396,7 @@ end
 --[[ city layout panel ]]
 
 function Game.sv_openPlotsGui( self, player, status )
+	if player ~= sm.player.getHostPlayer() then return end
 	-- Read the live grid back out of the world; the Game script does not own it.
 	local cfg
 	if g_swPlots then
@@ -2271,6 +2488,10 @@ function Game.sv_n_myPlotAction( self, data, player )
 	-- rather than only writing to a chat log that is behind the panel.
 	if data.action == "find" then
 		self:sv_toWorld( "/home", {}, player, { panel = "myplot" } )
+	elseif data.action == "why" then
+		self:sv_toWorld( "/why", { "/why" }, player, { panel = "myplot" } )
+	elseif data.action == "budget" then
+		self:sv_toWorld( "/budget", { "/budget" }, player, { panel = "myplot" } )
 	elseif map[data.action] then
 		self:sv_toWorld( "/plot", { "/plot", map[data.action] }, player,
 			{ panel = "myplot" } )
@@ -2286,6 +2507,12 @@ function Game.sv_e_swPanelRefresh( self, params )
 	if params.player == nil or not sm.exists( params.player ) then return end
 	if params.panel == "city" then
 		self:sv_openPlotsGui( params.player, params.status )
+	elseif params.panel == "protection" then
+		self:sv_openProtectionGui( params.player, params.status )
+	elseif params.panel == "backups" then
+		self:sv_openBackupsGui( params.player, params.status )
+	elseif params.panel == "dev" then
+		self:sv_openDevGui( params.player, params.status )
 	end
 end
 
@@ -2486,7 +2713,12 @@ function Game.sv_focusRoster( self )
 			local ok, index = pcall( function() return g_swPlots:sv_plotOf( perma ) end )
 			if ok then plot = index end
 		end
-		out[#out + 1] = { id = p.id, name = p.name, perma = perma, plot = plot }
+		out[#out + 1] = { id = p.id, name = p.name, perma = perma, plot = plot,
+			-- PeopleGui draws no KICK or BAN on the host's own row. The engine
+			-- refuses both anyway ("Unable to kick host" is in the executable),
+			-- so a button there could only ever be one that does nothing.
+			host = ( p == sm.player.getHostPlayer() ) or nil,
+			allowed = Identity.Sv_IsAllowed( p ) or nil }
 	end
 	table.sort( out, function( a, b )
 		return string.lower( a.name ) < string.lower( b.name )
@@ -2612,6 +2844,521 @@ function Game.sv_e_swFocus( self, params )
 	self:sv_setFocus( params.target, by )
 end
 
+
+--[[ the protection panel ]]
+
+-- Everything /protection prints, minus the parts only the world can answer, in
+-- one table. The Game script can reach all of it: Settings is a shared global,
+-- the tool lists are its own, and g_swPlots and g_swEvent are world globals that
+-- Game and World share a Lua environment for -- which is the same route
+-- sv_openPlotsGui already uses to read the live grid.
+--
+-- Guarded rather than assumed, because this panel can be opened before the
+-- world finishes creating those, and a nil index here would take the menu down
+-- with it.
+function Game.sv_protectionState( self, status )
+	local function nameList( set )
+		local seen, out = {}, {}
+		for _, name in pairs( set or {} ) do
+			if not seen[name] then
+				seen[name] = true
+				out[#out + 1] = name
+			end
+		end
+		table.sort( out )
+		return ( #out > 0 ) and table.concat( out, " " ) or "nothing"
+	end
+
+	local bubble = "unknown"
+	if g_swPlots and g_swPlots.sv_bubbleStatus then
+		local ok, got = pcall( g_swPlots.sv_bubbleStatus, g_swPlots )
+		if ok then bubble = tostring( got ) end
+	end
+
+	local clock = nil
+	if g_swEvent and g_swEvent.sv_running then
+		local ok, running = pcall( g_swEvent.sv_running, g_swEvent )
+		if ok and running then clock = tostring( g_swEvent.phase ) end
+	end
+
+	local okq, quality = pcall( sm.game.getSettingValue, "PhysicsQuality" )
+
+	return {
+		mode = tostring( Settings.Get( "protection" ) ),
+		buildopen = Settings.Get( "buildopen" ),
+		bubble = bubble,
+		guest = nameList( self:sv_toolPayload().guest ),
+		host = nameList( self.sv.hazardTools ),
+		physics = okq and tostring( quality ) or nil,
+		clock = clock,
+		hostbuild = Settings.Get( "hostbuild" ) == true,
+		status = status,
+	}
+end
+
+function Game.sv_openProtectionGui( self, player, status )
+	if player ~= sm.player.getHostPlayer() then return end
+	self.network:sendToClient( player, "client_openProtectionGui",
+		self:sv_protectionState( status ) )
+end
+
+function Game.client_openProtectionGui( self, state )
+	if self.cl == nil then self.cl = {} end
+	self.cl.protectionState = state
+	self:cl_showPanel( "protection", ProtectionGui.Build( state ) )
+end
+
+function Game.cl_onProtectionGuiClose( self )
+	self:cl_forgetPanel()
+	if self.cl then self.cl.protectionState = nil end
+end
+
+-- ONLY CLOSE AND BACK CLOSE THE PANEL. Everything else runs, the world sends
+-- the whole state back, and it re-renders in place with a status line saying
+-- what happened. And nothing here calls cl_showPanel or a closer directly:
+-- close() destroys the widget whose callback is on the Lua stack.
+function Game.cl_onProtectionGuiClick( self, widgetName, data )
+	if type( data ) ~= "table" or self.cl == nil then return end
+	if self.cl.protectionState == nil then return end
+
+	if data.action == "close" then
+		self:cl_closeLater( "panel" )
+		return
+	end
+	if data.action == "back" then
+		-- Send FIRST, close never: the hub renders into this same one GUI.
+		self.network:sendToServer( "sv_n_openMenu", {} )
+		return
+	end
+	self.network:sendToServer( "sv_n_protectionGuiAction", { action = data.action } )
+end
+
+function Game.sv_n_protectionGuiAction( self, data, player )
+	if type( data ) ~= "table" then return end
+	if player ~= sm.player.getHostPlayer() then return end
+
+	-- Every one of these is a WORLD command -- protection walks bodies, and a
+	-- Game script has no world. They come back through sv_e_swPanelRefresh with
+	-- whatever the world said collected into the status line.
+	-- QUOTED KEYS, deliberately. every_button_reaches_a_branch looks for the
+	-- action as a string literal in this file, and a bare table key is not one --
+	-- so `nolift = ...` reads to the check exactly like an action nothing
+	-- handles. It flagged this the first time it ran, which is the check doing
+	-- its job: the rule is that a name on one side of the bridge and nowhere on
+	-- the other is always a bug, and the cheap way to keep that true is to write
+	-- the name as a name.
+	local send = {
+		["lockdown"]     = { "/lockdown", { "/lockdown" } },
+		["lockdownshow"] = { "/lockdown", { "/lockdown", "display" } },
+		["unlock"]       = { "/unlock", { "/unlock" } },
+		["nolift"]       = { "/nolift", { "/nolift" } },
+		["clearclay"]    = { "/clearclay", { "/clearclay" } },
+	}
+	if data.action == "hostbuild" then
+		-- A setting rather than a world command: it changes what the resolver
+		-- decides, and the patrol picks that up on its next pass without being
+		-- told. Sv_Set runs the apply hooks and writes the file.
+		Settings.Sv_SetQuiet( "hostbuild", data.on == true )
+		self:sv_toWorld( "/settingschanged", {}, player )
+		self:sv_openProtectionGui( player, data.on
+			and "your bubble is ON -- the ground where you stand is unlocked"
+			or "your bubble is OFF -- the lockdown binds you too" )
+		return
+	end
+
+	local job = send[data.action]
+	if job == nil then return end
+	self:sv_toWorld( job[1], job[2], player, { panel = "protection" } )
+end
+
+--[[ the dev tools panel ]]
+
+function Game.sv_openDevGui( self, player, status )
+	if player ~= sm.player.getHostPlayer() then return end
+	-- The same question the menu asked, asked again where it counts. A client
+	-- that never opened the menu can still send this, so the mode is checked
+	-- here rather than trusted from the fact that a panel was drawn.
+	if not Settings.DeveloperOn() then return end
+
+	-- The crowd and the benchmark both live in the WORLD -- bots are units and a
+	-- Game script has no world. Read through the shared globals, guarded, the
+	-- same way the protection and backups panels do.
+	local bots, mode, bench = 0, "off", nil
+	if g_swCrowd then
+		local ok, st = pcall( g_swCrowd.sv_status, g_swCrowd )
+		if ok and st then
+			bots = st.count or 0
+			mode = st.mode or "off"
+		end
+	end
+	if g_swBench then
+		local ok, line = pcall( g_swBench.sv_status, g_swBench )
+		if ok then bench = line end
+	end
+
+	self.network:sendToClient( player, "client_openDevGui", {
+		bots = bots,
+		mode = mode,
+		bench = bench,
+		bridge = Settings.Get( "bridge" ) == true,
+		status = status,
+	} )
+end
+
+function Game.client_openDevGui( self, state )
+	if self.cl == nil then self.cl = {} end
+	self.cl.devState = state
+	self:cl_showPanel( "dev", DevGui.Build( state ) )
+end
+
+function Game.cl_onDevGuiClose( self )
+	self:cl_forgetPanel()
+	if self.cl then self.cl.devState = nil end
+end
+
+function Game.cl_onDevGuiClick( self, widgetName, data )
+	if type( data ) ~= "table" or self.cl == nil then return end
+	if self.cl.devState == nil then return end
+
+	if data.action == "close" then
+		self:cl_closeLater( "panel" )
+		return
+	end
+	if data.action == "back" then
+		self.network:sendToServer( "sv_n_openMenu", {} )
+		return
+	end
+	self.network:sendToServer( "sv_n_devGuiAction", {
+		action = data.action, size = data.size, mode = data.mode,
+		how = data.how, on = data.on } )
+end
+
+function Game.sv_n_devGuiAction( self, data, player )
+	if type( data ) ~= "table" then return end
+	if player ~= sm.player.getHostPlayer() then return end
+	-- The same question the menu asked, asked again where it counts. A client
+	-- that never opened the menu can still send this, so the mode is checked
+	-- here rather than trusted from the fact that a panel was drawn.
+	if not Settings.DeveloperOn() then return end
+
+	if data.action == "crowd" then
+		local n = math.floor( tonumber( data.size ) or 0 )
+		local arg = ( n <= 0 ) and "off" or tostring( n )
+		self:sv_toWorld( "/crowd", { "/crowd", arg }, player, { panel = "dev" } )
+
+	elseif data.action == "crowdmode" then
+		self:sv_toWorld( "/crowd", { "/crowd", "mode", tostring( data.mode ) },
+			player, { panel = "dev" } )
+
+	elseif data.action == "bench" then
+		self:sv_toWorld( "/bench", { "/bench", tostring( data.how ) }, player,
+			{ panel = "dev" } )
+
+	elseif data.action == "bridge" then
+		-- Not a world command: the bridge is a Game-side file watcher.
+		self:sv_bridgeCommand( { "/bridge", data.on and "on" or "off" }, player,
+			function( line )
+				self:sv_openDevGui( player, tostring( line ) )
+			end )
+	end
+end
+
+--[[ moderation, in one place ]]
+
+-- KICK, BAN, UNBAN and ALLOW each used to live only inside the chat command
+-- that ran them. The people panel needs the same four, and a second copy of
+-- "ban unless it is the host, then broadcast, then log" is how the two drift --
+-- so each is a method returning ( ok, message ) and both callers use it.
+--
+-- The message is what the caller shows: chat for a command, the panel's status
+-- line for a button. Neither replies on its own.
+
+function Game.sv_doKick( self, token )
+	local target, name = resolveTarget( token )
+	if target == nil then
+		return false, string.format( "'%s' is not here", tostring( token ) )
+	end
+	if target == sm.player.getHostPlayer() then
+		return false, "You cannot kick the host."
+	end
+	sm.log.info( "[ServerWorks] kicking " .. tostring( name ) )
+	sm.game.kickPlayer( target )
+	self:sv_broadcast( name .. " was kicked." )
+	return true, name .. " was kicked."
+end
+
+function Game.sv_doBan( self, token, reason )
+	local target, name = resolveTarget( token )
+	if target == sm.player.getHostPlayer() then
+		return false, "You cannot ban the host."
+	end
+	local ok, detail = Identity.Sv_Ban( name, reason or "" )
+	if not ok then return false, detail end
+	sm.log.info( "[ServerWorks] banned " .. tostring( name ) )
+	if target and sm.exists( target ) then
+		sm.game.banPlayer( target )
+		self:sv_broadcast( name .. " was banned." )
+		return true, detail
+	end
+	-- A ban on somebody who is not here is still a ban: Identity checks it on
+	-- join, so they are refused whenever they next turn up.
+	return true, detail .. "  (not online -- they will be kicked if they join)"
+end
+
+function Game.sv_doUnban( self, token )
+	local _, detail = Identity.Sv_Unban( token )
+	return true, detail
+end
+
+function Game.sv_doAllow( self, token, allowed )
+	local target, name = resolveTarget( token )
+	local ok, detail = Identity.Sv_SetAllowed( name or token, allowed )
+	if ok and not allowed and Settings.Get( "allowlist" ) then
+		local victim = resolveTarget( token )
+		if victim and sm.exists( victim ) and victim ~= sm.player.getHostPlayer() then
+			-- Taken off the allow list, not banned: a kick, not a ban.
+			table.insert( self.sv.kickQueue, { player = victim, ban = false } )
+		end
+	end
+	return ok, detail
+end
+
+
+--[[ the people panel ]]
+
+-- OPEN TO A GUEST, and it is the only host-shaped panel that is. The roster is
+-- what /players always gave anybody, and a lobby knowing who is in it is fair.
+-- What the host check decides is whether the BUTTONS are drawn -- and the
+-- actions behind them are gated again on the server, so a client that lies
+-- about being the host gets buttons that refuse.
+function Game.sv_openPeopleGui( self, player, status, view, page, query )
+	local isHost = ( player == sm.player.getHostPlayer() )
+	self.network:sendToClient( player, "client_openPeopleGui", {
+		host = isHost,
+		players = self:sv_focusRoster(),
+		bans = isHost and Identity.Sv_BanList() or {},
+		-- EVERYONE THE SERVER HAS EVER SEEN, so banning is a click on a row
+		-- rather than a name typed exactly. Host only: it is the whole history
+		-- of who has been here, which is not a lobby's business.
+		known = isHost and Identity.Sv_KnownList() or {},
+		allowlist = Settings.Get( "allowlist" ) == true,
+		-- The panel a host opens when somebody says they cannot get in.
+		join = isHost and Settings.JoinModeLine() or nil,
+		view = isHost and view or "here",
+		page = page,
+		query = isHost and query or nil,
+		status = status,
+	} )
+end
+
+function Game.client_openPeopleGui( self, state )
+	if self.cl == nil then self.cl = {} end
+	self.cl.peopleState = state
+	self:cl_showPanel( "people", PeopleGui.Build( state ) )
+end
+
+function Game.cl_onPeopleGuiClose( self )
+	self:cl_forgetPanel()
+	if self.cl then self.cl.peopleState = nil end
+end
+
+function Game.cl_onPeopleGuiClick( self, widgetName, data )
+	if type( data ) ~= "table" or self.cl == nil then return end
+	local state = self.cl.peopleState
+	if state == nil then return end
+
+	if data.action == "close" then
+		self:cl_closeLater( "panel" )
+		return
+	end
+	if data.action == "back" then
+		self.network:sendToServer( "sv_n_openMenu", {} )
+		return
+	end
+	if data.action == "page" or data.action == "view" then
+		-- Local. Neither changes anything on the server, and cl_renderLater
+		-- rather than a direct render because building a new tree destroys the
+		-- widget whose callback is running.
+		if data.action == "view" then
+			state.view = data.view
+			state.page = 1
+		else
+			state.page = data.page
+		end
+		self:cl_renderLater( "people", PeopleGui.Build( state ) )
+		return
+	end
+
+	self.network:sendToServer( "sv_n_peopleGuiAction", {
+		action = data.action, name = data.name, on = data.on,
+		view = state.view, page = state.page, query = state.query } )
+end
+
+-- THE BOX FILTERS. It never bans, and nothing it contains is ever a target --
+-- the BAN button on a row carries a perma id, and that is the only thing that
+-- bans. So a stray Return costs a narrowed list and nothing else.
+--
+-- It also may not touch the GUI at all -- not render, not close, not defer a
+-- render by a tick. Both were tried on the event clock and the second one
+-- crashed the game outright. So this sends and returns, and the panel that
+-- comes back from the server is what shows the filtered list. Same shape as
+-- cl_onFocusSearchTyped, which is the proven one.
+function Game.cl_onPeopleSearchTyped( self, widgetName, text )
+	local ok, err = pcall( function()
+		local state = self.cl and self.cl.peopleState
+		if state == nil then return end
+		if widgetName ~= PeopleGui.SEARCH_BOX then return end
+		self.network:sendToServer( "sv_n_peopleGuiAction", {
+			action = "search", name = tostring( text or "" ),
+			view = state.view, page = 1 } )
+	end )
+	if not ok and not ( self.cl and self.cl.peopleSearchFaulted ) then
+		if self.cl then self.cl.peopleSearchFaulted = true end
+		sm.log.warning( "[ServerWorks] people search failed: " .. tostring( err ) )
+	end
+end
+
+function Game.sv_n_peopleGuiAction( self, data, player )
+	if type( data ) ~= "table" then return end
+	if player ~= sm.player.getHostPlayer() then return end
+
+	local token = tostring( data.name or "" )
+
+	-- The allow list SWITCH, as opposed to its membership. No token: it is the
+	-- setting rather than a person.
+	--
+	-- It goes through the same Sv_Set every other setting does, so the
+	-- broadcast, the log line and the world's re-read all happen exactly as
+	-- they would from /set or the settings panel. A second way to write a
+	-- setting is how two ways to write it drift apart.
+	if data.action == "allowlist" then
+		local ok, detail = Settings.Sv_Set( "allowlist", data.on and "on" or "off" )
+		if ok then
+			self:sv_toWorld( "/settingschanged", {}, player )
+			self:sv_broadcast( "Server setting changed: " .. detail )
+		end
+		self:sv_openPeopleGui( player, detail, data.view, data.page, data.query )
+		return
+	end
+
+	-- Filtering is the one action allowed to be empty: clearing the box is how
+	-- you get the whole list back.
+	if data.action == "search" then
+		self:sv_openPeopleGui( player, nil, "known", 1, token )
+		return
+	end
+
+	if token == "" then return end
+
+	local ok, status
+	if data.action == "kick" then
+		ok, status = self:sv_doKick( token )
+	elseif data.action == "ban" then
+		ok, status = self:sv_doBan( token, "" )
+	elseif data.action == "unban" then
+		ok, status = self:sv_doUnban( token )
+	elseif data.action == "allow" then
+		ok, status = self:sv_doAllow( token, true )
+	elseif data.action == "unallow" then
+		ok, status = self:sv_doAllow( token, false )
+	else
+		return
+	end
+	self:sv_openPeopleGui( player, status, data.view, data.page, data.query )
+end
+
+--[[ the backups panel ]]
+
+function Game.sv_openBackupsGui( self, player, status )
+	if player ~= sm.player.getHostPlayer() then return end
+
+	-- The index lives in the WORLD -- a Game script has no world and cannot
+	-- touch a body, so capture and restore both live there. Game and World share
+	-- one Lua environment, which is the same route sv_openPlotsGui uses to read
+	-- the live grid, and it is guarded for the same reason: this panel can be
+	-- opened before the world has finished creating them.
+	local saves, busy = {}, nil
+	if g_swSnapshots then
+		local ok, list = pcall( g_swSnapshots.sv_list, g_swSnapshots )
+		if ok and list then saves = list end
+		local okp, progress = pcall( g_swSnapshots.sv_progress, g_swSnapshots )
+		if okp then busy = progress end
+	end
+
+	self.network:sendToClient( player, "client_openBackupsGui", {
+		saves = saves,
+		busy = busy,
+		autosave = Settings.Get( "autosave" ),
+		status = status,
+	} )
+end
+
+function Game.client_openBackupsGui( self, state )
+	if self.cl == nil then self.cl = {} end
+	self.cl.backupsState = state
+	self:cl_showPanel( "backups", BackupsGui.Build( state ) )
+end
+
+function Game.cl_onBackupsGuiClose( self )
+	self:cl_forgetPanel()
+	if self.cl then self.cl.backupsState = nil end
+end
+
+function Game.cl_onBackupsGuiClick( self, widgetName, data )
+	if type( data ) ~= "table" or self.cl == nil then return end
+	local state = self.cl.backupsState
+	if state == nil then return end
+
+	if data.action == "close" then
+		self:cl_closeLater( "panel" )
+		return
+	end
+	if data.action == "back" then
+		self.network:sendToServer( "sv_n_openMenu", {} )
+		return
+	end
+	if data.action == "page" then
+		-- Local. Paging changes nothing on the server and a round trip for it
+		-- would be a visible stutter. cl_renderLater, never a direct render:
+		-- building a new tree destroys the widget whose callback is running.
+		state.page = data.page
+		self:cl_renderLater( "backups", BackupsGui.Build( state ) )
+		return
+	end
+
+	self.network:sendToServer( "sv_n_backupsGuiAction",
+		{ action = data.action, name = data.name } )
+end
+
+function Game.sv_n_backupsGuiAction( self, data, player )
+	if type( data ) ~= "table" then return end
+	if player ~= sm.player.getHostPlayer() then return end
+
+	if data.action == "snapshot" then
+		self:sv_toWorld( "/snapshot", { "/snapshot", "manual" }, player,
+			{ panel = "backups" } )
+		return
+	end
+
+	if data.action == "restore" then
+		-- TWO DOORS, the same as CLEAR CITY, and for a bigger reason.
+		--
+		-- "/restore deletes the world before it rebuilds." Anything not in the
+		-- snapshot does not come back -- including a creation somebody has on a
+		-- lift, which is deliberately never captured. A fat-fingered restore
+		-- mid-event beats the griefer it was reached for.
+		local name = tostring( data.name or "" )
+		if name == "" then return end
+		self:sv_askConfirm( player, "restore",
+			"PUT THE WORLD BACK?",
+			{ "restoring: " .. name,
+			  "everything in the world now is DELETED first",
+			  "anything not in this save does not come back",
+			  "a creation somebody has on a lift is not in any save" },
+			"backups", name )
+		return
+	end
+end
 
 --[[ the focus panel ]]
 
@@ -2783,7 +3530,12 @@ function Game.sv_bridgeTick( self, tick )
 		return
 	end
 
-	if Settings.Get( "bridge" ) ~= true then return end
+	-- BOTH switches, and the second one is derived rather than written. See
+	-- Settings.BridgeOpen: /developer off shuts this door without overwriting
+	-- the host's own `bridge` choice, so switching developer back on gives back
+	-- exactly what they had -- which is the mistake V52's lockdown made with
+	-- four tool settings and could not undo.
+	if not Settings.BridgeOpen() then return end
 	if tick < ( b.nextPoll or 0 ) then return end
 	b.nextPoll = tick + Bridge.POLL_TICKS
 
@@ -2868,9 +3620,15 @@ function Game.sv_bridgeCommand( self, params, player, reply )
 		return
 	end
 
+	-- The switch and the door are two different questions and /bridge status is
+	-- the one place both have to be answered, because they can disagree: the
+	-- setting says ON while developer mode holds it shut. Printing only one of
+	-- them is how "it says it is on and nothing happens" gets reported.
 	local on = ( Settings.Get( "bridge" ) == true )
 	reply( string.format( "bridge %s   waiting for %s   %d command(s) run",
-		on and "ON" or "off", Bridge.CmdPath( b.seq ), b.ran or 0 ) )
+		Settings.BridgeOpen() and "ON"
+			or ( on and "on, but SHUT while developer mode is off" or "off" ),
+		Bridge.CmdPath( b.seq ), b.ran or 0 ) )
 	if b.pending ~= nil then
 		reply( "  a batch is still listening" )
 	end
@@ -2907,6 +3665,10 @@ end
 
 function Game.sv_openChecklistGui( self, player, status, view )
 	if player ~= sm.player.getHostPlayer() then return end
+	-- The same question the menu asked, asked again where it counts. A client
+	-- that never opened the menu can still send this, so the mode is checked
+	-- here rather than trusted from the fact that a panel was drawn.
+	if not Settings.DeveloperOn() then return end
 	view = view or {}
 	self.network:sendToClient( player, "client_openChecklistGui", {
 		results = self:sv_checklist(),
@@ -3025,6 +3787,10 @@ end
 function Game.sv_n_checklistAction( self, data, player )
 	if type( data ) ~= "table" then return end
 	if player ~= sm.player.getHostPlayer() then return end
+	-- The same question the menu asked, asked again where it counts. A client
+	-- that never opened the menu can still send this, so the mode is checked
+	-- here rather than trusted from the fact that a panel was drawn.
+	if not Settings.DeveloperOn() then return end
 
 	local results = self:sv_checklist()
 	local view = { group = data.group, page = data.page, item = data.item }
@@ -3112,9 +3878,14 @@ function Game.sv_n_checklistAction( self, data, player )
 	self:sv_openChecklistGui( player, status, view )
 end
 
-function Game.sv_askConfirm( self, player, what, title, lines, back )
+-- `arg` names WHICH thing, for a confirmation where "what" is not enough on its
+-- own. CLEAR CITY has exactly one meaning; RESTORE has one per save, and a
+-- dialog that asks "are you sure" without carrying the answer to "sure about
+-- what" would restore whatever the server guessed.
+function Game.sv_askConfirm( self, player, what, title, lines, back, arg )
 	self.network:sendToClient( player, "client_openConfirm",
-		{ step = 1, what = what, title = title, lines = lines, back = back } )
+		{ step = 1, what = what, title = title, lines = lines, back = back,
+		  arg = arg } )
 end
 
 function Game.client_openConfirm( self, state )
@@ -3158,7 +3929,7 @@ function Game.cl_onConfirmClick( self, widgetName, data )
 	end
 	-- The server does the work and sends the panel back with the result written
 	-- on it (sv_e_swPanelRefresh), so nothing is closed here either.
-	self.network:sendToServer( "sv_n_confirmed", { what = c.what } )
+	self.network:sendToServer( "sv_n_confirmed", { what = c.what, arg = c.arg } )
 end
 
 function Game.sv_n_confirmed( self, data, player )
@@ -3166,6 +3937,11 @@ function Game.sv_n_confirmed( self, data, player )
 	if type( data ) ~= "table" then return end
 	if data.what == "clearcity" then
 		self:sv_toWorld( "/plotclear", {}, player, { panel = "city" } )
+	elseif data.what == "restore" then
+		local name = tostring( data.arg or "" )
+		if name == "" then return end
+		self:sv_toWorld( "/restore", { "/restore", name }, player,
+			{ panel = "backups" } )
 	end
 end
 
@@ -3199,6 +3975,16 @@ function Game.sv_n_openPanel( self, data, player )
 		self:sv_openStyleGui( player, nil, nil, data.back )
 	elseif data.panel == "focus" then
 		self:sv_openFocusGui( player )
+	elseif data.panel == "protection" then
+		self:sv_openProtectionGui( player )
+	elseif data.panel == "backups" then
+		self:sv_openBackupsGui( player )
+	elseif data.panel == "people" then
+		self:sv_openPeopleGui( player )
+	elseif data.panel == "bans" then
+		self:sv_openPeopleGui( player, nil, "known" )
+	elseif data.panel == "dev" and Settings.DeveloperOn() then
+		self:sv_openDevGui( player )
 	end
 end
 
@@ -3294,7 +4080,7 @@ function Game.sv_n_benchSample( self, data, player )
 	} )
 end
 
-function Game.sv_n_adminCommand( self, params, player )
+function Game.sv_n_adminCommand( self, params, player, viaPanel )
 	local function reply( text )
 		self:sv_bridgeSay( text )
 		self.network:sendToClient( player, "client_showMessage", text )
@@ -3303,8 +4089,34 @@ function Game.sv_n_adminCommand( self, params, player )
 	local cmd = params[1]
 	local isHost = ( player == sm.player.getHostPlayer() )
 
-	if not isHost and not PLAYER_COMMANDS[cmd] then
-		reply( "Host only." )
+	-- viaPanel IS TRUSTWORTHY BECAUSE THE NETWORK CANNOT SET IT.
+	--
+	-- A network callback is handed exactly ( self, data, player ) -- the engine
+	-- supplies the third and there is no fourth. So a client cannot claim to be
+	-- a panel; only code inside this script can, and the only code that does is
+	-- the menu router acting for the player who pressed the button.
+	--
+	-- DEFAULT DENY, still: a command nobody classified lands on the host side in
+	-- both lists, which produces "Host only" on something harmless rather than a
+	-- guest running something nobody thought about.
+	if not isHost then
+		if viaPanel ~= true then
+			if not GUEST_TYPED[cmd] then
+				reply( "Chat commands are for the host. Type  /menu  instead --" )
+				reply( "  your plot, the rules and who is here are all on it." )
+				return
+			end
+		elseif not GUEST_PANEL[cmd] then
+			return
+		end
+	end
+
+	-- After the host gate and before anything is forwarded, because /crowd and
+	-- /bench are WORLD_COMMANDS and would otherwise be gone by the next line.
+	if not Settings.DevCommandAllowed( params ) then
+		reply( string.format( "%s is a developer tool, and developer mode is off.",
+			tostring( cmd ) ) )
+		reply( "  /developer on   switches it on and puts DEV TOOLS back on the menu." )
 		return
 	end
 
@@ -3334,7 +4146,8 @@ function Game.sv_n_adminCommand( self, params, player )
 	end
 
 	if cmd == "/sw" or cmd == "/swhelp" then
-		reply( "SERVER WORKS" )
+		reply( "SERVER WORKS -- WORK IN PROGRESS. Expect rough edges." )
+		reply( "  /menu               everything below, on buttons. Start here." )
 		reply( "  /plot claim         claim the plot you are stood on" )
 		reply( "  /plot info          who owns this ground" )
 		reply( "  /myplot             claim, find and give up your plot, on one panel" )
@@ -3367,15 +4180,24 @@ function Game.sv_n_adminCommand( self, params, player )
 			reply( "  /unfocus            take the marker off again" )
 			reply( "  /ban <who>  /unban <who>  /banlist  /known  /kick <who>" )
 			reply( "  /allow <who>  /unallow <who>  /allowlist" )
-			reply( "DEV" )
-			reply( "  /check              the dev checklist -- test it, then answer it" )
-			reply( "  /check next         the next thing nobody has tried" )
-			reply( "  /check summary      what is answered, and what failed" )
-			reply( "LOAD TESTING -- not for a live event" )
-			reply( "  /crowd <n>          stand n bots on the city, one per plot" )
-			reply( "  /crowd churn on     have them place and remove blocks" )
-			reply( "  /bench start        walk the crowd up, record fps and tick rate" )
-			reply( "  /bench results      the table from the last run" )
+			-- The dev half of this list only prints while the switch is on.
+			-- Forty lines of help for tools that will refuse to run is not
+			-- help, and it is the same reasoning that keeps the two entries off
+			-- the menu: the surface should say what is actually reachable.
+			if Settings.DeveloperOn() then
+				reply( "DEVELOPER -- /developer off hides all of this" )
+				reply( "  /check              the dev checklist -- test it, then answer it" )
+				reply( "  /check next         the next thing nobody has tried" )
+				reply( "  /check summary      what is answered, and what failed" )
+				reply( "  /bridge on          drive this world from outside the game" )
+				reply( "LOAD TESTING -- not for a live event" )
+				reply( "  /crowd <n>          stand n bots on the city, one per plot" )
+				reply( "  /crowd churn on     have them place and remove blocks" )
+				reply( "  /bench start        walk the crowd up, record fps and tick rate" )
+				reply( "  /bench results      the table from the last run" )
+			else
+				reply( "  /developer on       the test tools: crowd, benchmark, checklist" )
+			end
 		end
 
 	elseif cmd == "/rules" then
@@ -3464,6 +4286,45 @@ function Game.sv_n_adminCommand( self, params, player )
 
 	elseif cmd == "/menu" then
 		self:sv_openMenu( player )
+
+	elseif cmd == "/developer" then
+		local arg = string.lower( tostring( params[2] or "" ) )
+		if arg == "" then
+			reply( string.format( "developer mode is %s.",
+				Settings.DeveloperOn() and "ON" or "off" ) )
+			reply( "  /developer on   adds DEV TOOLS and TESTING CHECKLIST to /menu," )
+			reply( "                  and lets /crowd /bench /bridge /check run." )
+			reply( "  /developer off  hides them again. Nothing else changes." )
+			return
+		end
+		local ok, detail = Settings.Sv_Set( "developer", arg )
+		if not ok then
+			reply( detail )
+			return
+		end
+		local on = Settings.DeveloperOn()
+		reply( on and "Developer mode ON -- /menu now has DEV TOOLS and TESTING CHECKLIST."
+			or "Developer mode off -- the dev tools are off the menu." )
+		-- The bridge is DERIVED from both switches rather than written by
+		-- either, so this says what just happened to it instead of changing it.
+		-- Switch developer back on and the host gets back the channel they
+		-- actually chose, which is the whole reason it is not written down.
+		if Settings.Get( "bridge" ) == true then
+			reply( on and "  Outside control is open again -- it was shut while developer mode was."
+				or "  Outside control is shut while developer mode is off. It is still switched on." )
+		end
+		if not on then
+			-- Said out loud because the command that removes them is the one
+			-- that just became the only dev command still allowed, and nothing
+			-- else on screen would mention it.
+			local bots = self.sv.crowdCount or 0
+			if bots > 0 then
+				reply( string.format(
+					"  %d crowd bot(s) are still standing -- /crowd off still works.", bots ) )
+			end
+		end
+		sm.log.info( string.format( "[ServerWorks] developer mode %s",
+			on and "ON" or "off" ) )
 
 	elseif cmd == "/bridge" then
 		self:sv_bridgeCommand( params, player, reply )
@@ -3589,10 +4450,21 @@ function Game.sv_n_adminCommand( self, params, player )
 			return ( #out > 0 ) and table.concat( out, " " ) or "nothing"
 		end
 		reply( string.format( "  world is %s", Settings.WorldIsShut()
-			and ( "SHUT (" .. tostring( Settings.Get( "protection" ) ) .. ") -- a lockdown blocks everything except the cleaner and focus" )
+			and ( "SHUT (" .. tostring( Settings.Get( "protection" ) ) .. ") -- a guest loses every tool and every body flag" )
 			or ( "open (" .. tostring( Settings.Get( "protection" ) ) .. ")" ) ) )
 		reply( "  blocked for the host:  " .. nameList( self.sv.hazardTools ) )
 		reply( "  blocked for a guest:   " .. nameList( self:sv_toolPayload().guest ) )
+		-- THE BUBBLE, AND WHY IT IS PRINTED RATHER THAN LEFT TO BE FELT.
+		--
+		-- It has three states and two of them look identical from inside the
+		-- game: a host who cannot build cannot tell "somebody is standing next
+		-- to me" from "this feature is broken". That is the same failure as a
+		-- panel that closes on every click whether or not the button worked, and
+		-- this project has already paid for that one three times.
+		if g_swPlots and g_swPlots.sv_bubbleStatus then
+			local ok, status = pcall( g_swPlots.sv_bubbleStatus, g_swPlots )
+			reply( "  host can build where they stand: " .. ( ok and tostring( status ) or "unknown" ) )
+		end
 
 	elseif cmd == "/players" then
 		-- The host is whoever is running the server -- sm.player.getHostPlayer()
@@ -3650,43 +4522,19 @@ function Game.sv_n_adminCommand( self, params, player )
 		for _, line in ipairs( Identity.Sv_KnownLines( 25 ) ) do reply( line ) end
 
 	elseif cmd == "/ban" then
-		local token = joinName( params, 2 )
-		local target, name = resolveTarget( token )
-		if target == sm.player.getHostPlayer() then
-			reply( "You cannot ban the host." )
-			return
-		end
-		local ok, detail = Identity.Sv_Ban( name, "" )
+		local _, detail = self:sv_doBan( joinName( params, 2 ), "" )
 		reply( detail )
-		if ok then
-			sm.log.info( "[ServerWorks] banned " .. tostring( name ) )
-			if target and sm.exists( target ) then
-				sm.game.banPlayer( target )
-				self:sv_broadcast( name .. " was banned." )
-			else
-				reply( "(not online -- they will be kicked if they ever join)" )
-			end
-		end
 
 	elseif cmd == "/unban" then
-		local _, detail = Identity.Sv_Unban( joinName( params, 2 ) )
+		local _, detail = self:sv_doUnban( joinName( params, 2 ) )
 		reply( detail )
 
 	elseif cmd == "/banlist" then
 		for _, line in ipairs( Identity.Sv_BanLines() ) do reply( line ) end
 
 	elseif cmd == "/allow" or cmd == "/unallow" then
-		local token = joinName( params, 2 )
-		local _, name = resolveTarget( token )
-		local ok, detail = Identity.Sv_SetAllowed( name or token, cmd == "/allow" )
+		local _, detail = self:sv_doAllow( joinName( params, 2 ), cmd == "/allow" )
 		reply( detail )
-		if ok and cmd == "/unallow" and Settings.Get( "allowlist" ) then
-			local target = resolveTarget( token )
-			if target and sm.exists( target ) and target ~= sm.player.getHostPlayer() then
-				-- Taken off the allow list, not banned: a kick, not a ban.
-				table.insert( self.sv.kickQueue, { player = target, ban = false } )
-			end
-		end
 
 	elseif cmd == "/allowlist" then
 		reply( string.format( "allowlist is %s -- /set allowlist on|off",
@@ -3694,16 +4542,7 @@ function Game.sv_n_adminCommand( self, params, player )
 		for _, line in ipairs( Identity.Sv_AllowLines() ) do reply( line ) end
 
 	elseif cmd == "/kick" then
-		local token = joinName( params, 2 )
-		local target, name = resolveTarget( token )
-		if target == nil then
-			reply( string.format( "'%s' is not here -- try /players", token ) )
-		elseif target == sm.player.getHostPlayer() then
-			reply( "You cannot kick the host." )
-		else
-			sm.log.info( "[ServerWorks] kicking " .. tostring( name ) )
-			sm.game.kickPlayer( target )
-			self:sv_broadcast( name .. " was kicked." )
-		end
+		local _, detail = self:sv_doKick( joinName( params, 2 ) )
+		reply( detail )
 	end
 end

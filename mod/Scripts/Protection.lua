@@ -229,6 +229,36 @@ PROFILES.trim_destructible = {
 	convertibleToDynamic = true,
 }
 
+-- THE HOST'S BUBBLE, inside a locked world. Same flags as `open`, its own name.
+--
+-- It is a separate profile rather than a reuse of `open` for one reason: the
+-- GROUND. `open` is in GROUND_FREE -- build time is exactly when a plot slab is
+-- meant to be liftable -- and a lockdown is the opposite case. Nobody should be
+-- able to carry a plot away while the world is shut, host included, so these
+-- two names stay out of GROUND_FREE and the host gets the pinned twin on any
+-- city floor they stand on.
+PROFILES.hostopen = {
+	buildable = true,
+	erasable = true,
+	connectable = true,
+	paintable = true,
+	liftable = true,
+	usable = true,
+	destructable = false,
+	convertibleToDynamic = true,
+}
+
+PROFILES.hostopen_destructible = {
+	buildable = true,
+	erasable = true,
+	connectable = true,
+	paintable = true,
+	liftable = true,
+	usable = true,
+	destructable = true,
+	convertibleToDynamic = true,
+}
+
 -- THE GROUND IS PINNED, WHATEVER ELSE ITS PROFILE ALLOWS.
 --
 -- Every profile above gets a twin with liftable and convertibleToDynamic forced
@@ -314,6 +344,18 @@ local function matchesProfile( body, p )
 		-- list straight out of this function, so the two cannot drift.
 		and body:isPaintable() == p.paintable
 		and body:isConnectable() == p.connectable
+		-- AND THE PIN. Six flags were enough while no two profiles a body could
+		-- move between differed only in liftable and convertibleToDynamic --
+		-- every real transition also changed one of the four above, so the pin
+		-- came along for free.
+		--
+		-- `hostopen` is the first that does not. It carries `open`'s six flags
+		-- exactly and differs from it only in being pinned on city floor, so a
+		-- slab going from build time to a lockdown bubble would have been found
+		-- "already correct" and left liftable -- the plot floor carryable during
+		-- the one mode that exists to stop exactly that.
+		and body:isLiftable() == p.liftable
+		and body:isConvertibleToDynamic() == p.convertibleToDynamic
 end
 
 -- Which profile a given body should be under. /lockdown deliberately outranks
@@ -366,6 +408,15 @@ local function forBody( self, profile, name, body )
 	return profile, name
 end
 
+-- Which host profile, given the destructible setting. One place, because both
+-- branches of profileFor below need the same answer.
+local function hostProfile()
+	if Settings.Get( "destructible" ) == true then
+		return PROFILES.hostopen_destructible, "hostopen_destructible"
+	end
+	return PROFILES.hostopen, "hostopen"
+end
+
 local function profileFor( self, body )
 	if isLockedMode( self.mode ) then
 		-- One thing escapes a locked world: litter on ground nobody may build on.
@@ -379,8 +430,44 @@ local function profileFor( self, body )
 		-- buildable ground is still locked, which is what /lockdown means.
 		if self.resolver then
 			local verdict = self.resolver( body )
-			if verdict == "sweep" then
+			-- STRICT MEANS STRICT. "if the lock down is a proper lock down.
+			-- like you cant interact like at all. then its good to go" -- the
+			-- owner, 2026-08-31, and this was the last thing that was not.
+			--
+			-- `sweep` is erasable = true, so litter on a road or the plaza --
+			-- anything the resolver does not think is a build -- stayed
+			-- deletable by anybody with their bare hands, lockdown or not. A
+			-- guest has no tools at all in a shut world, but placing and
+			-- removing are the build HAND rather than a uuid, so the tool guard
+			-- never reached it.
+			--
+			-- The escape exists for a real reported bug: prep, the buffer, the
+			-- end of an event and the gap between events all close building, and
+			-- freezing the rubbish along with the builds is how spawn spam wins
+			-- -- protect the world and the litter is protected with it.
+			--
+			-- So it survives `display` and every buildopen-closed state, which is
+			-- where that bug actually bit, and it does NOT survive `locked`.
+			-- /lockdown is the panic button and it now means nothing works.
+			--
+			-- WHAT IT COSTS: junk dropped during a strict lockdown can only be
+			-- removed by the host, with the Cleaner or /purge. Both ignore every
+			-- permission flag, so it is never stuck -- it just is not a guest's
+			-- job any more.
+			if verdict == "sweep" and self.mode ~= "locked" then
 				return forBody( self, PROFILES.sweep, "sweep", body )
+			end
+			-- THE SECOND THING THAT ESCAPES A LOCKED WORLD, and unlike litter it
+			-- is a person rather than a place: the few metres around the host.
+			--
+			-- "I should be able to build and delete stuff anywhere." There is no
+			-- per-player permission in this engine, so the host's own presence
+			-- is the only thing that can carry an exemption. See
+			-- Plots.sv_hostReaches -- it is the resolver in World.lua that
+			-- decides this, one step earlier, because only it can see the plots.
+			if verdict == "hostopen" then
+				local profile, name = hostProfile()
+				return forBody( self, profile, name, body )
 			end
 		end
 		return forBody( self, PROFILES[self.mode], self.mode, body )
@@ -407,6 +494,13 @@ local function profileFor( self, body )
 		if verdict == "trim" then
 			local name = TRIM_OF[openName] or "trim"
 			return forBody( self, PROFILES[name], name, body )
+		end
+		-- Named before the generic branch below, because which host profile is
+		-- right depends on the destructible setting -- the same reason `trim`
+		-- is named above. The generic branch would always pick the mild one.
+		if verdict == "hostopen" then
+			local profile, name = hostProfile()
+			return forBody( self, profile, name, body )
 		end
 		if type( verdict ) == "string" and PROFILES[verdict] then
 			return forBody( self, PROFILES[verdict], verdict, body )

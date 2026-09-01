@@ -11,7 +11,7 @@ Read it before believing any other document in here.
 
 ## The one thing to understand about the checks
 
-`python dev/check_all.py` runs **181 checks** in ten seconds and they all pass.
+`python dev/check_all.py` runs **217 checks** in ten seconds and they all pass.
 That is worth having and it is not evidence the mod works.
 
 | what the checks DO touch | what they CANNOT touch |
@@ -134,6 +134,39 @@ unknowns in the project:
 evidence -- it said `195 creations, 0 failed` on the run that left a hole. The
 BODY count afterwards is: 99 deck creations where a missing plaza would leave
 98. The plaza has not yet been confirmed by eye.
+
+**RESTORE IS CONFIRMED, 2026-09-01, through the bridge.** Snapshot taken at 676
+shapes / 195 bodies; `/restore` reported `195 of 195 creations`; the world
+afterwards read **676 shapes and 195 bodies** -- identical. The V58.1 settle fix
+holds and the plaza is back by count (99 deck creations, where a hole leaves 98).
+The `backup-restore` checklist line is GREEN and the suite has no failures left.
+
+**AND EVERY RESTORE EVER RUN WAS ON A CITY WITH NOTHING BUILT ON IT.** Read out
+of the snapshot files themselves, 2026-09-01: the restores used 195 entries --
+99 deck creations and 96 plot slabs, and **zero player buildings**. So the one
+thing `/restore` exists for, bringing back what people built, has never once
+been exercised.
+
+Capture is not the gap: a crowd session captured `3995` creations with `3896` of
+them on plots, so builds do get saved. What is untested is putting them back.
+
+Two more things the files settle, one reassuring and one not:
+
+- **Blueprint coordinates are ABSOLUTE** (-104..+84 in the real files), so a
+  restored build lands where it was rather than in a heap at the origin. That
+  was the obvious way this could have been broken and it is not.
+- **The plot state is new and thin.** Every snapshot on disk older than
+  2026-09-01 has `plots: null` -- no ownership at all. And what a snapshot saves
+  even now is `grid, owners, teams, enabled` and nothing else: **not** the
+  server settings, **not** the event clock, **not** the ban list, **not** the
+  city style. A snapshot is buildings plus who owns which square, and calling it
+  a world backup oversells it.
+
+**The real whole-world backup is `dev/backup_world.py`**, which copies Scrap
+Mechanic's own `Save/<world>.db`. That is the world exactly as the game
+understands it -- terrain, save state and all -- and it cannot half-succeed the
+way an import can. The mod cannot do this itself: the Lua sandbox has no
+filesystem outside `$CONTENT_*`.
 
 
 ## B. Seen BROKEN in game — a fix shipped, not re-tested
@@ -439,6 +472,53 @@ Two things about it are still unknown:
 **The lockdown rebuild** — see section B. Written, checked, installed, unrun.
 
 **Save presets and a controlled bot** — asked for, not started.
+
+### New in V64, none of it run
+
+Every line of it is checks-and-reasoning; nothing here has been seen on a screen.
+
+- **`/developer on|off`** — the switch itself, and the two menu entries appearing
+  and disappearing with it. Off is the default, so **the first thing to confirm
+  is that a fresh world's menu has ten entries and not twelve**.
+- **The dev command gate.** `/crowd 5` should refuse with developer off and name
+  the switch; `/crowd off` should still work. That escape is the half most worth
+  testing, because getting it wrong strands a crowd.
+- **The bridge being derived.** `/bridge on`, then `/developer off`, then
+  `/bridge status` — it should say *on, but SHUT*, and `/developer on` should
+  give the channel back without `/bridge on` being typed again.
+- **EVERYONE SEEN, and it is the piece to look at hardest.** `WHO IS HERE ->
+  EVERYONE SEEN` should list every player the server has ever recorded, newest
+  first, with BAN on each row and UNBAN on anyone already banned. Press BAN on
+  somebody offline and check `BANNED` picked them up. **`Identity.Sv_KnownList`
+  has never been called in game**, and neither has a ban placed by perma id.
+- **The FIND box.** Typed input is the one thing in this mod that has crashed the
+  game outright, and nothing typed into a json GUI on this panel has ever run.
+  It must only ever narrow the list -- if pressing Enter bans somebody, stop and
+  say so.
+- **Banning somebody who is online, by perma id.** The new `resolveTarget` branch
+  is what makes `sm.game.banPlayer` fire on that path. If they stay in the world
+  after a ban from EVERYONE SEEN, that branch is what failed.
+- **The WORK IN PROGRESS line on the menu.** It is right-aligned in the header
+  band, which no other caption in this mod is — worth one glance to confirm it
+  is not sitting on top of the title.
+
+---
+
+### New in V65, none of it run
+
+- **A guest with no chat commands.** Needs a second person: have them type
+  `/plot claim` and then `/menu`. **If anything they need turns out not to be on
+  the menu, that is the finding** -- the refusal is working as intended.
+- **`citybuild`.** Place a block on a road with it off (should refuse) and on
+  (should work), then `/lockdown` and confirm the city freezes anyway.
+- **The unstuck button.** `sm.character.createCharacter` called from our own
+  world handler has never run; vanilla's copy of that call is the only evidence
+  it works. Walk away from the middle, press unstuck, and see where you land.
+- **`sm.physics.spherecast` from a World script of ours.** Same: vanilla does it
+  in `CreativeBaseWorld.sv_e_spawnNewCharacter`, we never have. It is guarded and
+  falls back to the deck height plus the clearance.
+- **A ban surviving a new world.** Proven in the harness against the real
+  Identity, never watched in game.
 
 ---
 

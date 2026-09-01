@@ -36,8 +36,68 @@ MODS = pathlib.Path(os.path.expandvars(
 PRESERVE = {"BanList.json"}
 
 
+def mod_desc():
+    return json.loads((SRC / "description.json").read_text(encoding="utf-8-sig"))
+
+
 def mod_name():
-    return json.loads((SRC / "description.json").read_text(encoding="utf-8-sig"))["name"]
+    return mod_desc()["name"]
+
+
+# STATE THE GAME WROTE, WHICH THE REPO HAS NO COPY OF. Losing any of these is
+# losing something that cannot be regenerated: the perma ids every ban is filed
+# under, the ban list itself, every snapshot, and the checklist results.
+GAME_STATE = ("Settings.json", "BanList.json", "Players.json", "Plots.json",
+              "Event.json", "Bench.json", "Checklist.json", "Bridge.json",
+              "Snapshots")
+
+
+def find_by_local_id(mods_dir, local_id, exclude):
+    """An installed copy of THIS mod under a different folder name.
+
+    RENAMING THE MOD MOVES THE FOLDER. The install path is Mods/<name>, and the
+    name is whatever description.json says -- so changing it makes the next sync
+    build a brand new folder and quietly leave the old one behind, holding the
+    ban list, the perma ids, 75 snapshots and every checklist answer.
+
+    The mod's real identity is `localId`, which does not change when the name
+    does. That is what this matches on. (The Steam Workshop identity is `fileId`
+    and does not change either -- renaming a published item keeps its
+    subscribers; see the changelog.)
+    """
+    if not local_id or not mods_dir.is_dir():
+        return None
+    for d in mods_dir.iterdir():
+        if not d.is_dir() or d == exclude:
+            continue
+        f = d / "description.json"
+        if not f.is_file():
+            continue
+        try:
+            other = json.loads(f.read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
+        if other.get("localId") == local_id:
+            return d
+    return None
+
+
+def carry_state_over(old_dir, dest):
+    """Move the game-written state from the old folder to the new one."""
+    moved = []
+    for name in GAME_STATE:
+        src = old_dir / name
+        if not src.exists():
+            continue
+        dst = dest / name
+        if dst.exists():
+            print(f"  keep  {name} already in the new folder, leaving the old copy alone")
+            continue
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dst))
+        moved.append(name)
+        print(f"  moved {name}")
+    return moved
 
 
 def user_dir():
@@ -55,6 +115,36 @@ def main():
     dest = user_dir() / "Mods" / mod_name()
     print(f"source  {SRC}")
     print(f"target  {dest}")
+
+    # THE MOD HAS BEEN RENAMED. Refuse rather than silently split its state
+    # across two folders -- see find_by_local_id.
+    desc = mod_desc()
+    old_dir = find_by_local_id(dest.parent, desc.get("localId"), dest)
+    if old_dir is not None:
+        at_risk = [n for n in GAME_STATE if (old_dir / n).exists()]
+        print(f"\n  RENAMED: this mod is already installed as {old_dir.name!r}")
+        print(f"           and description.json now says {mod_name()!r}.")
+        if at_risk:
+            print("  The old folder holds state the repo has no copy of:")
+            for n in at_risk:
+                thing = old_dir / n
+                if thing.is_dir():
+                    print(f"    {n}/  ({len(list(thing.glob('*')))} files)")
+                else:
+                    print(f"    {n}  ({thing.stat().st_size} bytes)")
+        if "--rename" not in sys.argv:
+            sys.exit(
+                "\n  Refusing. Syncing now would build a new folder and leave that\n"
+                "  behind -- the ban list, the perma ids every ban is filed under,\n"
+                "  the snapshots and the checklist answers.\n\n"
+                "  Re-run with --rename to move them across, or rename the folder\n"
+                "  yourself first if you would rather do it by hand.")
+        print("\n  --rename given: carrying the game's own state across.")
+        dest.mkdir(parents=True, exist_ok=True)
+        carry_state_over(old_dir, dest)
+        left = [q for q in old_dir.rglob("*") if q.is_file()]
+        print(f"  the old folder still has {len(left)} file(s) -- mod scripts and")
+        print("  the game's Cache. Delete it once the game has loaded the new one.")
 
     if "--status" in sys.argv:
         if not dest.exists():

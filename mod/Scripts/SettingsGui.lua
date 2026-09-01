@@ -61,7 +61,7 @@ SettingsGui.GROUPS = {
 		"claygun", "firelauncher", "extinguisher", "sledgehammer", "spudguns",
 		"glowsticks", "painttool", "connecttool", "weldtool" } },
 	{ key = "plots", title = "PLOTS", keys = {
-		"plots", "pushintruders", "buildopen", "minbuildheight" } },
+		"plots", "citybuild", "pushintruders", "buildopen", "minbuildheight" } },
 	{ key = "limits", title = "LIMITS", keys = {
 		"maxjoints", "maxbots", "maxlights" } },
 	{ key = "event", title = "EVENT", keys = {

@@ -141,8 +141,28 @@ function Identity.Sv_Touch( player )
 
 	rec.lastSeen = now()
 	rec.lastPlayerId = player.id       -- the session id, for the tool to join on
-	Identity.Sv_SavePlayers()
+	-- MARKED, NOT WRITTEN. This used to save the whole players file on every
+	-- single join, and a join is the one moment this engine is known to be
+	-- fragile: Dr Pixel Plays' 40-player stream could not get two people in at
+	-- once without the network handshake failing. A synchronous whole-file
+	-- write per join is the mod adding work at exactly the wrong instant, and
+	-- it grows with the file.
+	--
+	-- Game.server_onFixedUpdate flushes within a second. What is risked is one
+	-- second of lastSeen on a hard crash, and a brand new player's perma id --
+	-- which is regenerated on their next join anyway. Bans are NOT deferred:
+	-- Sv_Ban and Sv_SetAllowed still write immediately, because those are the
+	-- ones somebody types while something is going wrong.
+	Identity.playersDirty = true
 	return rec
+end
+
+-- Called once a second from the server tick. Cheap when nothing changed.
+function Identity.Sv_FlushPlayers()
+	if not Identity.playersDirty then return false end
+	Identity.playersDirty = false
+	Identity.Sv_SavePlayers()
+	return true
 end
 
 function Identity.Sv_PermaOf( player )
@@ -273,6 +293,22 @@ function Identity.Sv_Unban( target )
 	return true, string.format( "unbanned %s", entry.names and entry.names[#entry.names] or perma )
 end
 
+-- The ban list STRUCTURED, for a panel. Sv_BanLines formats each entry into a
+-- numbered line for chat, and a panel that has to take one of those apart again
+-- to find the perma for an UNBAN button breaks the day the format changes.
+function Identity.Sv_BanList()
+	local out = {}
+	for _, entry in ipairs( Identity.bans.bans ) do
+		out[#out + 1] = {
+			perma = entry.perma,
+			name = entry.names and entry.names[#entry.names] or entry.perma,
+			reason = ( entry.reason ~= nil and entry.reason ~= "" )
+				and entry.reason or nil,
+		}
+	end
+	return out
+end
+
 function Identity.Sv_BanLines()
 	if #Identity.bans.bans == 0 then
 		return { "ban list is empty" }
@@ -284,6 +320,50 @@ function Identity.Sv_BanLines()
 			entry.names and entry.names[#entry.names] or "?", id )
 	end
 	return lines
+end
+
+-- EVERYONE EVER RECORDED, STRUCTURED, FOR A PANEL.
+--
+-- This exists because a display name is not something a host can be asked to
+-- type. REPORTED: "nicks in scrap mechanic to ban needs to be writen exactly.
+-- since names can be strange. this wont work." Exactly right, and it is worse
+-- than awkward -- a name may hold characters that are not on the keyboard at
+-- all, so for some players there is no string the host could enter.
+--
+-- Every player who has ever joined is already in this file with a perma id, so
+-- the answer is not a better text box: it is a LIST, and the button on each row
+-- carries `perma`. Nothing is ever typed and nothing can be mistyped.
+--
+-- NEWEST FIRST. The person a host wants to ban is nearly always the one who was
+-- here most recently, so the useful ordering is the reverse of the file's.
+-- Sorted on a copy: Identity.players.records is what gets written back to disk,
+-- and reordering it in place would rewrite the file for a panel that only
+-- wanted to look.
+function Identity.Sv_KnownList()
+	local out = {}
+	for _, rec in ipairs( Identity.players.records ) do
+		local names = rec.names or {}
+		out[#out + 1] = {
+			perma = rec.perma,
+			name = names[#names] or rec.perma,
+			aliases = math.max( 0, #names - 1 ),
+			banned = Identity.Sv_BanEntry( rec.perma ) ~= nil,
+			-- The ALLOW LIST needs the same picker the ban list got, and for a
+			-- stronger reason: it names everyone who MAY come in, so it has to
+			-- be filled in BEFORE an event. A control that only reaches people
+			-- who are already standing in the world cannot do that at all.
+			allowed = rec.allowed == true,
+			seen = rec.lastSeen or rec.firstSeen or 0,
+		}
+	end
+	table.sort( out, function( a, b )
+		if a.seen ~= b.seen then return a.seen > b.seen end
+		-- A stable tiebreak, or two records written in the same second could
+		-- swap places between two draws of the same panel and move the row
+		-- under the host's cursor.
+		return tostring( a.perma ) < tostring( b.perma )
+	end )
+	return out
 end
 
 function Identity.Sv_KnownLines( limit )

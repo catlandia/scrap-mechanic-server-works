@@ -122,11 +122,35 @@ function World.server_onCreate( self )
 	end )
 
 	g_swProtection:sv_setResolver( function( body )
+		-- THE HOST'S BUBBLE COMES FIRST, ahead of even the decking, and that
+		-- ordering is the feature rather than an oversight.
+		--
+		-- "I should be able to build and delete stuff anywhere." A bubble that
+		-- lost to sv_isScenery would be dead exactly where the host spawns --
+		-- the plaza IS scenery -- so the first thing anybody tried after typing
+		-- /lockdown would do nothing, and the feature would read as broken.
+		--
+		-- Cost: one boolean test per body in an open world. sv_hostReaches only
+		-- reaches getWorldAabb once the world is actually shut, which is the
+		-- only time this can return anything.
+		if ( Settings.WorldIsShut() or Settings.Get( "buildopen" ) == false )
+			and g_swPlots:sv_hostReaches( body ) then
+			return "hostopen"
+		end
+
 		-- The city's own decking is permanent in every mode. This is the ONLY
 		-- thing protecting it, and it is a far better test than "the plaza is
 		-- locked" ever was: our decking is metal at deck height, and a craftbot
 		-- standing on top of it is not.
-		if g_swPlots:sv_isScenery( body ) then
+		-- ...unless the host has opened the city up. sv_isScenery is the ONLY
+		-- thing protecting the decking, so this switch is the whole of "the
+		-- city can be modified" -- without it a road plate stays locked in
+		-- every mode however open the zone underneath it says it is.
+		--
+		-- Note where it sits: AFTER the bubble and BEFORE everything else, so a
+		-- lockdown still freezes the city. Opening the city is permission to
+		-- build on it, never permission to ignore the protection mode.
+		if g_swPlots:sv_isScenery( body ) and not Settings.CityIsOpen() then
 			return "locked"
 		end
 
@@ -217,6 +241,61 @@ end
 
 
 --[[ explosions and fire ]]
+
+-- CLAY IS NOT A BODY. IT IS TERRAIN, AND THAT IS THE WHOLE BUG.
+--
+-- REPORTED: "the clay wont go away." Correct, and nothing in this mod could
+-- have made it go away, because everything this mod does to protect or clean
+-- the world operates on BODIES.
+--
+-- MEASURED, from vanilla's own source -- Data/Scripts/game/worlds/
+-- CreativeBaseWorld.lua:159:
+--
+--     if projectileUuid == projectile_clay then
+--         local clayMaterial = 0
+--         self.world:voxelDensityAddition( hitPos, hitNormal, 2.5, 5,
+--                                          clayMaterial, ... )
+--
+-- So a clay shot ADDS VOXEL DENSITY to the ground. It is not a shape, so
+-- destroyShape cannot touch it and the Cleaner cannot either; it carries no
+-- permission flags, so setErasable and the whole protection profile system say
+-- nothing about it; and the one mechanism in the game that removes terrain --
+-- sphereVoxelDensitySubtraction from an explosion -- is the mechanism this mod
+-- deliberately declines to run, to stop cratering.
+--
+-- Every one of those is individually correct and together they mean clay is
+-- permanent. That is why "/lockdown blocks everything" and "the claygun is
+-- disabled on this server" were both true while clay kept appearing and never
+-- left.
+--
+-- THE REAL FIX IS TO NOT MAKE IT. The tool guard is client-side and "forced
+-- down" tier: it pulls the gun out of a hand within two ticks, which is not the
+-- same as never firing. This is the server saying no, and it makes `claygun` a
+-- REAL off switch for the first time.
+--
+-- Declining is simply not calling the parent: for a clay uuid the only branch
+-- in CreativeBaseWorld.server_onProjectile that does anything is the clay one.
+local CLAY_PROJECTILE = "0ab670bb-5969-4ab4-87a3-435795392d5a"
+
+function World.server_onProjectile( self, hitPos, hitTime, hitVelocity, _,
+		attacker, damage, userData, hitNormal, target, projectileUuid )
+	if tostring( projectileUuid ) == CLAY_PROJECTILE then
+		-- Off if the host switched it off, and off while the world is shut,
+		-- whatever the host switched. Derived from the mode, never written --
+		-- the same rule fire and aggro follow.
+		local allowed = ( Settings.Get( "claygun" ) == true )
+			and not Settings.WorldIsShut()
+		if not allowed then
+			if not self.sw.clayDeclined then
+				self.sw.clayDeclined = true      -- log once, never per shot
+				sm.log.info( "[ServerWorks] clay declined -- it is terrain, not a body, so it has to be stopped before it lands" )
+			end
+			return
+		end
+	end
+	CreativeFlatWorld.server_onProjectile( self, hitPos, hitTime, hitVelocity, _,
+		attacker, damage, userData, hitNormal, target, projectileUuid )
+end
 
 function World.server_onExplosion( self, center, destructionLevel, radius )
 	-- An explosion cannot be cancelled -- server_onExplosion is a notification and
@@ -399,8 +478,39 @@ function World.sv_checkGriefAlarm( self, tick )
 		table.remove( log, 1 )
 	end
 
+	-- A JOB THAT REWRITES THE WHOLE WORLD MUST LEAVE A FRESH BASELINE BEHIND.
+	--
+	-- MEASURED, 2026-09-01, through the bridge: a /restore of a 96-plot city
+	-- reported `195 of 195 creations` and then the alarm announced
+	-- `*** 274 blocks have disappeared ***` and locked the world by itself --
+	-- after a rollback the host had just asked for, with alarmlock on.
+	--
+	-- Being quiet WHILE the job runs was never enough, and neither is a fixed
+	-- 120-second window. The alarm compares the present against the PEAK inside
+	-- a 20-second window, so the moment it starts listening again the window can
+	-- still hold samples from before the clear -- a peak the rebuilt world is
+	-- never going to match. The comparison straddles the job.
+	--
+	-- So the transition matters, not the duration: when a wholesale job stops,
+	-- throw the window away and start counting from what is actually there.
+	-- Same shape as "derive it, never write it" elsewhere in this mod -- the
+	-- end of the job is a fact, 120 seconds was a guess.
+	local busy = ( g_swSnapshots and g_swSnapshots:sv_busy() )
+		or ( self.sw.cityJob ~= nil )
+	if busy then
+		self.sw.alarmWasBusy = true
+		return
+	end
+	if self.sw.alarmWasBusy then
+		self.sw.alarmWasBusy = false
+		self.sw.censusLog = { { tick = tick, n = census } }
+		-- A short tail as well: the patrol has not necessarily seen every body
+		-- the job created yet, so the very first census after it is low.
+		self:sv_quietAlarm( 10 )
+		return
+	end
+
 	if tick < self.sw.alarmQuietUntil then return end
-	if g_swSnapshots:sv_busy() then return end
 
 	-- The high-water mark inside the window, not the previous sample: a griefer
 	-- who pauses between deletes must not get a fresh baseline for free.
@@ -499,7 +609,8 @@ function World.sv_checkTimers( self, tick )
 		self.sw.nextAutoSnapshot = tick + minutes * 60 * TICKS_PER_SECOND
 		if not g_swSnapshots:sv_busy() then
 			local started, detail = g_swSnapshots:sv_beginCapture(
-				g_swSnapshots:sv_autoName(), self.world, self:sv_plotOfBody() )
+				g_swSnapshots:sv_autoName(), self.world, self:sv_plotOfBody(),
+				g_swPlots:sv_serialise() )
 			if started then
 				sm.log.info( "[ServerWorks] auto-snapshot: " .. detail )
 			end
@@ -569,7 +680,8 @@ function World.sv_e_swEventPhase( self, params )
 	local label = PHASE_SNAPSHOT[phase]
 	if label and not g_swSnapshots:sv_busy() then
 		local ok, detail = g_swSnapshots:sv_beginCapture(
-			Snapshots.Name( label ), self.world, self:sv_plotOfBody() )
+			Snapshots.Name( label ), self.world, self:sv_plotOfBody(),
+			g_swPlots:sv_serialise() )
 		if ok then
 			sm.log.info( string.format( "[ServerWorks] phase snapshot (%s): %s",
 				label, tostring( detail ) ) )
@@ -678,6 +790,12 @@ function World.sv_e_swCommand( self, params )
 			end
 			local ok, detail = g_swProtection:sv_setMode( mode )
 			if ok then
+				-- FIRE, CRATERING AND AGGRO ARE NOT PERMISSIONS, so no body flag
+				-- reaches them and a lockdown that only walked bodies left them
+				-- burning. They are derived from the mode now
+				-- (Settings.Sv_HazardOff), and Sv_SetQuiet re-applies them on
+				-- this exact key -- hooked to the write rather than repeated at
+				-- each of the six places that make it. "LOCK down EVERYTHING."
 				Settings.Sv_SetQuiet( "protection", mode )
 				-- A LOCKED WORLD MEANS LOCKED, and the blocked set is derived from
 				-- the mode now rather than written into the settings.
@@ -706,6 +824,36 @@ function World.sv_e_swCommand( self, params )
 			else
 				reply( "Failed: " .. tostring( detail ) )
 			end
+		end
+
+	elseif cmd == "/clearclay" then
+		-- THE ESCAPE HATCH for clay already on the ground, and it is a TERRAIN
+		-- EDIT rather than a delete. sphereVoxelDensitySubtraction is the only
+		-- call that removes voxel density, and clay is written as material0 --
+		-- which is also what the ground is made of, so there is no filter that
+		-- separates "the clay somebody sprayed" from "the hill it landed on".
+		--
+		-- So this levels a sphere. It is the same call vanilla's own explosion
+		-- makes (CreativeBaseWorld.server_onExplosion), aimed on purpose instead
+		-- of by accident, and the button that runs it says so.
+		local radius = tonumber( args[2] ) or 6
+		if radius < 1 then radius = 1 end
+		if radius > 24 then radius = 24 end
+		local character = player and player:getCharacter()
+		if not ( character and sm.exists( character ) ) then
+			reply( "no character" )
+			return
+		end
+		local at = character.worldPosition
+		local ok, err = pcall( function()
+			self.world:sphereVoxelDensitySubtraction( at, radius,
+				sm.world.voxelFilter.all, 10.0 )
+		end )
+		if ok then
+			reply( string.format( "levelled the ground within %g m -- clay and terrain both", radius ) )
+			sm.log.info( string.format( "[ServerWorks] clearclay: %g m at %s", radius, tostring( at ) ) )
+		else
+			reply( "could not clear it: " .. tostring( err ) )
 		end
 
 	elseif cmd == "/nolift" then
@@ -754,6 +902,11 @@ function World.sv_e_swCommand( self, params )
 		local okq, quality = pcall( sm.game.getSettingValue, "PhysicsQuality" )
 		reply( string.format( "host PhysicsQuality: %s  (host-side, set it in the game options)",
 			okq and tostring( quality ) or "unreadable" ) )
+		-- WHO CAN JOIN, from the game's own settings. Same tier of fact as
+		-- PhysicsQuality above it: readable, not settable, and host-side. It is
+		-- here because "nobody else can join" and "nobody else is trying" look
+		-- identical from inside the world, and only one of them is fixable.
+		reply( Settings.JoinModeLine() )
 		reply( string.format( "shapes in world: %s",
 			tostring( g_swProtection:sv_census() or "counting..." ) ) )
 		local claimed, total = g_swPlots:sv_counts()
@@ -782,7 +935,11 @@ function World.sv_e_swCommand( self, params )
 		local name = args[2]
 		if name == nil or name == "" then name = "manual" end
 		name = Snapshots.Name( name )
-		local ok, detail = g_swSnapshots:sv_beginCapture( name, self.world, self:sv_plotOfBody() )
+		-- The plot state rides along, so a save is the world and not just its
+		-- buildings. "the world backups is a FULL SAVE BACKUP. and not build
+		-- backup."
+		local ok, detail = g_swSnapshots:sv_beginCapture( name, self.world,
+			self:sv_plotOfBody(), g_swPlots:sv_serialise() )
 		reply( ok and detail or ( "Failed: " .. tostring( detail ) ) )
 
 	elseif cmd == "/snapshots" then
@@ -800,6 +957,10 @@ function World.sv_e_swCommand( self, params )
 			opts.clear = function() self:sv_clearPlot( params.plot ) end
 		end
 		self:sv_quietAlarm( 120 )
+		opts.restoreState = function( saved )
+			local okp, said = g_swPlots:sv_restoreState( saved )
+			if okp then reply( said ) end
+		end
 		local ok, detail = g_swSnapshots:sv_beginRestore( args[2], self.world, opts )
 		if ok then
 			self:sv_broadcast( ( params.plot
@@ -1055,9 +1216,10 @@ function World.sv_e_swCommand( self, params )
 		local status = ( #collected > 0 ) and table.concat( collected, "   " ) or nil
 		if params.panel == "myplot" then
 			self:sv_openMyPlot( player, status )
-		elseif params.panel == "city" then
+		elseif params.panel == "city" or params.panel == "protection"
+			or params.panel == "backups" or params.panel == "dev" then
 			sm.event.sendToGame( "sv_e_swPanelRefresh",
-				{ player = player, panel = "city", status = status } )
+				{ player = player, panel = params.panel, status = status } )
 		end
 	end
 end
@@ -1521,6 +1683,75 @@ function World.sv_refreshAllMarkers( self )
 	end
 end
 
+-- THE UNSTUCK BUTTON, MOVED TO THE MIDDLE OF THE CITY.
+--
+-- REPORTED: "when I load into the world I spawn in the middle. but when I use
+-- the unstuck button I spawn not in the middle. but in the same spot every time.
+-- so make so that the default unstuck spawn is right above the city. 20 blocks
+-- just to be sure."
+--
+-- Both halves of that are exactly right, and the second explains the first.
+-- Vanilla's CreativePlayer.sv_n_unstuck is hard-coded:
+--
+--     local params = { player = self.player, x = 16, y = 16 }
+--
+-- 16,16 is the corner of the first cell of a vanilla creative world. This mod
+-- centres its city on the ORIGIN and overrides sv_createNewPlayer to spawn at
+-- 0,0 -- so joining puts you on the plaza and the unstuck button puts you in a
+-- field, at the same wrong place every time. Nothing was broken; two spawn
+-- points simply disagreed, and only one of them had been moved.
+--
+-- WHY THE SPHERECAST AND THE CLEARANCE ARE BOTH NEEDED. "20 blocks just to be
+-- sure" is about not landing inside something, and a fixed height cannot
+-- promise that on its own -- the middle of the city is where the plaza is, and
+-- by the end of an event it may have a good deal standing on it. So this finds
+-- the top of whatever is actually there, the way vanilla's own spawn does, and
+-- THEN adds the clearance. Above everything, rather than at a height that
+-- happened to be above everything when it was written.
+World.UNSTUCK_BLOCKS = 20
+
+function World.sv_unstuckPoint( self )
+	local ground = ( g_swPlots and g_swPlots.sv_spawnPoint )
+		and g_swPlots:sv_spawnPoint()
+		or sm.vec3.new( 0, 0, 1 )
+	local up = World.UNSTUCK_BLOCKS * ( Plots and Plots.BLOCK or 0.25 )
+
+	-- Straight down the middle, from far above anything anybody can build.
+	-- Guarded: a spherecast is engine-side and a failure here must still leave
+	-- somebody a place to stand, since the whole point of this is that they are
+	-- stuck.
+	local ok, valid, result = pcall( sm.physics.spherecast,
+		sm.vec3.new( ground.x, ground.y, 1024 ),
+		sm.vec3.new( ground.x, ground.y, -1024 ), 0.3 )
+	if ok and valid and result then
+		local hit = sm.vec3.lerp( sm.vec3.new( ground.x, ground.y, 1024 ),
+			sm.vec3.new( ground.x, ground.y, -1024 ), result.fraction )
+		if hit.z > ground.z then
+			return sm.vec3.new( ground.x, ground.y, hit.z + up )
+		end
+	end
+	return sm.vec3.new( ground.x, ground.y, ground.z + up )
+end
+
+-- Sent by Player.sv_n_unstuck. It lives here because sm.character.createCharacter
+-- wants a world and a Player script does not have one -- the same reason the
+-- compass marker had to move out of Player.lua.
+function World.sv_e_swUnstuck( self, params )
+	local player = params and params.player
+	if player == nil then return end
+	local pos = self:sv_unstuckPoint()
+	local ok, err = pcall( function()
+		local character = sm.character.createCharacter( player, self.world, pos )
+		player:setCharacter( character )
+	end )
+	if not ok then
+		sm.log.warning( "[ServerWorks] unstuck failed: " .. tostring( err ) )
+		return
+	end
+	sm.log.info( string.format( "[ServerWorks] unstuck %s to the middle of the city, %d blocks up",
+		tostring( player.name ), World.UNSTUCK_BLOCKS ) )
+end
+
 function World.sv_home( self, player, reply )
 	local perma = Identity.Sv_PermaOf( player )
 	local index = perma and g_swPlots:sv_plotOf( perma )
@@ -1583,6 +1814,23 @@ World.TRACE_HEARTBEAT = 40      -- ticks; one line a second at most while idle
 
 function World.sv_traceStart( self, root, player, label )
 	if root == nil then return end
+	-- DEVELOPER MODE ONLY, and this is scaffolding that outstayed its welcome.
+	--
+	-- The trace was written to find out why an imported creation would not come
+	-- off the lift -- one line per change, for 25 seconds, per import. It did
+	-- its job and then kept running in ordinary play, where every NOTlift press
+	-- starts another 25-second trace.
+	--
+	-- MEASURED, from the owner's log on 2026-09-01: 140 lift-trace lines from
+	-- one session of repeated imports, in a session whose tick rate fell to
+	-- about 0.6 Hz. This is not the cause of that -- the content is -- but log
+	-- spam is the largest performance bug this project has ever measured (the
+	-- 1.79 GB single-player log), and a diagnostic that fires hardest exactly
+	-- when the server is already struggling is the wrong shape of thing to
+	-- leave switched on.
+	if Settings and Settings.DeveloperOn and not Settings.DeveloperOn() then
+		return
+	end
 	local tick = sm.game.getCurrentTick()
 	self.sw.trace = {
 		root = root, player = player, label = label,

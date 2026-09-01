@@ -39,7 +39,7 @@ logs:
 
 ```
 WARNING: NetworkServer.cpp:231 Skip sending unreliable network data
-         to client 76561199070209586 Budget is currently: -280930
+         to client 765611990XXXXXXXX Budget is currently: -280930
 ```
 
 That is **the host giving up on sending a client its state updates for that

@@ -12,3 +12,12 @@ __pycache__/
 mod/Bench.json
 mod/Event.json
 mod/Plots.json
+
+# Somebody else's video transcript, fetched for research. Not ours to publish.
+youtube/
+
+# Game-written state that appears in the installed copy, not the repo
+mod/Checklist.json
+mod/Bridge.json
+mod/Cmd-*.json
+mod/Out-*.json

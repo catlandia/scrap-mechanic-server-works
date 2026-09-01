@@ -14,8 +14,62 @@ Companions:
 [`BUTTONS.md`](BUTTONS.md) everything a json GUI needs ·
 [`CHANGELOG.md`](CHANGELOG.md) what every version fixed
 
-Current version: **V59**. All 181 checks pass. `python dev/check_all.py --sync`
+Current version: **V73**. All 217 checks pass. `python dev/check_all.py --sync`
 before playing, and **restart Scrap Mechanic** — scripts are read at world load.
+
+---
+
+## V65, and what it changed about who can do what
+
+- **A guest has one chat command: `/menu`.** Everything else is host-only. They
+  still do everything they could before, through buttons -- the menu is now the
+  only door rather than one of two. If something a guest needs turns out NOT to
+  be on it, that is the bug, not the refusal.
+- **Every host panel gates at its opener**, not only on the menu that hides the
+  button.
+- **`citybuild`** (SERVER SETTINGS, PLOTS) opens the roads, the plaza and the
+  decking for building. Off by default. It does not survive a `/lockdown`, and
+  it costs the litter escape on shared ground -- see the changelog.
+- **The unstuck button lands in the middle of the city**, 20 blocks above
+  whatever is standing there, instead of vanilla's fixed 16,16 out in a field.
+- **The ban list is proven to survive a new world**, perma ids included.
+
+---
+
+## V64, and what it changed about the shape of a session
+
+Asked for when the owner's time to test got shorter, which is the constraint
+this build is written around:
+
+> "look now ive got far less time to test and work on the mod ... you are gonna
+> polish the mod in state that it is now."
+
+So nothing new was started. What changed is what the mod OFFERS:
+
+- **The menu is ten entries, not twelve.** `DEV TOOLS` and `TESTING CHECKLIST`
+  are behind **`/developer on`**, which is off by default and persists. That is
+  a gate rather than a filter -- `/crowd`, `/bench`, `/bridge` and `/check` all
+  refuse while it is off, and the four places that open a dev panel each ask the
+  mode again, because the menu is drawn on the player's own machine.
+- **You can always switch a dev tool OFF.** `/crowd off`, `/crowd 0`,
+  `/bench stop` and `/bridge off` work whatever the mode. Turning developer mode
+  off with a crowd standing would otherwise strand it -- the same shape as the
+  part budget that forbade its own remedy.
+- **Banning is a list you click, and never a name you type.** `WHO IS HERE ->
+  EVERYONE SEEN` lists every player the server has ever recorded, with BAN on
+  each row and UNBAN on anyone already banned. The button carries the `SW-` id,
+  because a Scrap Mechanic name can hold characters a host cannot type at all.
+  The FIND box only narrows the list.
+- **The mod says it is a WORK IN PROGRESS** on the menu, in the join message and
+  in its Custom Game description -- to guests as well as the host.
+
+**This changes the first two minutes of every test session from here on.** A
+fresh world comes up with developer mode OFF, so the way in is:
+
+    /developer on
+
+and then `/check` and `/bridge on` are reachable again. `docs/CHANGELOG.md` V64
+has the reasoning for each piece.
 
 ---
 
@@ -40,12 +94,23 @@ where the plaza had been, that is fixed, and the fix has been re-run — 195
 bodies back, 99 deck creations where a hole would leave 98. The only thing
 missing is somebody's eyes on it. Then `backup-restore` goes green.
 
-**2. Re-test `/lockdown` after a world reload.** It was rebuilt and none of it
-has run. `/lockdown`, hold the clay gun and the lift, then `/tool` — which now
-prints what the server blocks for the host and for a guest, so a disagreement
-shows up instead of being argued about.
+**2. Re-test `/lockdown`, which V60 rebuilt again and which has still never
+run.** It is now three things rather than one: every tool off a **guest** and
+none off **you**, fire and cratering and aggro forced off by the mode, and a
+four-metre bubble that follows you so you can still fix things while the world
+is shut. `/lockdown`, then `/protection` — it prints the guest list, the host
+list and whether the bubble is open, shut or switched off.
 
-**3. `/bridge on`, and the work moves off your hands.** The bridge carried its
+The bubble is the part to look at hardest, because it is an approximation and
+not a permission: there is no per-player build flag in this engine (39 Body
+bindings, none takes a player), so the mod unlocks the ground you are standing
+on and relocks it when you leave. Another **player** standing next to you shuts
+it; a crowd bot does not. `/check` has three items for all of this —
+`prot-lockdown`, `prot-hostbuild`, `prot-lockdown-fire`.
+
+**3. `/developer on`, then `/bridge on`, and the work moves off your hands.**
+V64 put the dev tools behind that first switch, so a fresh world refuses the
+second one until it is thrown. The bridge carried its
 first real session on 2026-08-29 and found two bugs in an hour, in features
 that had shipped weeks earlier and never been run. It is off by default and
 the switch persists; a world that comes up with it open says so in the log.
@@ -61,6 +126,7 @@ or the screen. That is roughly half the checklist and it stays yours.
 
 In the game, once per install, as host:
 
+    /developer on
     /bridge on
 
 That lets a running world be driven from outside it -- I write a file into
@@ -77,7 +143,8 @@ roughly half the checklist.
 
 ### V57 put the list in the game, so the other half is one command
 
-    /check          the panel: 83 items, grouped, in the order to run them
+    /developer on   V64: the checklist and the dev tools are behind this
+    /check          the panel: 90 items, grouped, in the order to run them
     /check next     the next thing nobody has ever tried
 
 Answer each one with a click. It writes `Checklist.json` in the installed mod on

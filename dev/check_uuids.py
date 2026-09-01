@@ -124,6 +124,23 @@ def index_game(base_content):
                                               errors="replace").read())
                 for u in UUID_RE.findall(text.lower()):
                     out.setdefault(u, (kind, path.relative_to(GAME).as_posix()))
+
+    # PROJECTILES, and this scanner was blind to them until V62.
+    #
+    # Same shape of gap as effects before V56 and scriptable objects before the
+    # baseGameContent disaster: a whole class of uuid the game knows about and
+    # this file did not look for, so a real uuid read as MISSING and a dead one
+    # would have read as fine.
+    #
+    # They live in Lua rather than in a database -- `projectile_clay =
+    # sm.uuid.new( "0ab670bb-..." )` -- because a projectile is not something a
+    # player can be handed. World.lua names the clay one to decline it before it
+    # lands, since clay is voxel terrain and nothing removes it afterwards.
+    for name in ("survival_projectiles.lua", "projectiles.lua"):
+        for path in GAME.glob(f"*/Scripts/game/{name}"):
+            text = io.open(path, encoding="utf-8-sig", errors="replace").read()
+            for u in UUID_RE.findall(text.lower()):
+                out.setdefault(u, ("projectile", path.relative_to(GAME).as_posix()))
     return out
 
 

@@ -57,6 +57,39 @@ function Plots.Sv_SaveFile( plots )
 	end
 end
 
+-- Put a whole saved plot state back, from a snapshot.
+--
+-- REPORTED, twice: "the backups need to be the full world backups", and then
+-- "the world backups is a FULL SAVE BACKUP. and not build backup."
+--
+-- A snapshot used to be the creations and nothing else, so /restore rebuilt
+-- every building and left the CLAIMS wherever they had drifted to -- the city
+-- came back and nobody owned any of it, or worse, owned somebody else's. The
+-- grid rides along too, because the creations in that snapshot were laid out on
+-- it: restoring 96 plots' worth of buildings onto a 384-plot grid puts every one
+-- of them in the wrong place.
+--
+-- What is deliberately NOT in a snapshot, on the same rule sv_newWorldReset
+-- uses: a snapshot restores what describes the WORLD, never the host's own
+-- preferences. Tool settings, the ban list and the event clock survive a
+-- restore untouched -- rewinding the clock because somebody rolled back a
+-- griefed plot would be its own bug.
+function Plots.sv_restoreState( self, saved )
+	if type( saved ) ~= "table" then return false, "nothing to restore" end
+	self:sv_setGrid( saved.grid or self.grid )
+	self.owners = saved.owners or {}
+	self.teams = saved.teams or {}
+	self.requests = {}
+	self.zoneOpen = {}
+	self.zoneHeld = {}
+	self.overBudget = {}
+	if saved.enabled ~= nil then self.enabled = saved.enabled end
+	Plots.Sv_SaveFile( self )
+	local n = 0
+	for _ in pairs( self.owners ) do n = n + 1 end
+	return true, string.format( "%d plot claim(s) restored", n )
+end
+
 function Plots.sv_onCreate( self, saved )
 	-- Layout.config handles migrating an old grid, including the plaza, which
 	-- used to be a width in blocks and is now a count of cells.
@@ -73,6 +106,10 @@ function Plots.sv_onCreate( self, saved )
 	-- Never serialised: a bot is a live unit, and a saved reference to one would
 	-- be a dead handle the moment the session ends.
 	self.crowd = {}
+	-- Where the host is, and whether anybody else is close enough to shut the
+	-- bubble. Refreshed every tick by sv_updateHostBubble.
+	self.hostAt = nil
+	self.bubbleBlockedBy = nil
 end
 
 -- Handed to the occupancy pass, which treats bots as presence-only occupants.
@@ -264,6 +301,11 @@ function Plots.sv_updateOccupancy( self, identify, tick )
 	-- people are standing. Recording it here costs one table write and saves the
 	-- rules audit a walk over the whole city. See Rules.sv_audit.
 	self.activePlots = {}
+
+	-- BEFORE the enabled check on purpose. /lockdown works with plots switched
+	-- off, so the host's bubble has to as well.
+	self:sv_updateHostBubble()
+
 	if not self.enabled then
 		return
 	end
@@ -428,6 +470,93 @@ function Plots.sv_holdTeam( self, z )
 	end
 end
 
+-- THE HOST'S BUBBLE, and why a lockdown needs one at all.
+--
+-- "I should be able to build and delete stuff anywhere. and place lift."
+-- -- the owner, 2026-08-31.
+--
+-- Body permission flags are per-BODY. dev/dump_api.py lists 39 Body bindings
+-- and not one of them takes a player: a body is buildable by everybody or by
+-- nobody, and setBuildableBy does not exist. So "the lobby is locked out and
+-- the host is not" is not something a flag can say, and no amount of care with
+-- profiles will make it one.
+--
+-- What the engine does leave is the lever this file already runs on: PRESENCE.
+-- A locked world unlocks the piece of itself the host is standing in, and locks
+-- it again as they walk away. The patrol is 128 bodies a tick against a city of
+-- a couple of thousand, so the bubble follows within a fraction of a second.
+--
+-- THE HOLE, stated plainly because it cannot be closed: while the bubble is
+-- open, the bodies inside it are open to ANYONE who can reach them, not just to
+-- the host. That is the same approximation "you may only build on your own
+-- plot" has always been, for the same reason.
+--
+-- The guard is what makes it narrow: another PLAYER inside the bubble shuts it.
+-- Not a crowd bot -- a bench of 128 bots would otherwise mean the host never
+-- has a bubble at all, and a bot is not a griefer. /protection says which it
+-- is, because a bubble that is shut for a reason must not look like one that is
+-- broken.
+Plots.HOST_BUBBLE = 4.0            -- metres; 16 blocks, comfortably past reach
+
+-- Component maths rather than ( a - b ):length(), to match distanceToAabb below
+-- and because a position is the one thing here that arrives from three
+-- different places -- a character, an AABB corner, a test fixture.
+local function distanceBetween( a, b )
+	local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
+	return math.sqrt( dx * dx + dy * dy + dz * dz )
+end
+
+local function distanceToAabb( at, aabbMin, aabbMax )
+	local dx = math.max( aabbMin.x - at.x, 0, at.x - aabbMax.x )
+	local dy = math.max( aabbMin.y - at.y, 0, at.y - aabbMax.y )
+	local dz = math.max( aabbMin.z - at.z, 0, at.z - aabbMax.z )
+	return math.sqrt( dx * dx + dy * dy + dz * dz )
+end
+
+function Plots.sv_updateHostBubble( self )
+	self.hostAt = nil
+	self.bubbleBlockedBy = nil
+
+	local host = sm.player.getHostPlayer()
+	if host == nil or not sm.exists( host ) then return end
+	local character = host:getCharacter()
+	if not ( character and sm.exists( character ) ) then return end
+	self.hostAt = character.worldPosition
+
+	for _, player in ipairs( sm.player.getAllPlayers() ) do
+		if player ~= host then
+			local other = player:getCharacter()
+			if other and sm.exists( other ) then
+				if distanceBetween( other.worldPosition, self.hostAt ) <= Plots.HOST_BUBBLE then
+					self.bubbleBlockedBy = player:getName()
+					return
+				end
+			end
+		end
+	end
+end
+
+-- Is this body inside the host's bubble right now? Called per body per patrol
+-- slice, so every cheap way out comes first and the AABB call comes last.
+function Plots.sv_hostReaches( self, body )
+	if self.hostAt == nil or self.bubbleBlockedBy ~= nil then return false end
+	if Settings and Settings.Get and Settings.Get( "hostbuild" ) == false then return false end
+	local ok, aabbMin, aabbMax = pcall( function() return body:getWorldAabb() end )
+	if not ok or aabbMin == nil or aabbMax == nil then return false end
+	return distanceToAabb( self.hostAt, aabbMin, aabbMax ) <= Plots.HOST_BUBBLE
+end
+
+-- What /protection prints. Three states, not two: no bubble, a bubble, or a
+-- bubble somebody is standing in.
+function Plots.sv_bubbleStatus( self )
+	if Settings and Settings.Get and Settings.Get( "hostbuild" ) == false then return "off" end
+	if self.hostAt == nil then return "no host in the world" end
+	if self.bubbleBlockedBy ~= nil then
+		return string.format( "shut -- %s is standing in it", tostring( self.bubbleBlockedBy ) )
+	end
+	return string.format( "open, %.1fm around the host", Plots.HOST_BUBBLE )
+end
+
 -- Shove an unauthorised player back onto the nearest filler walkway. Without
 -- this, simply standing on someone's plot keeps it locked and stops the owner
 -- working -- presence enforcement would become a griefing tool of its own.
@@ -497,10 +626,30 @@ function Plots.sv_zoneVerdict( self, body, z )
 	-- is not. So the plaza is shared ground like the roads: nothing legitimate
 	-- can be built on it, which means anything sitting there is litter and anyone
 	-- may clear it.
-	if z.kind == "plaza" then
-		return "sweep"
+	-- EVERY SQUARE OF THE CITY THAT IS NOT A PLOT. "make sure you can place and
+	-- break blocks on everything when the free build on the city is on."
+	--
+	-- EVERYTHING means every zone kind Layout can return: plaza, road, corner
+	-- AND the filler seams between plots. The first version of this listed the
+	-- three obvious ones and left fillerX/fillerY to fall through to the teaming
+	-- rule below, so the strips between plots stayed shut with the city open --
+	-- which is the one part of "everything" somebody would notice by walking
+	-- into it. Written as "not a plot" now, so a new zone kind is covered the
+	-- day it is added rather than the day somebody reports it.
+	--
+	-- `true` rather than "sweep", and the difference is not cosmetic: sweep
+	-- means "anyone may erase whatever is here", which is right only while
+	-- nothing here can be a build. The moment somebody may build on the plaza,
+	-- an erasable plaza is a plaza anybody can wreck. So this hands shared
+	-- ground to the ordinary rules -- open while building is open, locked when
+	-- it is not -- and the litter escape is the price. See Settings.CityIsOpen,
+	-- which says so out loud.
+	if z.kind ~= "plot"
+		and Settings and Settings.CityIsOpen and Settings.CityIsOpen() then
+		return true
 	end
-	if z.kind == "corner" or z.kind == "road" then
+
+	if z.kind == "plaza" or z.kind == "corner" or z.kind == "road" then
 		return "sweep"
 	end
 	if z.kind ~= "plot" then

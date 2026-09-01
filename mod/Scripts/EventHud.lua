@@ -194,6 +194,46 @@ end
 -- state is Event.sv_clientState plus the locally interpolated `remaining`.
 -- screenW/screenH come from EventHud.ScreenSize(); they are arguments rather
 -- than read here so the layout can be checked at any resolution outside the game.
+-- WHAT THE HUD SAYS UNDER THE CLOCK, and it has to know about the lockdown.
+--
+-- MEASURED, from a screenshot: the host typed /lockdown, chat said "BUILDS
+-- LOCKED (strict)", and the top-right corner of the same frame said **build
+-- freely**. The hint was Event.HINTS[phase] and nothing else, so with no event
+-- running it read "off" and printed the one thing that was not true.
+--
+-- The payload already carried the answer. Game.sv_pushEvent has sent `mode` and
+-- `canBuild` since V28, precisely because "the client has no way to know: it can
+-- see the phase, but /lockdown and a host toggle are invisible to it" -- and
+-- then the HUD went on ignoring both. A field that is sent and never read is
+-- worse than one that was never sent: it looks like the case is handled.
+--
+-- PROTECTION OUTRANKS THE PHASE, because /lockdown outranks the clock in the
+-- resolver too (Protection.profileFor short-circuits on a locked mode before it
+-- consults anything else). Saying it in the other order would put "build on
+-- your own plot" on screen during a lockdown.
+--
+-- Pure, so dev/test_logic.py can read every combination back without a game.
+function EventHud.Hint( state )
+	state = state or {}
+	if state.paused then return "PAUSED by the host" end
+
+	local mode = tostring( state.mode or "" )
+	if mode == "locked" then
+		return "LOCKED -- nothing can be touched"
+	end
+	if mode == "display" then
+		return "LOCKED -- buttons still work"
+	end
+	-- Not a locked mode, but building is shut anyway: the host's own buildopen
+	-- toggle, or a phase that closes it. The phase hint is the better wording
+	-- when there IS a phase, because it says which part of the event you are in.
+	local phase = tostring( state.phase or "off" )
+	if state.canBuild == false and phase == "off" then
+		return "building is closed"
+	end
+	return Event.HINTS[phase] or ""
+end
+
 function EventHud.Build( state, screenW, screenH )
 	state = state or {}
 	screenW = screenW or EventHud.FALLBACK_W
@@ -234,8 +274,7 @@ function EventHud.Build( state, screenW, screenH )
 	kids[#kids + 1] = text( "HudClock", clock, ox + 16, oy + 24, EventHud.W - 28, 34,
 		"SM_HeaderSmall", LABEL, "Left" )
 
-	local hint = Event.HINTS[phase] or ""
-	if state.paused then hint = "PAUSED by the host" end
+	local hint = EventHud.Hint( state )
 	kids[#kids + 1] = text( "HudHint", hint, ox + 16, oy + 56, EventHud.W - 28, 16,
 		"SM_TextTiny", DIM, "Left" )
 

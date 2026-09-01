@@ -93,6 +93,22 @@ function Snapshots.sv_names( self )
 	return out
 end
 
+-- The same list as sv_names, STRUCTURED. sv_names formats each entry into a
+-- line for chat, which a panel then has to take apart again to put a RESTORE
+-- button beside the right name -- and a panel that parses a display string is a
+-- panel that breaks the day the string changes.
+--
+-- Newest first, because a rollback almost always wants the most recent save and
+-- the index appends.
+function Snapshots.sv_list( self )
+	local out = {}
+	for i = #self.index.snapshots, 1, -1 do
+		local s = self.index.snapshots[i]
+		out[#out + 1] = { name = s.name, count = s.count or 0 }
+	end
+	return out
+end
+
 function Snapshots.sv_find( self, name )
 	for i, s in ipairs( self.index.snapshots ) do
 		if string.lower( s.name ) == string.lower( name ) then
@@ -110,7 +126,10 @@ end
 -- reason: "it was only a little bit that got broken on my build" -- the damage
 -- was to a handful of plots, and wiping a whole city to repair three of them
 -- would cost more than the grief did.
-function Snapshots.sv_beginCapture( self, name, world, zoneOf )
+-- worldState is whatever describes the world besides its geometry -- today the
+-- plot grid, the claims and the teams. See Plots.sv_restoreState for what is
+-- deliberately left out.
+function Snapshots.sv_beginCapture( self, name, world, zoneOf, worldState )
 	if self.job then
 		return false, "busy: " .. self.job.kind
 	end
@@ -138,6 +157,7 @@ function Snapshots.sv_beginCapture( self, name, world, zoneOf )
 		creations = creations,
 		cursor = 1,
 		zoneOf = zoneOf,
+		worldState = worldState,
 		entries = {},
 		failed = 0,
 	}
@@ -191,6 +211,9 @@ function Snapshots.sv_finishCapture( self )
 		at = now(),
 		count = #job.entries,
 		entries = job.entries,
+		-- THE OTHER HALF OF A WORLD. Without this a snapshot is a pile of
+		-- buildings with nobody owning any of them.
+		plots = job.worldState,
 	}
 
 	local ok, err = pcall( sm.json.save, payload, snapPath( job.name ) )
@@ -272,6 +295,14 @@ function Snapshots.sv_beginRestore( self, name, world, opts )
 	local ok, payload = pcall( sm.json.open, snapPath( entry.name ) )
 	if not ok or type( payload ) ~= "table" then
 		return false, string.format( "snapshot '%s' is unreadable", entry.name )
+	end
+
+	-- Whole-world only. A per-plot repair must not rewrite everybody's claims:
+	-- the whole reason per-plot restore exists is that "it was only a little bit
+	-- that got broken on my build", and taking the rest of the city's ownership
+	-- with it would be a far bigger change than the damage.
+	if opts.plot == nil and opts.restoreState and type( payload.plots ) == "table" then
+		pcall( opts.restoreState, payload.plots )
 	end
 
 	local entries = payload.entries

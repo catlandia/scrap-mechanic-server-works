@@ -65,6 +65,186 @@ function Settings.WorldIsShut()
 	return Settings.LOCKED_MODES[tostring( Settings.Get( "protection" ) )] == true
 end
 
+-- DEVELOPER MODE. Off by default, and off means the test tools are not on the
+-- menu at all rather than merely discouraged.
+--
+-- ASKED FOR: "add a /developer on feature that adds the developer buttons to
+-- the menu. it is off by default." Right, and for a reason bigger than tidiness.
+-- Every one of the four things behind it changes the world in a way a live
+-- event does not survive: /crowd stands up to 128 characters on the city,
+-- /bench walks that number up on its own for several minutes and ends with a
+-- full city, /bridge opens a channel that runs host commands from outside the
+-- game, and the checklist runs whichever command the item under your cursor
+-- happens to name. A misclick on any of them during an event is not a mistake
+-- somebody notices later.
+--
+-- ONE DEFINITION, because five places ask the question: which entries the menu
+-- draws, the command gate, the panel opener, the bridge poll, and the help.
+function Settings.DeveloperOn()
+	return Settings.Get( "developer" ) == true
+end
+
+-- COMMANDS BEHIND /developer on. Each one changes the world in a way an event
+-- does not survive, and none has any business being one mistyped word away
+-- during one.
+--
+-- Hiding the two menu entries is not enough on its own. A chat command is its
+-- own door, and a switch that only tidied up the menu would be a switch that
+-- did not do what it says.
+--
+-- THE VALUE IS THE ESCAPE, AND IT IS THE IMPORTANT HALF. "A rule must never
+-- forbid its own remedy" is a lesson this project has already paid for once:
+-- going over the per-plot part budget returned the LOCKED profile, so the one
+-- action that could satisfy the limit -- removing a part -- was the action the
+-- limit forbade. Switch developer mode off with a hundred bots standing on the
+-- city and it is exactly that shape again, so every one of these keeps its OFF
+-- switch reachable whatever the mode. You can always stop a dev tool running;
+-- you just cannot start one.
+--
+-- `false` means there is nothing to stop -- /check reads and writes a file and
+-- leaves nothing running behind it.
+Settings.DEV_COMMANDS = {
+	["/crowd"] = "off", ["/bench"] = "stop",
+	["/bridge"] = "off", ["/check"] = false,
+}
+
+-- params is the raw chat-command argument list: params[1] is the command.
+-- Pure, so dev/test_logic.py runs the real gate rather than a restatement of it.
+function Settings.DevCommandAllowed( params )
+	local escape = Settings.DEV_COMMANDS[params[1]]
+	if escape == nil then return true end            -- not a dev command
+	if Settings.DeveloperOn() then return true end
+	if escape == false then return false end         -- nothing to stop
+	local arg = string.lower( tostring( params[2] or "" ) )
+	-- "0" as well as "off", because a panel that steps a bot count down sends
+	-- the number rather than the word.
+	return arg == escape or ( params[1] == "/crowd" and arg == "0" )
+end
+
+-- MAY PEOPLE BUILD ON THE CITY ITSELF -- the roads, the plaza, the decking?
+--
+-- ASKED FOR: "add a settings that alows for the city to be modified too.
+-- because in the stream. the host allowed to modify the plaza. and the road."
+--
+-- Off by default, because the default is a plot event and the whole reason a
+-- plot event works is that the ground between the plots is not anybody's to
+-- change. On, the city becomes ordinary buildable ground.
+--
+-- WHAT IT COSTS, said plainly because it is a real loss and not a detail. The
+-- roads and the plaza are the only ground this mod can be SURE is litter: a
+-- craftbot on a road is rubbish precisely because nothing legitimate can be
+-- built there. Switch that on and the mod can no longer tell a dropped craftbot
+-- from somebody's sculpture, so shared ground stops being sweepable-by-anyone
+-- and behaves like an unclaimed plot instead -- open while building is open,
+-- locked when it is not. Junk dropped on a road during prep is then the host's
+-- to clear with the Cleaner or /purge.
+--
+-- That is the same trade the strict lockdown already makes, and it is the
+-- honest one: you cannot have "anyone may clear anything here" and "anyone may
+-- build anything here" about the same square of ground.
+function Settings.CityIsOpen()
+	return Settings.Get( "citybuild" ) == true
+end
+
+-- WHO CAN JOIN THIS WORLD -- read out of the GAME's settings, not ours.
+--
+-- `Multiplayer` is a real key in Scrap Mechanic's own settings table. MEASURED:
+-- it sits directly beside `PhysicsQuality` in the executable's string run of
+-- setting names, with its five option labels around it
+-- (MENU_OPTIONS_GAMEPLAY_MULTIPLAYER_{PRIVATE,INVITE_ONLY,FRIENDS,
+-- FRIENDS_OF_FRIENDS,PUBLIC}). So sm.game.getSettingValue can read it, exactly
+-- the way /protection already reads PhysicsQuality.
+--
+-- WHY THE MOD CARES. Reported from Dr Pixel Plays' 40-player survival stream:
+-- on Public, joining stopped working after about six players, and the whole
+-- event had to move to invite-only with invites sent one at a time. A host who
+-- cannot see which mode they are in cannot tell "nobody else can join" from
+-- "nobody else is trying".
+--
+-- THE ORDER IS NOW EVIDENCE, NOT A GUESS -- though not yet complete.
+--
+--   2 = Friends              CONFIRMED in game, 2026-09-01, through the bridge:
+--                            the host's world read `Multiplayer = 2` while the
+--                            setting was Friends.
+--   0 = Private              consistent with the logs: setting it to 0 with two
+--                            people connected evicted BOTH one tick later, so 0
+--                            is the most restrictive value there is.
+--   3 = Friends of friends   consistent: a non-friend who had been refused
+--                            seven times connected on the next attempt after
+--                            the host moved to 3.
+--   1, 4                     unconfirmed, and they are the only two left in an
+--                            ordered list of five, so this is effectively
+--                            settled rather than assumed.
+--
+-- The raw value is still printed beside the label, because two of five have not
+-- been seen and a readout that hid the number could be quietly wrong about
+-- them.
+Settings.JOIN_MODES = {
+	[0] = "Private", [1] = "Invite only", [2] = "Friends",
+	[3] = "Friends of friends", [4] = "Public",
+}
+
+-- Returns ( label, raw ). label is nil when the setting cannot be read at all.
+function Settings.JoinMode()
+	local ok, raw = pcall( sm.game.getSettingValue, "Multiplayer" )
+	if not ok or raw == nil then
+		local okS, str = pcall( sm.game.getSettingString, "Multiplayer" )
+		if okS and str ~= nil and str ~= "" then return tostring( str ), str end
+		return nil, nil
+	end
+	local n = tonumber( raw )
+	local label = ( n ~= nil ) and Settings.JOIN_MODES[n] or nil
+	return label, raw
+end
+
+-- One line a host can read. Names the mode, the raw value behind it, and -- on
+-- the one mode that has been reported to break -- what to do instead.
+function Settings.JoinModeLine()
+	local label, raw = Settings.JoinMode()
+	if label == nil then
+		return "who can join: unreadable (game setting 'Multiplayer')"
+	end
+	local line = string.format( "who can join: %s  (Multiplayer = %s)",
+		label, tostring( raw ) )
+	if label == "Public" then
+		line = line .. "  -- joining has been reported to stall past ~6 people"
+	end
+	return line
+end
+
+-- THE OUTSIDE DOOR IS DERIVED, NEVER WRITTEN -- the same rule as Sv_HazardOff
+-- below, and it is here for the same reason that one exists.
+--
+-- /developer off could have written `bridge = false`, and that is exactly the
+-- mistake V52's lockdown made: it wrote four tool settings false, /unlock had
+-- no idea what it had changed, and one lockdown disabled four tools for good.
+-- Derived instead: developer off shuts the door without touching the host's own
+-- choice, and developer on gives back whatever they had actually chosen.
+function Settings.BridgeOpen()
+	return Settings.Get( "bridge" ) == true and Settings.DeveloperOn()
+end
+
+-- "LOCK down EVERYTHING" -- the owner, 2026-08-31, about a lockdown that only
+-- reached tools and body flags.
+--
+-- Three world hazards are neither. Fire, explosion cratering and unit aggro are
+-- engine switches, not permissions, so a body being unbuildable says nothing
+-- about them: a host who had turned fire on for an event still had a burning
+-- world after typing /lockdown.
+--
+-- DERIVED FROM THE MODE, never written. This is the same rule the tool guard
+-- learned the hard way -- V52's lockdown wrote four settings false and /unlock
+-- could not put them back, so one lockdown disabled four tools for good. A
+-- shut world reads `false` for each of these; unlocking reads the host's own
+-- choice again, because the choice was never overwritten.
+--
+-- Sv_ApplyAll re-runs on every protection change (World.lua, /lockdown), which
+-- is what makes a derived value actually reach the engine.
+function Settings.Sv_HazardOff( v )
+	if Settings.WorldIsShut() then return false end
+	return v == true
+end
+
 
 -- Tools only the host may hold, even when the tool itself is switched on. The
 -- lift is here because it spawns whole saved creations out of thin air: fine for
@@ -195,20 +375,23 @@ Settings.SCHEMA = {
 	-- that walks burning shapes and lights their neighbours. Capping instances
 	-- without stopping the manager would leave spread logic running against a
 	-- zero budget, so our World also declines to tick it (see World.lua).
+	-- All three go through Sv_HazardOff, so a shut world forces them off
+	-- without touching what the host chose. See the note on it.
 	{ key = "fire", kind = "bool", default = false,
 	  help = "let fire exist and spread at all",
 	  apply = function( v )
+		v = Settings.Sv_HazardOff( v )
 		pcall( sm.fire.setFireLimit, v and ( FIRE_INSTANCE_LIMIT or 128 ) or 0 )
 		g_swFireEnabled = v and true or false
 	  end },
 
 	{ key = "terraindamage", kind = "bool", default = false,
 	  help = "let explosions crater the ground",
-	  apply = function( v ) g_swProtectTerrain = not v end },
+	  apply = function( v ) g_swProtectTerrain = not Settings.Sv_HazardOff( v ) end },
 
 	{ key = "aggro", kind = "bool", default = false,
 	  help = "let tapebots and other units attack",
-	  apply = function( v ) pcall( sm.game.setEnableAggro, v ) end },
+	  apply = function( v ) pcall( sm.game.setEnableAggro, Settings.Sv_HazardOff( v ) ) end },
 
 	-- BUILD TOOLS DEFAULT ON. All of them. They are how people build, and
 	-- switching them off to stop griefing punishes the 99 players who are not
@@ -245,6 +428,37 @@ Settings.SCHEMA = {
 	  help = "allow the Server Works cleaner (deletes anything you point at)" },
 	{ key = "hostcleaner", kind = "bool", default = true,
 	  help = "only the host may use the cleaner -- leave this on" },
+
+	-- THE HOST'S BUBBLE. "I should be able to build and delete stuff anywhere."
+	--
+	-- Body permission flags are per-BODY -- there is no setBuildableBy( player )
+	-- and dev/dump_api.py confirms it, 39 Body bindings and not one of them
+	-- takes a player. So "everyone is locked out, the host is not" cannot be
+	-- expressed as a flag, and the only lever the engine leaves is the one the
+	-- plot system already runs on: PRESENCE.
+	--
+	-- So a locked world unlocks the small piece of itself the host is standing
+	-- in, and locks it again the moment they walk away. See
+	-- Plots.sv_hostReaches for the radius and the guard.
+	-- OFF BY DEFAULT, and the default is the whole point.
+	--
+	-- REPORTED, after V60 shipped it on: "even on lock down. I still can build
+	-- everything and delete everything. and I mean the lockdown feature."
+	--
+	-- Both halves of that are true and they are the same fact. The bubble
+	-- follows the host, so from the host's own screen -- the only screen there
+	-- is, on a server with nobody else on it -- a lockdown looks exactly like a
+	-- lockdown that did nothing. There is no way to tell them apart by playing,
+	-- which is the failure this project keeps paying for: a panel that closes on
+	-- every click cannot be told from a broken one.
+	--
+	-- So /lockdown is TOTAL again, host included, and the exemption is a
+	-- deliberate press on the PROTECTION panel rather than a thing that is
+	-- quietly always on. You get the lockdown you can verify, and the freedom to
+	-- fix things, in that order and never by accident.
+	{ key = "hostbuild", kind = "bool", default = false,
+	  help = "let the host build where they stand during a lockdown -- off by "
+	      .. "default, so a lockdown is a lockdown until you say otherwise" },
 
 	-- THE FOCUS TOOL. Point at a player and everybody sees a marker over them,
 	-- for showing off one person's build mid-event. It creates nothing and
@@ -292,6 +506,9 @@ Settings.SCHEMA = {
 	  help = "biggest creation NOTlift will import, in parts (0 = no limit)" },
 
 	{ key = "plots", kind = "bool", default = false, help = "restrict building to owned plots" },
+	-- See Settings.CityIsOpen for what this costs as well as what it gives.
+	{ key = "citybuild", kind = "bool", default = false,
+	  help = "let people build on the roads, the plaza and the decking" },
 	{ key = "pushintruders", kind = "bool", default = true,
 	  help = "shove players off plots they do not own" },
 
@@ -378,6 +595,12 @@ Settings.SCHEMA = {
 	-- the door list IS the trust boundary -- see docs/MODS-AND-TRUST.md.
 	{ key = "bridge", kind = "bool", default = false,
 	  help = "let this world be driven from outside the game (dev only)" },
+	-- DEVELOPER MODE, off by default. See Settings.DeveloperOn for what it
+	-- gates and why it is not simply a matter of tidiness. /developer on|off is
+	-- the same switch with a shorter name, because it is reached for in the
+	-- middle of a test session rather than while reading a settings page.
+	{ key = "developer", kind = "bool", default = false,
+	  help = "show the dev tools: crowd, benchmark, outside control, checklist" },
 	{ key = "autosave", kind = "number", default = 10,
 	  help = "minutes between automatic snapshots, 0 for off" },
 
@@ -472,6 +695,17 @@ Settings.MIGRATIONS = {
 	-- changed DEFAULT never reaches a key that is already present. Without this,
 	-- "limit the lift to the host" would have quietly done nothing on the only
 	-- machine that matters.
+	-- V60 shipped the host's bubble ON, and V62 turns it off. The default change
+	-- reaches a new host and nobody who has already played -- and this owner has,
+	-- with `hostbuild = true` sitting in their Settings.json since the build that
+	-- produced the report. Without this the fix would land everywhere except the
+	-- one machine it was written for.
+	--
+	-- REPORTED: "even on lock down. I still can build everything and delete
+	-- everything. and I mean the lockdown feature."
+	{ key = "hostbuild_off_by_default_v62", run = function( values )
+		values.hostbuild = false
+	end },
 	{ key = "lift_host_only_v55", run = function( values )
 		values.hostlift = true
 		values.lift = true
@@ -622,9 +856,37 @@ end
 -- Write a value without running its apply hook or announcing it. Used for
 -- bookkeeping values like the current protection mode, which are a consequence
 -- of a command rather than a setting the host typed.
+-- Keys whose applied value is DERIVED from the protection mode rather than read
+-- straight out of the file. See Sv_HazardOff.
+local DERIVED_FROM_MODE = { "fire", "terraindamage", "aggro" }
+
+-- Re-apply just those three. Six places write the protection mode -- /lockdown,
+-- /unlock, the grief alarm twice, the event clock and the new-world reset -- and
+-- a derived value that nothing re-applies is a value that never changed. Hooking
+-- the write itself is the only version of this that cannot be forgotten at a
+-- seventh call site.
+--
+-- Silent about failure by design: Game.lua writes this key too and a Game script
+-- has no world, so sm.fire.setFireLimit throws there. The world re-applies
+-- everything at load and on its own /lockdown path, so a miss here is corrected
+-- rather than lost -- and logging it per phase change would be noise in the one
+-- file this project has already lost 1.79 GB to.
+function Settings.Sv_ApplyHazards()
+	for _, key in ipairs( DERIVED_FROM_MODE ) do
+		for _, row in ipairs( Settings.SCHEMA ) do
+			if row.key == key and row.apply then
+				pcall( row.apply, Settings.values[key] )
+			end
+		end
+	end
+end
+
 function Settings.Sv_SetQuiet( key, value )
 	Settings.values[key] = value
 	Settings.Sv_Save()
+	if key == "protection" then
+		Settings.Sv_ApplyHazards()
+	end
 end
 
 
@@ -635,17 +897,66 @@ end
 -- anything not mentioned keeps its current value, so a host's own tuning is not
 -- silently thrown away.
 Settings.PRESETS = {
+	-- BUILD IS THE ONE PRESET THAT HAS TO BE COMPLETE, because it is the one a
+	-- host presses with a lobby already in the world. Anything it does not name
+	-- keeps whatever the host last set it to, and "whatever it was last time" is
+	-- not a safety position.
+	--
+	-- ASKED FOR: "the building preset shall disable explosives. clay gun, fires.
+	-- damage. and other stuff we talked about."
+	--
+	-- `destructible` was the hole. Its help reads "let explosives and the
+	-- sledgehammer actually break builds" -- it is the DAMAGE switch -- and the
+	-- preset never mentioned it, so a host who had turned it on for a themed
+	-- round kept working explosives through the next build event. It was on in
+	-- this owner's live settings when this was written.
 	build = {
 		label = "BUILD -- an event in progress",
 		values = {
 			buildopen = true, plots = true, pushintruders = true,
 			protection = "open",
+
+			-- NOTHING MAY DAMAGE ANYTHING. Fire, cratering and aggro are engine
+			-- switches; destructible is the one that decides whether a build can
+			-- be broken at all.
 			fire = false, terraindamage = false, aggro = false,
+			destructible = false, cleanupdebris = true,
+
+			-- The hazard tools, off for everybody including the host.
 			claygun = false, firelauncher = false, extinguisher = false,
-			cornades = false, beacons = false, fireworks = false,
+			cornades = false,
+
+			-- Rules 4, 5, 7, 11 and 12 -- the noise and nuisance board.
+			beacons = false, fireworks = false,
 			plasmadrills = false, radios = false, horns = false,
+
+			-- What people actually build with.
 			sledgehammer = true, spudguns = true, glowsticks = true,
 			painttool = true, connecttool = true, weldtool = true,
+
+			-- THE THREE POWERFUL TOOLS EXIST AND ARE THE HOST'S. Each changes
+			-- more in one press than anything a guest should hold: the cleaner
+			-- deletes whatever it points at ignoring every permission flag, the
+			-- lift carries whole creations, and NOTlift spawns one out of
+			-- nothing. Leaving these unset meant an event inherited whoever had
+			-- last opened one up.
+			cleaner = true, hostcleaner = true,
+			lift = true, hostlift = true,
+			notlift = true, hostnotlift = true,
+			focus = true,
+
+			-- The rules board, at the numbers /rules prints. Without these the
+			-- board is a lie: /rules reads the live settings, so a limit left at
+			-- 0 makes it announce a rule the server is not enforcing.
+			maxjoints = 10, maxbots = 1, maxlights = 25,
+
+			-- DEVELOPER MODE OFF. A live event is exactly where a stray /crowd
+			-- or /bench does the most harm. `bridge` is deliberately NOT written
+			-- here -- it is derived from this one (see Settings.BridgeOpen), so
+			-- turning developer back on gives the host the channel they chose
+			-- rather than one this preset silently took away.
+			developer = false,
+
 			alarmlock = false, alarmdrop = 400, autosave = 10, autoremove = true,
 		},
 	},
@@ -795,14 +1106,27 @@ function Settings.Sv_HazardTools()
 		end
 	end
 	-- THE HOST IS GUARDED BY THIS LIST AND NOTHING ELSE (see
-	-- Game.sv_toolPayload and the client tick that reads `host`). The host keeps
-	-- every build tool normally -- that bypass is so whoever runs the event can
-	-- place and clear things -- but a LOCKED world is the one case where it has
-	-- to stop applying, or /lockdown stops the lobby and not the person who
-	-- called it. REPORTED: "I still could use the lift, and the clay gun."
-	for uuid, name in pairs( Settings.Sv_LockdownTools() ) do
-		blocked[uuid] = name
-	end
+	-- Game.sv_toolPayload and the client tick that reads `host`), and a lockdown
+	-- deliberately does NOT add to it.
+	--
+	-- THIS IS A REVERSAL, and it is the owner's call, 2026-08-31: "I should be
+	-- able to build and delete stuff anywhere. and place lift."
+	--
+	-- V53 folded Sv_LockdownTools() in here, so /lockdown took every tool off
+	-- the host too. The reasoning was "or /lockdown stops the lobby and not the
+	-- person who called it" -- which answered a report ("I still could use the
+	-- lift, and the clay gun") that was really about GUESTS keeping tools. The
+	-- guest half is Sv_BlockedTools and it still carries the whole lockdown.
+	--
+	-- It also broke the lift specifically, in the exact way the check right
+	-- beside this one already warned about: a tool in the hazard list is
+	-- force-unequipped on the host's own client every tick, and the blueprint
+	-- menu cannot hand a lift being ripped out of your hands anything. So the
+	-- host running an event could not move a creation during the one mode where
+	-- moving creations is most of what a host does.
+	--
+	-- The host is the person who typed /lockdown. Binding them was never the
+	-- point of it.
 	return blocked
 end
 
