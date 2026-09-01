@@ -29,9 +29,36 @@ half-succeed. That is a different and much stronger promise than /restore makes.
   python dev/backup_world.py --all                  back up every world
   python dev/backup_world.py --restore <file.db>    put one back
   python dev/backup_world.py --watch                back up automatically, forever
+  python dev/backup_world.py --snapshots            copy /snapshot files out of
+                                                    the mod folder, nothing else
 
 Backups land in  Save/ServerWorks-Backups/<world>-<date>_<time>.db
 so they sit beside the worlds they came from and are obvious in a file browser.
+
+AND THE MOD'S OWN SNAPSHOTS ARE COPIED OUT OF THE MOD, every time this runs.
+
+ASKED FOR: "make sure the SAVE backups are mod independend because if it isnt.
+if my mode gets something wrong a lot of backups could be at risk."
+
+Exactly right, and it is worse than it sounds. `/snapshot` writes into
+$CONTENT_DATA/Snapshots/ -- inside the mod's own folder -- because the Lua
+sandbox has no filesystem outside $CONTENT_*, so there is nowhere else it can
+put them. That means every snapshot a host has ever taken is one of these away
+from gone:
+
+  * a Workshop update. Subscribed mods are replaced WHOLESALE on update, which
+    is already written down about the ban list for the same reason
+  * unsubscribing, or verifying the game's files
+  * anything that goes wrong inside the mod's own snapshot code
+
+So the mod cannot make its snapshots safe and no amount of Lua will change that.
+This can: it mirrors them into Save/ServerWorks-Backups/Snapshots/, beside the
+world backups, which is outside the mod folder and survives all three. It COPIES
+-- the mod goes on working from its own folder and /snapshots still lists them.
+
+The mirror is additive and never deletes: a snapshot that disappears from the
+mod folder stays in the mirror, because "the mod lost it" is precisely the case
+this exists for.
 
 BACKUPS ARE UNCONDITIONAL. An earlier version refused while the game was
 running, on the grounds that a plain file copy of a live SQLite database can
@@ -81,6 +108,49 @@ def save_dir():
     if not d.is_dir():
         sys.exit(f"no Save directory at {d}")
     return d
+
+
+def mod_dir():
+    """The installed copy of this mod, or None. Found rather than configured:
+    the folder is named after the mod, and looking it up beats a path that goes
+    stale on the one machine nobody would think to check."""
+    d = user_dir() / "Mods" / "Server Works"
+    return d if d.is_dir() else None
+
+
+def mirror_snapshots(quiet=False):
+    """Copy the mod's /snapshot files somewhere the mod cannot take them.
+
+    Additive by design -- see the module docstring. Compares size and mtime
+    rather than hashing, because these are 300 KB json files written once and
+    never edited, and a hash of every one on every game exit would make --watch
+    cost real time for no additional truth.
+    """
+    mod = mod_dir()
+    if mod is None:
+        return 0, 0
+    src = mod / "Snapshots"
+    if not src.is_dir():
+        return 0, 0
+
+    dst = save_dir() / BACKUP_DIR / "Snapshots"
+    dst.mkdir(parents=True, exist_ok=True)
+    copied, total = 0, 0
+    for f in sorted(src.glob("*.json")):
+        target = dst / f.name
+        if target.is_file():
+            st, tt = f.stat(), target.stat()
+            if st.st_size == tt.st_size and int(st.st_mtime) <= int(tt.st_mtime):
+                continue
+        shutil.copy2(f, target)
+        copied += 1
+        total += target.stat().st_size
+    if copied and not quiet:
+        print(f"  snapshots  {copied} new/changed  ->  {dst}  ({human(total)})")
+    elif not quiet:
+        n = len(list(dst.glob("*.json")))
+        print(f"  snapshots  up to date ({n} mirrored in {dst})")
+    return copied, total
 
 
 def game_is_running():
@@ -205,6 +275,9 @@ def do_backup(which, every, force):
         print(f"  backed up  {src.stem}  ->  {dst.name}  "
               f"({human(dst.stat().st_size)}, {how})")
     print(f"\n{len(chosen)} world(s), {human(total)} into {bdir}")
+    # The mod's own snapshots live inside the mod folder and cannot be made safe
+    # from in there. Every backup run takes them out with it.
+    mirror_snapshots()
 
 
 def do_restore(path, force):
@@ -263,7 +336,8 @@ def do_watch(keep, interval):
     would produce backups that look fine and are not.
     """
     print("watching. Play normally; every time you quit Scrap Mechanic, any")
-    print(f"world you touched is copied into Save/{BACKUP_DIR}/.")
+    print(f"world you touched is copied into Save/{BACKUP_DIR}/, and the mod's")
+    print("own /snapshot files are copied out of the mod folder with it.")
     print(f"keeping the newest {keep} per world. Ctrl+C to stop.")
     print()
 
@@ -326,6 +400,12 @@ def do_watch(keep, interval):
             print(f"[{datetime.datetime.now():%H:%M:%S}] backed up {src.stem} "
                   f"-> {dst.name} ({human(dst.stat().st_size)}, {how})")
             prune(bdir, safe, keep)
+        # The same closing edge is the right moment for the mod's snapshots: the
+        # game has finished writing them and nothing has the folder open.
+        copied, _ = mirror_snapshots(quiet=True)
+        if copied:
+            print(f"[{datetime.datetime.now():%H:%M:%S}] mirrored {copied} "
+                  f"mod snapshot(s) out of the mod folder")
 
 
 def prune(bdir, safe, keep):
@@ -350,6 +430,9 @@ def main():
     ap.add_argument("--restore", help="put a backup back (name or full path)")
     ap.add_argument("--watch", action="store_true",
                     help="stay running and back up every time the game closes")
+    ap.add_argument("--snapshots", action="store_true",
+                    help="only mirror the mod's /snapshot files out of the mod "
+                         "folder, and do nothing to the worlds")
     ap.add_argument("--keep", type=int, default=10,
                     help="how many backups to keep per world when watching")
     ap.add_argument("--force", action="store_true",
@@ -359,6 +442,10 @@ def main():
 
     if a.list:
         do_list()
+    elif a.snapshots:
+        copied, total = mirror_snapshots()
+        if copied == 0 and total == 0 and mod_dir() is None:
+            print("the mod is not installed, so there are no snapshots to mirror")
     elif a.watch:
         do_watch(max(1, a.keep), 5)
     elif a.restore:

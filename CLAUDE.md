@@ -2607,7 +2607,12 @@ credit it with fixing the thing that actually degraded.
                                 real whole-world backup -- a /snapshot is
                                 buildings plus plot ownership and nothing else.
                                 --watch backs up every time the game closes,
-                                which is the only moment a SQLite copy is whole
+                                which is the only moment a SQLite copy is whole.
+                                It ALSO mirrors the mod's own Snapshots/ out of
+                                the mod folder: /snapshot has to write inside
+                                $CONTENT_DATA, and a Workshop update replaces a
+                                mod wholesale, so snapshots left in there are one
+                                update from gone. Copies, never moves
     dev/session_stats.py        tick/FPS reconstruction from any game log,
                                 plus the per-client network budget skips
     dev/bench_report.py         the table /bench wrote, out of Bench.json
