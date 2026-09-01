@@ -2613,6 +2613,12 @@ credit it with fixing the thing that actually degraded.
     dev/bench_report.py         the table /bench wrote, out of Bench.json
     dev/bridge.py               send commands into a running world, read what
                                 it said back. Needs /bridge on in the game
+    dev/publish_prep.py         moves the host's OWN state out of the mod folder
+                                before publishing. Publishing uploads the whole
+                                folder, and that folder is where this mod keeps
+                                Settings/Plots/Players/Snapshots -- 22.8 MB
+                                against 1.5 MB of actual mod. It MOVES, never
+                                deletes; --restore puts it all back
     dev/checklist_report.py     what /check recorded, out of Checklist.json --
                                 the failures, the notes and what is still untried
     dev/dump_api.py             per-module Lua bindings out of the executable

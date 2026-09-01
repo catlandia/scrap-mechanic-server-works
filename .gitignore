@@ -25,3 +25,6 @@ mod/Out-*.json
 # Steam gallery images, rebuilt from Steam screenshots by dev/steam_images.py.
 # picked.json is the CHOICE and is worth keeping -- the pngs are output.
 dev/steam/*.png
+
+# the host's own mod state, moved aside by dev/publish_prep.py
+dev/modstate/
