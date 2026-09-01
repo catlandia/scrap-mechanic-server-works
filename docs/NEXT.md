@@ -19,7 +19,33 @@ before playing, and **restart Scrap Mechanic** — scripts are read at world loa
 
 ---
 
-## WHERE THIS LEFT OFF -- read this first
+## THE ONE THING THAT MATTERS RIGHT NOW
+
+**Publishing is BLOCKED, and it is not our bug.**
+Read [`PUBLISHING-BLOCKED.md`](PUBLISHING-BLOCKED.md) before doing anything else.
+
+Scrap Mechanic's own `ContentCompiler.exe` crashes with an access violation
+every time the Mod Tool tries to build the mod cache -- one second into
+`Generating Prefab Icons`, at `FrameRenderTargets::createOrResize`. Ten runs,
+two different mods, always the same line.
+
+**A different Custom Game that is already published on the Workshop crashes
+identically**, which is the measurement that proves it is nothing to do with
+Server Works. Six theories were tested and killed: memory, our mod, missing
+materials, stale caches, corrupt game files (28 reacquired), and the GPU driver
+(updated mid-session). The only thing that changed between the tool working in
+June and failing now is the **2026-08-03 game update**, and the compiler ships
+with the game.
+
+**Next step is a bug report to Axolot.** There is nothing left on this machine
+to change, and no amount of work in `mod/` can affect it.
+
+Everything else is done: V80, 230 checks, committed and pushed, the mod folder
+prepped, the description and images finished.
+
+---
+
+## WHERE THE MOD ITSELF LEFT OFF
 
 **The mod is finished enough to publish and has never been published.** That is
 the single outstanding action and it is one nobody but the owner can do.

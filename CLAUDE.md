@@ -2744,6 +2744,31 @@ to be wrong:
 
 Every one of those is guarded with `pcall` and logs once rather than per tick.
 
+### PUBLISHING IS BLOCKED BY AXOLOT'S COMPILER, NOT BY US
+
+`ContentCompiler.exe` access-violates one second into `Generating Prefab Icons`,
+at `FrameRenderTargets::createOrResize Main from: 0x0 to: 1280x720`. Ten runs,
+two mods, always the same line.
+
+**The control is what settles it: `Dimension Mechanic`, a different Custom Game
+already published to the Workshop, crashes identically four times.** So nothing
+in `mod/` can be the cause and nothing in `mod/` can fix it.
+
+Killed by measurement, so nobody re-tests them: memory (crashed with 6,424 MB
+free), missing materials (two runs had zero and still crashed), stale cache
+bundles (rebuilt byte-identical), corrupt game files (Steam reacquired 28, no
+change), the GPU driver (updated mid-session), and our own content.
+
+Starving it proved where it lives: parking `Survival/LocalPrefabs` made
+`Generating Prefab Icons` vanish from the log and moved the crash to
+`Generating Blueprint Icons`. **It is the offscreen icon renderer**, not any
+particular content.
+
+The whole investigation, and what to try next, is in
+[`docs/PUBLISHING-BLOCKED.md`](docs/PUBLISHING-BLOCKED.md).
+`dev/restore_prefabs.py --park` is the probe; **it moves game content and must
+be reversed** with the same script.
+
 ## Where to start reading
 
 **[`docs/NEXT.md`](docs/NEXT.md) is the handover** — what is done, what has never

@@ -7,6 +7,11 @@ survive between events.
 Built after a griefer wrecked builds two minutes before the end of a public stream
 event on 2026-08-22.
 
+> **Publishing is currently blocked by a bug in Scrap Mechanic's own
+> `ContentCompiler.exe`, not by this mod.** See
+> [`docs/PUBLISHING-BLOCKED.md`](docs/PUBLISHING-BLOCKED.md) -- a different
+> Custom Game that is already on the Workshop crashes the same way.
+
 **Made with AI.** The code here was written with
 [Claude Code](https://claude.com/claude-code), Anthropic's AI coding tool,
 directed and tested by one person. It is said on the Workshop page too, in the
