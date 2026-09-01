@@ -567,6 +567,23 @@ function Plots.sv_pushOut( self, player, z, tick )
 	if player == sm.player.getHostPlayer() then
 		return
 	end
+	-- NOBODY IS AN INTRUDER ON LAND NOBODY OWNS, and this became load-bearing
+	-- the moment unclaimed plots stopped being buildable.
+	--
+	-- sv_authorised returns an empty set for an unclaimed plot, so the walk that
+	-- calls this counted everyone standing on one as unauthorised and shoved
+	-- them off. That was already wrong -- you claim the plot you are STANDING on,
+	-- so the one square a new arrival has to be able to stand still on was the
+	-- one square that threw them off it -- and it only stayed survivable because
+	-- PUSH_COOLDOWN_TICKS left a window to get the command out.
+	--
+	-- The zone still reads locked while somebody unauthorised is on it, which is
+	-- what stops them building. Being unable to build is the rule; being thrown
+	-- across the city is what protecting somebody's work costs, and there is no
+	-- work here to protect.
+	if self.owners[z.index] == nil then
+		return
+	end
 	local last = self.lastPush[player.id]
 	if last and tick - last < Plots.PUSH_COOLDOWN_TICKS then
 		return
@@ -680,11 +697,9 @@ function Plots.sv_zoneVerdict( self, body, z )
 	-- meant standing on the road beside somebody's work and reaching over it, and
 	-- the owner did not even have to be online.
 	--
-	-- Claimed and empty is locked. Unclaimed and empty stays open: there is
-	-- nothing there to protect and the host needs to be able to place things.
 	local allowed = self:sv_authorised( z )
 	if next( allowed ) == nil then
-		return true
+		return self:sv_freeGroundVerdict( body )
 	end
 
 	-- ...unless somebody it belongs to is standing on their own land nearby. An
@@ -692,6 +707,50 @@ function Plots.sv_zoneVerdict( self, body, z )
 	-- the time, and locking their plot the moment they do would be unusable.
 	return self.zoneHeld[zk] == true
 end
+
+-- AN UNCLAIMED PLOT IS NOT YOURS EITHER.
+--
+-- ASKED FOR: "you should only be able to build on plot that is owned. since we
+-- cant lock plot building so its only yours this is a partly good fix."
+--
+-- Exactly the right reading of the constraint. Body flags are per-BODY, so
+-- "only the owner may build here" is not sayable; what IS sayable is "nobody
+-- may build here until somebody owns it", and that closes the larger half of
+-- the hole. Before this, every unclaimed square in the city was open to
+-- everyone, so the honest description of plot protection was "you may build
+-- anywhere except on land somebody has already claimed" -- which is nearly the
+-- opposite of what it sounds like.
+--
+-- Once nothing legitimate can be built on an unclaimed plot, an unclaimed plot
+-- is a road: anything standing on it is litter, and anyone may clear it. That
+-- is the same reasoning as sv_zoneVerdict's shared ground, and it matters,
+-- because the alternative -- locking it -- makes junk dumped across a few
+-- hundred empty plots permanent. See "Litter must never become permanent".
+--
+-- THE ONE EXCEPTION IS THE FLOOR. `sweep` is erasable, and a plot slab is not
+-- protected by sv_isScenery the way the decking is (a slab has concrete in it,
+-- and sv_isScenery demands metal throughout). So a flat "sweep" here would hand
+-- every free plot floor in the city to anyone with a remove tool. The slab is
+-- never litter, so it locks, and only what is standing on it sweeps.
+--
+-- The host is not shut out: they are authorised everywhere in the occupancy
+-- walk, so standing on a free plot opens it under the zoneOpen test above --
+-- which is checked BEFORE this. What they build there is only as protected as
+-- the ground it stands on, though, so building something meant to last on free
+-- ground means claiming it first. The renovation switch is the wholesale
+-- version of the same permission.
+function Plots.sv_freeGroundVerdict( self, body )
+	-- Renovation: the host has opened everything nobody owns. Claimed plots are
+	-- still their owners' -- this opens the UNOWNED city, never someone's work.
+	if Settings and Settings.CityIsOpen and Settings.CityIsOpen() then
+		return true
+	end
+	if self:sv_isGround( body ) then
+		return false
+	end
+	return "sweep"
+end
+
 
 -- THE DEADLOCK, AND WHY IT WAS ONE.
 --
@@ -791,6 +850,51 @@ function Plots.sv_adjacent( self, a, b )
 		return Layout.fillerBetween( self.layout.rows, math.min( ra, rb ) ) ~= nil
 	end
 	return false
+end
+
+-- The four plots a team could be made with, and what stands in the way of each.
+--
+-- THE FEATURE WAS FINISHED AND UNREACHABLE, which is the part worth recording.
+-- sv_adjacent, sv_request and the shared-filler rule have all been here for
+-- versions; the only way to use any of it was to type /plot team <name>, and
+-- since V77 a guest may type exactly one command and it is /menu. So teaming
+-- existed, was correct, and could not be done by the people it is for.
+--
+-- Every reason a neighbour cannot be teamed with is reported rather than
+-- filtered out. "Why can I not team with them" is the question this answers,
+-- and a row that is simply absent answers it worse than a greyed one -- it is
+-- the same reason the CLAIM button says why it is grey instead of vanishing.
+--
+-- Diagonals are not in `around` at all. They are not teamable by a rule that
+-- has nothing to do with distance: teaming hands over the SEAM between two
+-- plots, and diagonal plots share a corner, not a seam. sv_whyNotNeighbours
+-- says so in words for anyone who types it.
+function Plots.sv_neighbours( self, index )
+	local out = {}
+	if index == nil then return out end
+	local col, row = Layout.plotColRow( self.layout, index )
+	if col == nil then return out end
+
+	local around = { { col - 1, row }, { col + 1, row },
+	                 { col, row - 1 }, { col, row + 1 } }
+	for _, cr in ipairs( around ) do
+		local other = Layout.plotIndex( self.layout, cr[1], cr[2] )
+		if other ~= nil and Layout.plotExists( self.layout, other ) then
+			out[#out + 1] = {
+				index = other,
+				owner = self.owners[other],
+				-- adjacent is the real test: orthogonal AND with a filler seam
+				-- between them. A road or the plaza band means there is no
+				-- shared block to hand over, so there is nothing to team.
+				adjacent = self:sv_adjacent( index, other ) == true,
+				teamed = self:sv_teamed( index, other ) == true,
+				asked = ( self.requests[index] or {} )[other] == true,
+				invited = ( self.requests[other] or {} )[index] == true,
+			}
+		end
+	end
+	table.sort( out, function( a, b ) return a.index < b.index end )
+	return out
 end
 
 function Plots.sv_request( self, fromPerma, toPerma )

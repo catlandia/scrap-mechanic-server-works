@@ -356,8 +356,8 @@ Two smaller things in the same panel, both genuinely cosmetic:
 
 ### Mod state is GLOBAL to the mod, not per world
 
-`Settings.json`, `Plots.json`, `Event.json`, `Players.json` and `Snapshots/` all
-live in `$CONTENT_DATA` — **one folder shared by every world ever created from
+`Settings.json`, `Plots.json`, `Event.json`, `Players.json`, `Presets.json` and
+`Snapshots/` all live in `$CONTENT_DATA` — **one folder shared by every world ever created from
 this mod** — and nothing here uses per-world storage at all.
 
 So a brand new world inherited the previous world's protection mode, `buildopen`
@@ -1449,12 +1449,76 @@ that requires:
 - **empty and claimed** → **LOCKED.** It used to stay open — "so owners are not
   locked out of empty plots" — which meant standing on the road beside somebody
   else's work and reaching over it, with the owner not even online.
-- **empty and unclaimed** → open. Nothing to protect, and the host needs it.
+- **empty and unclaimed** → **`sweep` for anything standing on it, LOCKED for
+  the slab itself.** See below; this used to be "open", and that was the larger
+  half of the hole.
 
 `zoneHeld` stops the new rule locking somebody out of their own plot: an
 authorised player standing anywhere on their team's land holds that whole team's
 ground open, so stepping onto the one-block seam at the edge of your plot while
 building does not lock the plot behind you.
+
+### UNCLAIMED GROUND IS OPEN TO NOBODY, and that is the other half of ownership
+
+REPORTED: *"you should only be able to build on plot that is owned. since we
+cant lock plot building so its only yours this is a partly good fix."*
+
+Exactly the right reading of the constraint. Flags are per-body, so "only the
+owner may build here" is not sayable; **"nobody may build here until somebody
+owns it" is**, and that half was simply not being used. An unclaimed plot
+returned `true`, so the honest description of the old rule was *you may build
+anywhere except on ground somebody has already claimed* — very nearly the
+opposite of what plot ownership sounds like.
+
+`Plots.sv_freeGroundVerdict`, and it is three answers rather than one:
+
+| body | verdict | why |
+|---|---|---|
+| anything standing on a free plot | **`sweep`** | nothing legitimate can be built there, so it is litter and anyone may clear it. Locking instead makes junk dumped across a few hundred empty squares permanent |
+| the plot **floor** | **locked** | `sweep` is erasable and `sv_isScenery` does **not** cover a plot slab — it demands metal throughout and a slab has concrete in it. A flat sweep would hand every free plot floor in the city to a remove tool |
+| either, with `citybuild` on | **open** | the renovation switch, which opens the UNOWNED city and never somebody's claimed work |
+
+Once nothing legitimate can be on unclaimed ground, **an unclaimed plot is a
+road**, and the road rule already existed. That is why the answer is `sweep`
+rather than something new.
+
+**And nobody is an intruder on land nobody owns.** `sv_authorised` returns an
+empty set for an unclaimed plot, so the occupancy walk counted everyone standing
+on one as unauthorised and shoved them off. That was already wrong — you claim
+the plot you are STANDING on — and it only stayed survivable because
+`PUSH_COOLDOWN_TICKS` left a window to get the command out. Paired with "and you
+cannot build here either" it would have been unusable. `sv_pushOut` returns early
+on unclaimed ground; the zone still reads locked while somebody unauthorised
+stands there, which is the part that actually stops them building.
+
+The host is not shut out: they are authorised everywhere in the occupancy walk,
+so standing on a free plot opens it. What they build there is only as protected
+as the ground under it, though — building something meant to last on free ground
+means claiming it first.
+
+### Teaming was finished, correct, and unreachable for four versions
+
+Every rule the owner asked for — *"if your neighbour. that is directly next to
+your plot ... if not accros the road. you can team with them"* — was already in
+`Plots.lua`. `sv_adjacent` refuses diagonals and refuses anything with a road
+between, and it does the second by asking the layout for a **filler seam**
+rather than by index arithmetic, so "not across a road" falls out of "there is a
+block to hand over" instead of being a second rule to keep in step.
+
+**The only way to reach it was `/plot team <name>`, and since V77 a guest may
+type exactly one command: `/menu`.** So the feature existed, was correct, and
+could not be performed by the people it is for. The panel even *described* it —
+"both of you run it" — an instruction to type, shown to somebody who may not.
+
+The general shape, and it is worth more than the fix: **when a capability is
+taken away wholesale, every feature whose only door was that capability becomes
+dead without any of them changing.** Nothing about teaming broke; the way in
+did. `dev/test_logic.py:the_team_screen_is_reachable_without_typing` is the
+standing guard, and it checks the PANEL route specifically.
+
+`Plots.sv_neighbours` is the list the screen is built from, and it reports every
+refusal rather than filtering it out — a row that is simply absent answers *why
+can I not team with them* worse than a greyed one does.
 
 ### Our own materials are ordinary blocks — only HEIGHT AND PLACE tell them apart
 
@@ -2490,7 +2554,10 @@ credit it with fixing the thing that actually degraded.
     mod/Scripts/EventHud.lua    top-right timer + handover to the warehouse timer
     mod/Scripts/RosterHud.lua   top-left: who is online, and how many residents
     mod/Scripts/StyleGui.lua    what the city is made of: block list + paint palette
-    mod/Scripts/MyPlotGui.lua   the panel players use: claim, find, team, leave
+    mod/Scripts/PresetGui.lua   the host's own named presets. Enter is the save --
+                                a Button cannot read an EditBox
+    mod/Scripts/MyPlotGui.lua   the panel players use: claim, find, leave -- and
+                                TEAM UP, which is the only route a guest has
     mod/Scripts/FocusGui.lua    who the lobby should be looking at: search + list
     mod/Scripts/ProtectionGui.lua  the panic button, and what /protection printed
     mod/Scripts/BackupsGui.lua  save the world, list saves, put one back
@@ -2534,7 +2601,7 @@ credit it with fixing the thing that actually degraded.
     dev/check_lua.py            compiles every mod script through a real Lua parser
     dev/check_uuids.py          every uuid the mod names, against the install
     dev/test_layout.py          runs Layout.lua and proves the city is a partition
-    dev/test_logic.py           runs the mod's rules and panel layouts (222 checks)
+    dev/test_logic.py           runs the mod's rules and panel layouts (229 checks)
     dev/sync_mod.py             repo -> game Mods folder (preserves live BanList.json)
     dev/backup_world.py         copies the game's OWN Save/<world>.db. The only
                                 real whole-world backup -- a /snapshot is

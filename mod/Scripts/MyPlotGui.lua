@@ -61,6 +61,38 @@ local function button( name, caption, x, y, w, h, skin, data )
 	return b
 end
 
+
+-- WHAT ONE NEIGHBOUR ROW SAYS, and whether it offers a button.
+--
+-- Pure and separate from the drawing so the wording can be checked directly.
+-- Every refusal is reported rather than hidden: "why can I not team with them"
+-- is the whole question this screen answers, and a missing row answers it worse
+-- than a greyed one.
+--
+-- Returns ( line, action, tone ). action is nil when there is nothing to press.
+function MyPlotGui.NeighbourRow( n )
+	n = n or {}
+	local who = n.owner and tostring( n.owner ) or nil
+	if not n.adjacent then
+		-- Orthogonal but no shared seam: a road or the plaza runs between them,
+		-- so there is no block to hand over. Nothing to team, ever.
+		return "a road runs between you -- nothing to share", nil, "dim"
+	end
+	if n.teamed then
+		return ( who or "unclaimed" ) .. " -- already on your team", nil, "green"
+	end
+	if who == nil then
+		return "nobody has claimed it yet", nil, "dim"
+	end
+	if n.invited then
+		return who .. " asked you", "accept", "accent"
+	end
+	if n.asked then
+		return "asked " .. who .. " -- waiting for them", nil, "accent"
+	end
+	return who, "ask", "label"
+end
+
 -- state: {
 --   mine        plot index you own, or nil
 --   standing    { index, kind, owner, free } for the ground under your feet
@@ -71,6 +103,9 @@ end
 function MyPlotGui.Build( state )
 	state = state or {}
 	local cfg = state.cfg or {}
+	if state.view == "team" and state.plotsOn ~= false then
+		return MyPlotGui.BuildTeam( state )
+	end
 
 	local root = widget{ Name = "BackPanel", Type = "Widget", Skin = "PanelEmpty",
 		Anchor = "Center", InheritsPick = true, NeedKey = false, NeedMouse = false,
@@ -156,12 +191,15 @@ function MyPlotGui.Build( state )
 	if #mates > 0 then
 		line = table.concat( mates, ",  " )
 	end
-	kids[#kids + 1] = text( "TeamVal", line, PAD, y, colW, 40,
+	kids[#kids + 1] = text( "TeamVal", line, PAD, y, colW, 34,
 		"SM_TextTiny", LABEL, "Left" )
-	y = y + 46
-	kids[#kids + 1] = text( "TeamHelp",
-		"team up with the plot in front, behind, left or right -- both of you run it",
-		PAD, y, colW, 18, "SM_TextTiny", DIM, "Left" )
+	y = y + 40
+	-- THE BUTTON THAT MADE THE FEATURE REACHABLE. What stood here was a line of
+	-- text telling the reader to run a chat command -- which a guest may not do
+	-- at all since V77, when typing was cut back to /menu. So teaming was
+	-- described to exactly the people who could not do it.
+	kids[#kids + 1] = button( "Team", "TEAM UP WITH A NEIGHBOUR", PAD, y, 300, 32,
+		"SecondaryButton", { action = "view", view = "team" } )
 
 	--[[ the map ]]
 	if state.cfg then
@@ -216,6 +254,112 @@ function MyPlotGui.Build( state )
 	end
 	kids[#kids + 1] = text( "Hint", hint, PAD, by - 22, MyPlotGui.W - PAD * 2, 18,
 		"SM_TextTiny", DIM, "Left" )
+
+	return root
+end
+
+--[[ the team view ]]
+
+-- ASKED FOR: "if your neighbour. that is directly next to your plot counts as
+-- front behind left right of you. if not accros the road. you can team with
+-- them and form a team. in your team every body can build on your plots from
+-- the team. and in spaces in between you can now build too. even on the
+-- separation lines."
+--
+-- All of that was already true in Plots.lua -- sv_adjacent refuses diagonals and
+-- refuses anything with a road between, sv_authorised hands the whole team every
+-- plot on it, and a filler seam opens once the two plots either side are teamed.
+-- What did not exist was any way to ASK. This screen is that, and nothing else.
+--
+-- A plot NUMBER on every button, never a name. Same rule as the ban picker: a
+-- display name is a value that may not be typeable at all, and here it does not
+-- even have to be read -- the number is drawn on the map beside this list.
+function MyPlotGui.BuildTeam( state )
+	local cfg = state.cfg or {}
+	local mates = state.team or {}
+	local neighbours = state.neighbours or {}
+
+	local root = widget{ Name = "BackPanel", Type = "Widget", Skin = "PanelEmpty",
+		Anchor = "Center", InheritsPick = true, NeedKey = false, NeedMouse = false,
+		x = 0, y = 0, width = MyPlotGui.W, height = MyPlotGui.H }
+	root.onClose = "cl_onMyPlotClose"
+	local kids = root.Childs
+
+	kids[#kids + 1] = fill( "BG", 0, 0, MyPlotGui.W, MyPlotGui.H, BG, 0.96 )
+	kids[#kids + 1] = fill( "HeaderBand", 0, 0, MyPlotGui.W, 68, PANEL, 0.05 )
+	kids[#kids + 1] = fill( "HeaderRule", 0, 68, MyPlotGui.W, 2, ACCENT, 1 )
+	kids[#kids + 1] = text( "Title", "MY TEAM", PAD, 18, 400, 34,
+		"SM_Header", LABEL, "Left" )
+	kids[#kids + 1] = text( "Sub",
+		state.status or "share your ground, and the strip between the two plots",
+		PAD, 46, 520, 20, "SM_TextTiny", state.status and ACCENT or DIM, "Left" )
+
+	local colW = MyPlotGui.W - PAD * 2 - MAP - 32
+
+	if state.mine == nil then
+		kids[#kids + 1] = text( "NoPlot",
+			"Claim a plot first. A team is made of plots, so you need one to "
+			.. "bring to it.", PAD, 100, colW, 48, "SM_Text", LABEL, "Left" )
+	else
+		--[[ who is on it now ]]
+		kids[#kids + 1] = text( "TeamHead", "ON YOUR TEAM", PAD, 92, 300, 16,
+			"SM_LabelTiny", DIM, "Left" )
+		local line = ( #mates > 0 ) and table.concat( mates, ",  " )
+			or "just you, on plot " .. tostring( state.mine )
+		kids[#kids + 1] = text( "TeamVal", line, PAD, 112, colW, 34,
+			"SM_TextTiny", ( #mates > 0 ) and GREEN or LABEL, "Left" )
+
+		--[[ the four ]]
+		kids[#kids + 1] = text( "NearHead", "PLOTS NEXT TO YOURS", PAD, 158, 340, 16,
+			"SM_LabelTiny", DIM, "Left" )
+
+		local ry = 182
+		if #neighbours == 0 then
+			kids[#kids + 1] = text( "NoneNear",
+				"Nothing borders your plot -- it is on the edge of the city.",
+				PAD, ry + 6, colW, 20, "SM_TextTiny", DIM, "Left" )
+		end
+		for i, n in ipairs( neighbours ) do
+			local y = ry + ( i - 1 ) * 46
+			local said, act, tone = MyPlotGui.NeighbourRow( n )
+			local colour = ( tone == "green" and GREEN )
+				or ( tone == "accent" and ACCENT )
+				or ( tone == "dim" and DIM ) or LABEL
+			kids[#kids + 1] = fill( "NRow" .. i, PAD, y, colW, 40, PANEL, 0.035 )
+			kids[#kids + 1] = text( "NNum" .. i,
+				string.format( "PLOT %d", n.index ), PAD + 14, y + 11, 90, 18,
+				"SM_TextSmall", LABEL, "Left" )
+			kids[#kids + 1] = text( "NWho" .. i, said, PAD + 108, y + 11,
+				colW - 108 - ( act and 130 or 14 ), 18, "SM_TextTiny", colour, "Left" )
+			if act then
+				kids[#kids + 1] = button( "NAct" .. i,
+					( act == "accept" ) and "ACCEPT" or "ASK TO TEAM",
+					PAD + colW - 126, y + 5, 116, 30,
+					( act == "accept" ) and "StyledButtonLarge" or "SecondaryButton",
+					{ action = "team", index = n.index } )
+			end
+		end
+
+		if #mates > 0 then
+			kids[#kids + 1] = button( "Unteam", "LEAVE THE TEAM",
+				PAD, MyPlotGui.H - 130, 200, 32, "SecondaryButton",
+				{ action = "unteam" } )
+			kids[#kids + 1] = text( "UnteamHint",
+				"you keep your plot -- only the links are cut",
+				PAD + 212, MyPlotGui.H - 124, 260, 18, "SM_TextTiny", DIM, "Left" )
+		end
+	end
+
+	--[[ the map ]]
+	if state.cfg then
+		PlotsGui.AddMap( kids, cfg, MyPlotGui.W - PAD - MAP, 100, MAP )
+	end
+
+	local by = MyPlotGui.H - 56
+	kids[#kids + 1] = button( "Back", "BACK", PAD, by, 130, 34,
+		"SecondaryButton", { action = "view", view = "plot" } )
+	kids[#kids + 1] = button( "Close", "CLOSE", MyPlotGui.W - PAD - 150, by, 150, 34,
+		"SecondaryButton", { action = "close" } )
 
 	return root
 end

@@ -45,7 +45,7 @@ Checklist = {}
 
 -- Bumped with VERSION. dev/test_logic.py fails if the two disagree, because a
 -- stale build number silently mislabels every result recorded after it.
-Checklist.BUILD = 78
+Checklist.BUILD = 79
 
 Checklist.FILE = "$CONTENT_DATA/Checklist.json"
 
@@ -288,6 +288,29 @@ Checklist.ITEMS = {
 	            .. "claimed by somebody else" },
 	  pass = "the block will not go down" },
 
+	{ id = "plots-free-shut", group = "plots",
+	  title = "You cannot build on a plot nobody has claimed",
+	  steps = { "find a plot with nobody on it and no owner",
+	            "try to place a block on it" },
+	  pass = "the block will not go down. This is the V79 rule -- unclaimed "
+	      .. "ground is open to nobody at all, so claiming is what opens it. "
+	      .. "Claim it and the same block goes down" },
+
+	{ id = "plots-free-stand", group = "plots",
+	  title = "A free plot does not throw you off it",
+	  steps = { "walk onto a plot nobody owns", "stand still for ten seconds" },
+	  pass = "you stay put. You claim the plot you are STANDING on, so being "
+	      .. "shoved off free ground would make claiming a race. A plot somebody "
+	      .. "else owns should still push you off" },
+
+	{ id = "plots-free-litter", group = "plots",
+	  title = "Junk dropped on a free plot can still be cleared",
+	  steps = { "drop a craftbot onto a plot nobody owns",
+	            "try to remove it with the remove tool or the Cleaner" },
+	  pass = "it goes. Nothing legitimate can be on unclaimed ground, so "
+	      .. "anything there is litter -- but the plot FLOOR itself must not be "
+	      .. "erasable. Try the concrete too: that should refuse" },
+
 	{ id = "plots-empty-locked", group = "plots",
 	  title = "An empty claimed plot stays protected",
 	  steps = { "claim a plot", "walk off it onto the road",
@@ -301,12 +324,37 @@ Checklist.ITEMS = {
 	            "build" },
 	  pass = "it is still yours and you can still build" },
 
+	{ id = "plots-team-panel", group = "plots",
+	  title = "The team screen lists the plots next to yours",
+	  steps = { "claim a plot in the middle of the city",
+	            "open /menu, MY PLOT, then TEAM UP WITH A NEIGHBOUR" },
+	  pass = "the plots either side of yours are listed with who owns each. A "
+	      .. "free one says so, and one across a road says there is a road "
+	      .. "between you and offers no button",
+	  run = { "/myplot" } },
+
 	{ id = "plots-team", group = "plots",
 	  title = "Two neighbours can share their plots",
-	  steps = { "type /plot team and their name",
-	            "have them type the same at you" },
+	  steps = { "open MY PLOT, TEAM UP WITH A NEIGHBOUR, press ASK TO TEAM",
+	            "have them open the same screen and press ACCEPT" },
 	  pass = "you are teamed up. Only works for the plot in front, behind, left "
-	      .. "or right of you -- never a corner",
+	      .. "or right of you -- never a corner, and never across a road",
+	  needs = "guest" },
+
+	{ id = "plots-team-build", group = "plots",
+	  title = "A team can build on each other and on the strip between",
+	  steps = { "team up with a neighbour",
+	            "build on THEIR plot, and on the one-block strip between you" },
+	  pass = "both work. The strip between two teamed plots is the thing teaming "
+	      .. "hands over, so if the plots work and the strip does not, that is "
+	      .. "the bug",
+	  needs = "guest" },
+
+	{ id = "plots-unteam", group = "plots",
+	  title = "Leaving a team does not take your plot",
+	  steps = { "team up with somebody", "press LEAVE THE TEAM" },
+	  pass = "the links are cut and you still own your plot. /plot leave is the "
+	      .. "one that gives the ground back",
 	  needs = "guest" },
 
 	{ id = "plots-leave", group = "plots",

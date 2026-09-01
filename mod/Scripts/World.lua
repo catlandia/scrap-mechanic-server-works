@@ -1161,6 +1161,17 @@ function World.sv_e_swCommand( self, params )
 		reply( string.format( "  connectable=%s usable=%s destructable=%s dynamicOK=%s",
 			tostring( body:isConnectable() ), tostring( body:isUsable() ),
 			tostring( body:isDestructable() ), tostring( body:isConvertibleToDynamic() ) ) )
+		-- ...AND ONE SENTENCE ANYBODY CAN READ.
+		--
+		-- Everything above is a dump for a host working out why the lift will
+		-- not place. WHY CANNOT I BUILD on MY PLOT runs the same command, and
+		-- the person pressing that button is a builder who wants to know what
+		-- to do next. Twelve flags do not answer that; one line does.
+		--
+		-- It matters more since unclaimed ground stopped being buildable: the
+		-- commonest reason to be refused is now a state the world used to allow,
+		-- so a returning player is going to hit it and need telling.
+		reply( "  -> " .. self:sv_whyPlain( body, z, player ) )
 
 	elseif cmd == "/plot" then
 		self:sv_plotCommand( args, player, reply )
@@ -1169,7 +1180,10 @@ function World.sv_e_swCommand( self, params )
 		self:sv_home( player, reply )
 
 	elseif cmd == "/myplot" then
-		self:sv_openMyPlot( player, params.status )
+		-- args[2] is which half of the panel to draw. The view is server state
+		-- like everything else on this panel: a click asks for it, the world
+		-- sends the whole panel back. See "only CLOSE and BACK close a panel".
+		self:sv_openMyPlot( player, params.status, args[2] )
 
 	elseif cmd == "/budget" then
 		-- The plot you are standing on, or one named outright.
@@ -1215,7 +1229,11 @@ function World.sv_e_swCommand( self, params )
 	if collected and cmd ~= "/myplot" and cmd ~= "/citycensus" then
 		local status = ( #collected > 0 ) and table.concat( collected, "   " ) or nil
 		if params.panel == "myplot" then
-			self:sv_openMyPlot( player, status )
+			-- params.view carries which half to come back to. Without it, asking
+			-- a neighbour to team dropped you onto the plot screen and the row
+			-- you had just pressed was no longer on the panel -- which reads
+			-- exactly like the button having done nothing.
+			self:sv_openMyPlot( player, status, params.view )
 		elseif params.panel == "city" or params.panel == "protection"
 			or params.panel == "backups" or params.panel == "dev" then
 			sm.event.sendToGame( "sv_e_swPanelRefresh",
@@ -1433,7 +1451,7 @@ end
 -- Everything the panel shows, gathered in one place. Built on the server because
 -- only the world knows what square a player is standing on -- the Game script
 -- has no world and cannot ask.
-function World.sv_openMyPlot( self, player, status )
+function World.sv_openMyPlot( self, player, status, view )
 	local perma = Identity.Sv_PermaOf( player )
 	local mine = perma and g_swPlots:sv_plotOf( perma ) or nil
 
@@ -1469,6 +1487,21 @@ function World.sv_openMyPlot( self, player, status )
 		end
 	end
 
+	-- WHO YOU COULD TEAM WITH, resolved to names here rather than on the panel.
+	-- "plot 35" means nothing to the person reading it; the name of the
+	-- neighbour they are about to ask means everything.
+	local neighbours = {}
+	if mine then
+		for _, n in ipairs( g_swPlots:sv_neighbours( mine ) ) do
+			neighbours[#neighbours + 1] = {
+				index = n.index,
+				owner = n.owner and ( Identity.Sv_NameOf( n.owner ) or n.owner ) or nil,
+				adjacent = n.adjacent, teamed = n.teamed,
+				asked = n.asked, invited = n.invited,
+			}
+		end
+	end
+
 	local g = g_swPlots.grid
 	local claimed = {}
 	for index, owner in pairs( g_swPlots.owners ) do
@@ -1491,6 +1524,9 @@ function World.sv_openMyPlot( self, player, status )
 		mine = mine,
 		standing = standing,
 		team = team,
+		neighbours = neighbours,
+		-- which half of the panel to draw: the plot, or the team screen
+		view = view,
 		cfg = {
 			plot = g.plot, gap = g.gap, cols = g.cols, rows = g.rows,
 			roadevery = g.roadevery, roadwidth = g.roadwidth, plazacells = g.plazacells,
@@ -1546,6 +1582,47 @@ function World.sv_cityCensus( self, player )
 	sm.event.sendToGame( "sv_e_swCityCensus", { player = player, lines = lines } )
 end
 
+-- Why this body is not buildable, as one sentence, in the order the resolver
+-- actually asks the questions -- so the answer is the FIRST reason, not a
+-- plausible one further down. A mode that shuts everything makes the plot
+-- ownership answer true and irrelevant.
+function World.sv_whyPlain( self, body, z, player )
+	if Settings.WorldIsShut() then
+		return "the host has locked the world down"
+	end
+	if Settings.Get( "buildopen" ) == false then
+		return "building is closed right now -- wait for the host to open it"
+	end
+	if not g_swPlots.enabled then
+		return "plots are off here, so this is down to the protection mode alone"
+	end
+	if z == nil then
+		return "this is outside the city"
+	end
+	if z.kind ~= "plot" then
+		return Settings.CityIsOpen()
+			and "shared ground, and the host has opened the city up for building"
+			or "shared ground -- roads and the plaza are nobody's to build on"
+	end
+
+	local owner = g_swPlots.owners[z.index]
+	if owner == nil then
+		return Settings.CityIsOpen()
+			and string.format( "plot %d is free, and the host has opened the city up",
+				z.index )
+			or string.format(
+				"plot %d is unclaimed, and unclaimed ground is open to nobody. Claim it.",
+				z.index )
+	end
+	local perma = Identity.Sv_PermaOf( player )
+	if perma and g_swPlots:sv_authorised( z )[perma] then
+		return string.format(
+			"plot %d is yours -- stand on it or near it and it opens", z.index )
+	end
+	return string.format( "plot %d belongs to %s. Team up with them, or claim one of your own.",
+		z.index, Identity.Sv_NameOf( owner ) or owner )
+end
+
 function World.sv_plotCommand( self, args, player, reply )
 	local action = args[2]
 	local perma = Identity.Sv_PermaOf( player )
@@ -1595,11 +1672,28 @@ function World.sv_plotCommand( self, args, player, reply )
 	elseif action == "team" then
 		local other = args[3]
 		if other == nil or other == "" then
-			reply( "/plot team <player name>" )
+			reply( "/plot team <player name>   or   /plot team <plot number>" )
 			return
 		end
-		local rec = Identity.Sv_FindByName( other )
-		local otherPerma = rec and rec.perma
+
+		-- A PLOT NUMBER AS WELL AS A NAME, and the number is the one the panel
+		-- uses. Same reasoning as the ban picker: a Scrap Mechanic display name
+		-- can hold characters the host cannot type, so a button that carried a
+		-- name would be a button that sometimes cannot work. A plot number is
+		-- always ASCII, it is drawn on the map, and it is what the neighbour
+		-- rows are keyed on.
+		local otherPerma = nil
+		local asNumber = tonumber( other )
+		if asNumber ~= nil then
+			otherPerma = g_swPlots.owners[asNumber]
+			if otherPerma == nil then
+				reply( string.format( "nobody owns plot %d", asNumber ) )
+				return
+			end
+		else
+			local rec = Identity.Sv_FindByName( other )
+			otherPerma = rec and rec.perma
+		end
 		if otherPerma == nil then
 			reply( string.format( "no player known as '%s'", other ) )
 			return
@@ -1615,6 +1709,15 @@ function World.sv_plotCommand( self, args, player, reply )
 				end
 			end
 		end
+
+	elseif action == "unteam" then
+		-- LEAVING THE TEAM IS NOT LEAVING THE PLOT, and until now there was no
+		-- way to do the first without the second: /plot leave unteams AND
+		-- releases. A team that can only be dissolved by giving your ground up
+		-- is a team nobody will risk joining.
+		local ok, detail = g_swPlots:sv_unteam( perma )
+		reply( detail )
+		if ok then Plots.Sv_SaveFile( g_swPlots ) end
 
 	elseif action == "leave" then
 		local ok, detail = g_swPlots:sv_unteam( perma )

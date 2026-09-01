@@ -10,6 +10,167 @@ was most of them.
 
 ---
 
+## V79 -- unclaimed ground belongs to nobody, and teaming is finally reachable
+
+> "the default when joining is build mode. and you should only be able to build
+> on plot that is owned. since we cant lock plot building so its only yours this
+> is a partly good fix. unless the settings for the whole renovation is on."
+
+### The hole this closes was bigger than it sounds
+
+Plot protection has always been *presence* -- body permission flags are
+per-BODY, there is no `setBuildableBy( player )`, so "only the owner may build
+here" is not a thing this engine can be told. What it *can* be told is "nobody
+may build here", and that half was never being used: an unclaimed plot returned
+`true`, wide open to everyone.
+
+So the honest description of the old rule was **"you may build anywhere except
+on ground somebody has already claimed"**, which is very nearly the opposite of
+what plot ownership sounds like. With 96 plots and nine builders, most of the
+city was a free-for-all.
+
+`Plots.sv_freeGroundVerdict` answers for unowned ground now, and it is three
+rules rather than one:
+
+| | |
+|---|---|
+| anything standing on a free plot | **`sweep`** -- nothing legitimate can be built there, so it is litter, and anyone may clear it |
+| the plot FLOOR itself | **locked** -- `sweep` is erasable, and a slab is not protected by `sv_isScenery` the way the decking is, so a flat sweep would hand every free plot floor in the city to a remove tool |
+| either, with `citybuild` on | **open** -- the renovation switch |
+
+The middle row is the one that would have been shipped broken. `sv_isScenery`
+demands metal throughout and a plot slab has concrete in it, so the deck's
+protection does not extend to plots at all.
+
+The first row is not a nicety either: locking free plots instead would make junk
+dumped across a few hundred empty squares permanent, which is the exact failure
+`docs/ANTI-GRIEF.md` is mostly about. Once nothing legitimate can be on unclaimed
+ground, an unclaimed plot **is a road**, and the road rule already existed.
+
+### And nobody is an intruder on land nobody owns
+
+`sv_authorised` returns an empty set for an unclaimed plot, so the occupancy walk
+counted everyone standing on one as unauthorised and **shoved them off it**. That
+was already wrong before this version -- you claim the plot you are STANDING on,
+so the one square a new arrival must be able to stand still on was the one square
+that threw them off -- and it only stayed survivable because `PUSH_COOLDOWN_TICKS`
+left a window to get the command out.
+
+It would have become unsurvivable here, because being pushed off is now paired
+with not being able to build either. `sv_pushOut` returns early on unclaimed
+ground. The zone still reads locked while somebody unauthorised stands on it,
+which is what stops them building; what goes away is being thrown across the
+city to protect work that does not exist.
+
+### A new world comes up in build mode, with plots on
+
+`plots` defaulted **off** and was not in `Sv_ResetWorldState`, so the one setting
+that makes this an event server rather than a creative world had to be found by
+hand on every new world. It defaults on and the reset forces it, alongside
+`protection = open` and `buildopen = true` which were already there.
+
+`citybuild` is deliberately NOT reset -- it is off by default anyway, and a host
+who turned it on for how they run events should not have to find it again. Same
+rule that keeps `developer` out of the reset.
+
+### Teaming was finished, correct, and unreachable
+
+Every rule the owner asked for was already in `Plots.lua` and had been for
+versions: `sv_adjacent` refuses diagonals *and* refuses anything with a road
+between (it asks the layout for a filler seam rather than doing index
+arithmetic, so the road case falls out instead of being a second rule to keep in
+step). `sv_authorised` hands the whole team every plot on it. A filler seam opens
+once the two plots either side are teamed. Teams chain transitively.
+
+**The only way to use any of it was `/plot team <name>` -- and since V77 a guest
+may type exactly one command, and it is `/menu`.** So the feature existed, was
+correct, and could not be done by the people it is for. The MY PLOT panel even
+described it: *"team up with the plot in front, behind, left or right -- both of
+you run it"*, which is an instruction to run a chat command, shown to somebody
+who may not run chat commands.
+
+MY PLOT has a second view now. TEAM UP WITH A NEIGHBOUR lists the plots either
+side of yours with who owns each, and every refusal is *reported* rather than
+filtered out -- "a road runs between you", "nobody has claimed it yet",
+"already on your team" -- because *why can I not team with them* is the question
+the screen exists to answer, and a row that is simply absent answers it worse
+than a greyed one.
+
+Three smaller things fell out:
+
+- **Every button carries a plot NUMBER, never a name.** Same rule as the ban
+  picker, for the same reason: a Scrap Mechanic display name can hold characters
+  the sender cannot reproduce. `/plot team 35` works typed now too.
+- **`/plot unteam`** -- leaving the team without giving up the plot. `/plot leave`
+  did both, so the only way out of a team was to hand your ground back, and a
+  team you cannot leave without losing your plot is one nobody sensible joins.
+- **`/why` ends in a sentence a builder can read.** It was twelve flags, which
+  answers a host debugging a lift and not the person who pressed WHY CANNOT I
+  BUILD. It matters more now: the commonest refusal is a state the world used to
+  allow.
+
+### Presets you name yourself
+
+> "make settings being able to set as pressets with names."
+
+`$CONTENT_DATA/Presets.json`, its own file, surviving a new world -- the reset
+clears what describes a WORLD and a saved configuration describes the HOST, the
+same distinction that keeps `Checklist.json` and `developer` out of it.
+
+SAVE YOURS on the settings nav opens the picker: the four built-ins, the host's
+own, and one box. **Enter is the save and there is no SAVE button**, which is
+forced rather than chosen -- a Button's `onClickData` is fixed when the tree is
+built, so a click handler cannot see what is in an EditBox. `onTextEnter` is the
+only callback handed the text, so a SAVE button beside the box could only ever
+save a stale name.
+
+Typing is right here and wrong for bans, which is worth stating because the rules
+look contradictory. *Offer a list, not a field* applies when the user must
+REPRODUCE a value they did not choose. A preset name is one they are inventing,
+and a list cannot offer a name that does not exist yet.
+
+A saved preset keeps **every** setting except `worldstamp` and `migrations`.
+Restoring another world's stamp would tell a fresh world it was old and skip the
+reset that keeps it clean.
+
+### Two checks that found things
+
+**`panels: every panel on disk is actually checked`.** Four separate sweeps in
+`test_logic.py` work off hand-written name lists, so a new panel is invisible to
+whichever one the author forgot. It globs `mod/Scripts/*Gui.lua` instead -- and
+immediately found that **`TutorialGui` and `ChecklistGui` were in none of them**:
+neither had ever been checked for fitting the canvas, and no button on the
+tutorial had ever been checked for pointing at a real branch. Both turned out
+fine. Neither was covered.
+
+Its own first draft did the thing it exists to stop. It scraped this file with
+`re.search` and **matched its own pattern literal** before reaching the real
+list, so every panel came back missing from the canvas check, including the ones
+plainly in it. Third time in this project a check has read a corpus containing
+itself. `inspect.getsource` cannot match the question instead of the answer.
+
+**A caption prefix now counts.** The rule that every ALL-CAPS phrase in the
+checklist must be a real button matched *exactly*, while its own pattern needs
+two letters a word -- so a caption containing a one-letter word was cut in half
+by it. "TEAM UP WITH A NEIGHBOUR" arrived as "TEAM UP WITH", which no caption
+equals and none ever could. The failure said *is not a button on any panel*
+about a button that was right there.
+
+### Also
+
+- The four fixtures that stood a body on plot 1 of a fresh grid were relying on
+  unclaimed-means-open. All four failed the moment it closed, which is the good
+  outcome -- each asserts up front that its ground really is buildable, so none
+  of them could pass on the wrong ground. `own_a_plot` is the one place that
+  knows how to make ground somebody may build on.
+- The tutorial's plot page said *"walk onto a plot that is not yours and you get
+  pushed off it"* and its team page described a button that did not exist. Both
+  are true now, and the plot page had to lose three lines to fit -- the fit check
+  caught it at 17 lines against 14, and the glyph check caught an apostrophe in
+  the same pass.
+
+---
+
 ## V76 -- the tutorial is three sections you pick, and it meets you at the door
 
 > "you can select for players for hosts and for devs. the players can only acces

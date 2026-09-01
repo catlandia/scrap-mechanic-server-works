@@ -14,7 +14,7 @@ Companions:
 [`BUTTONS.md`](BUTTONS.md) everything a json GUI needs ·
 [`CHANGELOG.md`](CHANGELOG.md) what every version fixed
 
-Current version: **V78**. All 224 checks pass. `python dev/check_all.py --sync`
+Current version: **V79**. All 229 checks pass. `python dev/check_all.py --sync`
 before playing, and **restart Scrap Mechanic** — scripts are read at world load.
 
 ---
@@ -32,6 +32,36 @@ otherwise the next `--sync` overwrites it.
 Before uploading: **restart Scrap Mechanic.** `description.json`, `preview.jpg`
 and every script are read at startup, so a running game is showing an older
 build than the folder holds.
+
+### V79, and why it is worth a paragraph of its own
+
+**The plot rule changed, and it is the biggest behaviour change since plots
+existed.** Ground nobody has claimed is no longer buildable by anybody. Before
+this, an unclaimed plot was wide open, so the honest description of plot
+ownership was *you may build anywhere except where somebody already has*, which
+is nearly its opposite.
+
+Consequences worth knowing before running an event on it:
+
+- **A new world comes up in build mode with plots ON.** `plots` used to default
+  off and had to be found by hand every time.
+- **Free plots are `sweep`** -- anyone may clear what is dumped on them. That is
+  deliberate and it is the same rule the roads run under: nothing legitimate can
+  be there, so anything there is litter. The plot FLOOR stays locked.
+- **The host can still build on free ground** by standing on it, but what they
+  build there is only as protected as the ground under it. Claim it, or turn on
+  `citybuild`, for anything meant to last.
+- **`citybuild` is the renovation switch** and now opens unclaimed plots too. It
+  never opens a plot somebody has claimed.
+
+**Teaming became reachable.** Every rule was already there and correct; the only
+door was `/plot team <name>`, and V77 left a guest with `/menu` and nothing else.
+MY PLOT has a TEAM UP screen now. If anything about teams looks wrong in game,
+suspect the panel, not the rules -- the rules are checked outside the game and
+the panel never has been.
+
+**Presets you name.** SAVE YOURS on the settings nav. Enter saves; there is no
+SAVE button, because a Button cannot read an EditBox.
 
 ### What changed, V64 to V78
 

@@ -170,6 +170,30 @@ def fresh(*files):
     return lua
 
 
+def own_a_plot(lua, plots, index=1, perma="tester"):
+    """Make plot `index` genuinely buildable, and hand back its block centre.
+
+    A plot is only open to somebody who OWNS it and is standing near it, and
+    since V79 an unclaimed one is not open to anybody at all -- see
+    Plots.sv_freeGroundVerdict. So every fixture that wants "a body on ground
+    the builder may build on" has to say both halves, and four of them used to
+    say neither: they dropped a body on plot 1 of a fresh grid and relied on
+    unclaimed-means-open, which was exactly the hole V79 closed.
+
+    They all failed the moment it closed, which is the good outcome -- each one
+    asserts up front that its fixture really is buildable, so the wrong ground
+    could never quietly pass. This is the one place that knows how to produce
+    the right ground, so the next check does not have to rediscover it.
+    """
+    P = lua.globals().Plots
+    plots["owners"][index] = perma
+    # ...and somebody is home. An empty claimed plot is locked on purpose.
+    P.sv_holdTeam(plots, lua.table_from({"kind": "plot", "index": index}))
+    bx, by = lua.globals().Layout.plotCentre(plots["layout"], index)
+    assert bx is not None, f"plot {index} does not exist -- the fixture is wrong"
+    return float(bx), float(by)
+
+
 # ---------------------------------------------------------------- settings ---
 
 def settings_schema_is_sane():
@@ -1936,7 +1960,7 @@ def the_city_floor_is_pinned_except_while_people_are_building():
     """))
 
     B = float(P.BLOCK)
-    bx, by = lua.globals().Layout.plotCentre(plots["layout"], 1)
+    bx, by = own_a_plot(lua, plots)
     # a plot body: its stand reaches the ground, which is what makes it ground
     ground = lua.execute("""
         return function( x, y )
@@ -2056,8 +2080,7 @@ def buffer_time_actually_reaches_the_polish_profile():
     # Not at the origin: the origin is the plaza, which resolves to "sweep" and
     # would have made this check pass for entirely the wrong reason. Ask Layout
     # where a real plot is.
-    bx, by = lua.globals().Layout.plotCentre(plots["layout"], 1)
-    assert bx is not None, "plot 1 does not exist -- the fixture is wrong"
+    bx, by = own_a_plot(lua, plots)
     block = float(P.BLOCK)
     make_body = lua.execute("""
         return function( x, y, z )
@@ -2151,7 +2174,7 @@ def unlock_actually_reopens_building():
         end
     """))
 
-    bx, by = lua.globals().Layout.plotCentre(plots["layout"], 1)
+    bx, by = own_a_plot(lua, plots)
     block = float(P.BLOCK)
     body = lua.execute("""
         return function( x, y, z )
@@ -2490,8 +2513,8 @@ def you_can_only_build_on_ground_that_is_yours():
     stays open", meant standing on the road beside somebody's work and reaching
     over it, and the owner did not even have to be online.
 
-    Claimed and empty is locked now. Unclaimed and empty stays open: nothing
-    there to protect, and the host needs to be able to place things.
+    Claimed and empty is locked. Unclaimed is not open either any more -- see
+    an_unclaimed_plot_is_nobodys_to_build_on, which is the other half of this.
     """
     lua, plots = plots_lua()
     P = lua.globals().Plots
@@ -2505,9 +2528,11 @@ def you_can_only_build_on_ground_that_is_yours():
 
     MINE, YOURS = 1, 2
 
-    # nobody has claimed anything: an empty plot is open
-    assert P.sv_bodyIsOpen(plots, body_on(MINE)) is True, (
-        "an unclaimed empty plot should stay open")
+    # nobody has claimed anything: nobody may build, and what is standing on it
+    # can only be litter
+    assert P.sv_bodyIsOpen(plots, body_on(MINE)) == "sweep", (
+        "an unclaimed empty plot was buildable -- 'only on plots that are owned' "
+        "has to mean unowned ground is nobody's too")
 
     # now somebody owns it and is not standing on it
     P.sv_claim(plots, MINE, "OWNER")
@@ -2516,7 +2541,7 @@ def you_can_only_build_on_ground_that_is_yours():
     assert P.sv_bodyIsOpen(plots, body_on(MINE)) is False, (
         "a CLAIMED plot with nobody on it was open -- anyone could stand on the "
         "road and build over somebody else's work")
-    assert P.sv_bodyIsOpen(plots, body_on(YOURS)) is True, (
+    assert P.sv_bodyIsOpen(plots, body_on(YOURS)) == "sweep", (
         "an unclaimed plot next door should be unaffected")
 
     # the owner standing on their own land holds it open
@@ -2529,15 +2554,79 @@ def you_can_only_build_on_ground_that_is_yours():
         "standing on your own plot held somebody else's open too")
 
 
-def an_unclaimed_empty_plot_stays_open():
-    lua, plots = plots_lua({"cols": 10, "rows": 10, "plazacells": 2})
-    P = lua.globals().Plots
-    L = lua.globals().Layout
+def an_unclaimed_plot_is_nobodys_to_build_on():
+    """ASKED FOR: "you should only be able to build on plot that is owned."
+
+    This check replaced its own opposite. It used to be
+    an_unclaimed_empty_plot_stays_open, asserting exactly the behaviour the
+    owner then reported as the hole -- which is worth leaving on the record,
+    because the check was right about what the code did and wrong about what
+    the code should do, and no amount of testing distinguishes those two.
+
+    Three separate things have to hold, and only the first is the headline:
+
+      the plot FLOOR locks       -- "sweep" is erasable, and a slab is not
+                                    protected by sv_isScenery the way the deck
+                                    is, so a flat sweep would hand every free
+                                    plot floor in the city to a remove tool
+      anything ON it sweeps      -- else junk dumped across a few hundred empty
+                                    plots is permanent, which is the failure
+                                    mode docs/ANTI-GRIEF.md is mostly about
+      renovation opens both      -- "unless the settings for the whole
+                                    renovation is on"
+    """
+    lua = fresh("Layout.lua", "Settings.lua", "Plots.lua")
+    P, L, S = lua.globals().Plots, lua.globals().Layout, lua.globals().Settings
+    S.Sv_Load(False)
+    plots = lua.eval("Plots()")
+    P.sv_onCreate(plots, lua.table_from({"grid": lua.table_from(
+        {"cols": 10, "rows": 10, "plazacells": 2}), "enabled": True}))
+    plots["enabled"] = True
+    B = float(P.BLOCK)
     bx, by = L.plotCentre(plots["layout"], 1)
-    body = lua.table_from({"worldPosition": lua.table_from(
-        {"x": bx * 0.25, "y": by * 0.25, "z": 1.3})})
-    assert P.sv_bodyIsOpen(plots, body) is True, (
-        "an unclaimed plot with nobody on it should not be locked")
+
+    # litter: a body standing ON the plot, which has no aabb reaching the floor
+    litter = lua.table_from({"worldPosition": lua.table_from(
+        {"x": bx * B, "y": by * B, "z": 1.3})})
+    # the slab itself: an aabb whose bottom is the plot floor
+    floor = lua.execute("""
+        return function( x, y )
+            local b = { worldPosition = { x = x, y = y, z = 1.0 } }
+            function b:isOnLift() return false end
+            function b:getWorldAabb()
+                return { x = x - 2, y = y - 2, z = 1.00 },
+                       { x = x + 2, y = y + 2, z = 1.25 }
+            end
+            return b
+        end
+    """)(bx * B, by * B)
+
+    assert P.sv_bodyIsOpen(plots, litter) == "sweep", (
+        "a body on an unclaimed plot was not litter -- either somebody may "
+        "build there, or nobody may ever clear what is dumped there")
+    assert P.sv_bodyIsOpen(plots, floor) is False, (
+        "the FLOOR of an unclaimed plot came back sweepable, so anyone with a "
+        "remove tool can delete the free plots out of the city")
+
+    # renovation opens the unowned city, floor included
+    S.Sv_SetQuiet("citybuild", True)
+    assert P.sv_bodyIsOpen(plots, litter) is True, (
+        "renovation is on and an unclaimed plot is still shut")
+    assert P.sv_bodyIsOpen(plots, floor) is True, (
+        "renovation is on and the free plot floors are still pinned")
+
+    # ...and never somebody else's work
+    S.Sv_SetQuiet("citybuild", True)
+    P.sv_claim(plots, 2, "SOMEBODY")
+    plots["zoneOpen"] = lua.table_from({})
+    plots["zoneHeld"] = lua.table_from({})
+    ox, oy = L.plotCentre(plots["layout"], 2)
+    theirs = lua.table_from({"worldPosition": lua.table_from(
+        {"x": ox * B, "y": oy * B, "z": 1.3})})
+    assert P.sv_bodyIsOpen(plots, theirs) is False, (
+        "renovation opened a plot somebody had claimed -- it is permission "
+        "over unowned ground, never over somebody's build")
+    S.Sv_SetQuiet("citybuild", False)
 
 
 def a_players_block_of_our_materials_is_not_the_city():
@@ -3474,6 +3563,206 @@ def every_command_is_on_the_menu():
             f"The menu offers {sorted(labels)}")
 
 
+def teaming_is_offered_to_the_right_four_and_nobody_else():
+    """ASKED FOR: "if your neighbour. that is directly next to your plot counts
+    as front behind left right of you. if not accros the road. you can team with
+    them and form a team."
+
+    Two rules, and the second is the one that is easy to get wrong. Orthogonal
+    only -- a diagonal shares a corner, not a seam, so there is nothing to hand
+    over. And a road between means no seam either, however adjacent the grid
+    says they are.
+
+    sv_adjacent already enforced both; what did not exist was any way to reach
+    it. So this checks the LIST the panel is built from rather than the rule it
+    was already built on -- a neighbour that never appears cannot be teamed with
+    however correct sv_adjacent is.
+    """
+    # roadevery 0 = no roads at all, so every orthogonal neighbour has a seam
+    lua, plots = plots_lua({"cols": 6, "rows": 6, "plazacells": 0, "roadevery": 0})
+    P, L = lua.globals().Plots, lua.globals().Layout
+
+    # a plot in the middle, so all four sides exist
+    middle = int(L.plotIndex(plots["layout"], 2, 2))
+    got = {int(n["index"]): n for n in P.sv_neighbours(plots, middle).values()}
+    assert len(got) == 4, f"a middle plot should border four, got {sorted(got)}"
+
+    want = {int(L.plotIndex(plots["layout"], c, r))
+            for c, r in ((1, 2), (3, 2), (2, 1), (2, 3))}
+    assert set(got) == want, f"the four are wrong: {sorted(got)} vs {sorted(want)}"
+
+    diagonals = {int(L.plotIndex(plots["layout"], c, r))
+                 for c, r in ((1, 1), (3, 3), (1, 3), (3, 1))}
+    assert not (set(got) & diagonals), (
+        "a diagonal plot is offered as teamable -- it shares a corner, not a "
+        "seam, so there is no block to hand over")
+    for n in got.values():
+        assert n["adjacent"] is True, (
+            "a plot with no road between it should be teamable in this grid")
+
+    # NOW PUT ROADS IN. Every neighbour across one must come back adjacent=false
+    # -- listed, so the panel can say why, but never offered.
+    lua2, roaded = plots_lua({"cols": 6, "rows": 6, "plazacells": 0,
+                              "roadevery": 1, "roadwidth": 6})
+    P2, L2 = lua2.globals().Plots, lua2.globals().Layout
+    mid2 = int(L2.plotIndex(roaded["layout"], 2, 2))
+    rows = list(P2.sv_neighbours(roaded, mid2).values())
+    assert rows, "roads removed the neighbour list entirely"
+    assert not any(n["adjacent"] for n in rows), (
+        "roadevery 1 puts a road between every pair of plots, and one of them "
+        "still came back teamable")
+
+
+def a_neighbour_row_says_why_and_offers_a_button_only_when_it_can():
+    """Every state a neighbour can be in has a sentence, and a button only when
+    pressing one would do something.
+
+    The failure this guards is a row that reads as available and is not -- or,
+    worse, an ASK button on a plot across a road, which sends a request the
+    server refuses and leaves the person believing the feature is broken.
+    """
+    lua = gui_lua()
+    G = lua.globals().MyPlotGui
+
+    def row(**kw):
+        base = {"index": 5, "owner": None, "adjacent": True,
+                "teamed": False, "asked": False, "invited": False}
+        base.update(kw)
+        said, act, tone = G.NeighbourRow(lua.table_from(base))
+        return str(said), (str(act) if act else None), str(tone)
+
+    said, act, _ = row(adjacent=False, owner="A Guest")
+    assert act is None, "a plot across a road offered a button that cannot work"
+    assert "road" in said.lower(), f"it does not say why: {said!r}"
+
+    said, act, _ = row(owner=None)
+    assert act is None, "an unclaimed plot offered a team button -- nobody to ask"
+    assert "claim" in said.lower(), f"it does not say why: {said!r}"
+
+    said, act, _ = row(owner="A Guest", teamed=True)
+    assert act is None, "already on your team and it still offers to ask"
+
+    said, act, _ = row(owner="A Guest", invited=True)
+    assert act == "accept", "somebody asked you and there is no way to accept"
+    assert "asked you" in said.lower(), f"it does not say they asked: {said!r}"
+
+    said, act, _ = row(owner="A Guest", asked=True)
+    assert act is None, "asking twice is offered as if it were a second action"
+    assert "waiting" in said.lower(), f"it does not say it is pending: {said!r}"
+
+    said, act, _ = row(owner="A Guest")
+    assert act == "ask", "a claimed neighbour with no request cannot be asked"
+    assert "A Guest" in said, "the row does not name who it is"
+
+
+def leaving_a_team_does_not_take_your_plot():
+    """/plot leave unteams AND releases, so until now the only way out of a team
+    was to give your ground up. A team you cannot leave without losing your plot
+    is a team nobody sensible joins.
+    """
+    world = read("World.lua")
+    assert 'action == "unteam"' in world, (
+        "World has no unteam branch, so LEAVE THE TEAM on the panel does nothing")
+    # and it must NOT call sv_release -- that is what /plot leave is for
+    at = world.index('action == "unteam"')
+    body = world[at:world.index('action == "leave"', at)]
+    assert "sv_release" not in body, (
+        "unteam releases the plot as well, which is exactly the thing it exists "
+        "not to do")
+    assert "sv_unteam" in body, "unteam does not actually cut the links"
+
+    gui = read("MyPlotGui.lua")
+    assert 'action = "unteam"' in gui, "no LEAVE THE TEAM button on the panel"
+
+
+def the_team_screen_is_reachable_without_typing():
+    """A guest may type exactly one command, and it is /menu.
+
+    So every route into teaming that goes through chat is a route a guest does
+    not have. This is the check that would have caught the feature being
+    complete, correct and unusable for versions: the panel described
+    /plot team in a help line, to people who may not run a chat command at all.
+    """
+    gui = read("MyPlotGui.lua")
+    assert 'action = "view", view = "team"' in gui, (
+        "nothing on MY PLOT opens the team screen")
+    assert 'action = "team", index = n.index' in gui, (
+        "the team screen has no button that sends a request")
+
+    game = read("Game.lua")
+    at = game.index("function Game.sv_n_myPlotAction")
+    body = game[at:at + 2400]
+    assert 'data.action == "team"' in body, (
+        "Game does not route the team button anywhere")
+    assert 'data.action == "view"' in body, (
+        "Game does not route the view switch, so TEAM UP is a dead button")
+
+    # ...and the button must carry a plot NUMBER, never a display name, for the
+    # same reason the ban picker does: a Scrap Mechanic name can hold characters
+    # the sender cannot reproduce.
+    assert "tonumber( data.index )" in body, (
+        "the team action does not resolve a plot number -- if it passes a name "
+        "through it inherits the bug the ban picker exists to avoid")
+
+
+def every_panel_is_actually_checked():
+    """A new panel that no check knows about is an unchecked panel.
+
+    Every panel sweep in this file works off a hand-written list of names -- the
+    gui_lua() load, every_button_reaches_a_branch, the canvas test, the caption
+    sweep. That is fine until somebody adds a panel and updates three of the
+    four, at which point the missing one silently stops covering it and the
+    suite still says all checks pass.
+
+    PresetGui was written the day this check was, and it went into all four only
+    because writing this made the question "which lists are there" worth asking.
+    Without it the next panel gets the fonts, the fit and the dead-button check
+    of whichever list the author happened to remember.
+
+    "When a check reads a corpus, ask what is in the corpus." The corpus here is
+    the Scripts folder, not a list somebody maintains.
+    """
+    import re
+    on_disk = sorted(f.name for f in SCRIPTS.glob("*Gui.lua"))
+    assert len(on_disk) > 10, f"only {len(on_disk)} panels found -- wrong folder?"
+
+    # inspect.getsource, NOT a regex over this file -- and the difference is not
+    # tidiness. The first version scraped the source with re.search and matched
+    # its OWN pattern literal before it ever reached the real list, so every
+    # panel came back "missing from the canvas check", including the ones that
+    # were plainly in it. That is the third time in this project a check has read
+    # a corpus containing itself and answered about itself.
+    #
+    # Asking for a function's source by name cannot match the question instead
+    # of the answer.
+    import inspect
+    loaded = inspect.getsource(gui_lua)
+    buttons = inspect.getsource(every_button_reaches_a_branch)
+    canvas = inspect.getsource(no_panel_is_taller_than_the_canvas)
+
+    # HUDs are drawn straight onto the screen rather than being panels with
+    # buttons, so they are exempt from the click and canvas lists by nature --
+    # named here rather than pattern-matched, so a real panel cannot join them
+    # by accident.
+    HUDS = {"EventHud.lua", "RosterHud.lua"}
+
+    missing = []
+    for name in on_disk:
+        stem = name[:-4]
+        if name not in loaded:
+            missing.append(f"{name} is not loaded by gui_lua(), so no font or "
+                           f"caption check has ever seen it")
+        if name in HUDS:
+            continue
+        if name not in buttons:
+            missing.append(f"{name} is not in every_button_reaches_a_branch, so a "
+                           f"button on it can point at a branch that does not exist")
+        if f'"{stem}"' not in canvas:
+            missing.append(f"{stem} is not in the canvas check, so it could be "
+                           f"taller than the screen and nothing would say so")
+    assert not missing, "unchecked panels: " + "; ".join(missing)
+
+
 def every_button_reaches_a_branch():
     """Every action a panel can emit is named in the script that handles clicks."""
     import re
@@ -3481,7 +3770,8 @@ def every_button_reaches_a_branch():
     panels = ["MenuGui.lua", "PlotsGui.lua", "SettingsGui.lua",
               "EventGui.lua", "MyPlotGui.lua", "ConfirmGui.lua", "StyleGui.lua",
               "FocusGui.lua", "ChecklistGui.lua", "ProtectionGui.lua",
-              "BackupsGui.lua", "PeopleGui.lua", "DevGui.lua", "DevGui.lua"]
+              "BackupsGui.lua", "PeopleGui.lua", "DevGui.lua",
+              "PresetGui.lua", "TutorialGui.lua"]
     orphans = []
     for name in panels:
         for action in sorted(set(re.findall(r'action = "([^"]+)"', read(name)))):
@@ -3659,6 +3949,20 @@ def every_caption_can_be_drawn():
                                 {"host": host, "developer": dev,
                                  "section": sec, "page": page})))
 
+    # The presets panel: nothing saved, a few saved, and the page after the
+    # first -- the empty state is a different sentence from the full one.
+    G = lua.globals().PresetGui
+    builtin = [{"key": k, "label": lua.globals().Settings.PRESETS[k]["label"]}
+               for k in lua.globals().Settings.PRESET_ORDER.values()]
+    saved = [{"key": "friday-night", "label": "Friday Night"},
+             {"key": "big-city", "label": "big city"}]
+    for mine in ([], saved):
+        for page in (1, 2):
+            collect(f"presets/{len(mine)}/{page}", G.Build(lua.table_from({
+                "builtin": lua.table_from([lua.table_from(r) for r in builtin]),
+                "mine": lua.table_from([lua.table_from(r) for r in mine]),
+                "page": page, "status": "saved friday-night -- 47 settings"})))
+
     for mode in ("build", "churn", "off"):
         for bridge in (True, False):
             collect(f"dev/{mode}/{bridge}", lua.globals().DevGui.Build(
@@ -3693,6 +3997,30 @@ def every_caption_can_be_drawn():
                              {k: (lua.table_from(v) if isinstance(v, dict) else v)
                               for k, v in cfg.items()})})
     collect("myplot", lua.globals().MyPlotGui.Build(st))
+
+    # THE TEAM VIEW, in every state a neighbour row can be in -- each is a
+    # different sentence, so each is a different set of glyphs. The four rows
+    # together are also the widest this panel gets.
+    nbrs = [{"index": 33, "owner": "A Guest", "adjacent": True, "teamed": False,
+             "asked": False, "invited": False},
+            {"index": 35, "owner": "Someone Else", "adjacent": True,
+             "teamed": True, "asked": False, "invited": False},
+            {"index": 24, "owner": "CyberSlime2077", "adjacent": True,
+             "teamed": False, "asked": False, "invited": True},
+            {"index": 44, "owner": None, "adjacent": False, "teamed": False,
+             "asked": False, "invited": False}]
+    for mine, rows in ((34, nbrs), (34, []), (None, [])):
+        team = ["plot 35 (Someone Else)"] if rows else []
+        collect(f"myplot/team/{mine}/{len(rows)}",
+                lua.globals().MyPlotGui.Build(lua.table_from({
+                    "plotsOn": True, "view": "team", "mine": mine,
+                    "team": lua.table_from(team),
+                    "neighbours": lua.table_from(
+                        [lua.table_from(r) for r in rows]),
+                    "status": "request sent to plot 33",
+                    "cfg": lua.table_from(
+                        {k: (lua.table_from(v) if isinstance(v, dict) else v)
+                         for k, v in cfg.items()})})))
 
     for phase in ("off", "prep", "build", "buffer", "ended"):
         collect(f"event/{phase}", lua.globals().EventGui.Build(lua.table_from(
@@ -3860,6 +4188,7 @@ def gui_lua():
                 "RosterHud.lua", "EventGui.lua", "ConfirmGui.lua",
                 "SettingsGui.lua", "PlotsGui.lua", "MenuGui.lua", "MyPlotGui.lua",
                 "StyleGui.lua", "FocusGui.lua", "ProtectionGui.lua", "BackupsGui.lua", "PeopleGui.lua", "DevGui.lua",
+                "PresetGui.lua",
                 "Tutorial.lua", "TutorialGui.lua",
                 "Checklist.lua", "ChecklistGui.lua")
     lua.globals().Settings.Sv_Load(False)
@@ -4125,14 +4454,38 @@ def the_my_plot_panel_fits_in_every_state():
             "plotsOn": True, "mine": 34,
             "standing": {"kind": "road"},
             "team": [f"plot {i} (Player {i})" for i in range(35, 41)]}),
+        # THE TEAM VIEW. Four rows, each with a button, plus LEAVE THE TEAM and
+        # the map -- the most crowded this panel ever gets, and the state where
+        # a button sitting under another one would be invisible rather than
+        # obviously wrong.
+        ("team view, four neighbours", {
+            "plotsOn": True, "view": "team", "mine": 34,
+            "team": ["plot 35 (Someone Else)"],
+            "neighbours": [
+                {"index": 33, "owner": "Somebody With A Long Name",
+                 "adjacent": True, "teamed": False, "asked": False,
+                 "invited": False},
+                {"index": 35, "owner": "Someone Else", "adjacent": True,
+                 "teamed": True, "asked": False, "invited": False},
+                {"index": 24, "owner": "CyberSlime2077", "adjacent": True,
+                 "teamed": False, "asked": False, "invited": True},
+                {"index": 44, "owner": None, "adjacent": False,
+                 "teamed": False, "asked": False, "invited": False}]}),
+        ("team view, no plot yet", {
+            "plotsOn": True, "view": "team", "neighbours": []}),
+        ("team view, edge of the city", {
+            "plotsOn": True, "view": "team", "mine": 1, "neighbours": []}),
     ]
     for label, extra in states:
         state = dict(extra)
         state["cfg"] = cfg
-        table = lua.table_from({
-            k: (lua.table_from(v) if isinstance(v, dict)
-                else (lua.table_from(list(v)) if isinstance(v, list) else v))
-            for k, v in state.items()})
+        def pack(v):
+            if isinstance(v, dict):
+                return lua.table_from(v)
+            if isinstance(v, list):
+                return lua.table_from([pack(x) for x in v])
+            return v
+        table = lua.table_from({k: pack(v) for k, v in state.items()})
         # cfg has a nested dict of its own
         if "cfg" in state:
             table["cfg"] = lua.table_from({
@@ -4396,8 +4749,7 @@ def _plot_fixture(lua):
     """)
     Prot.sv_setResolver(prot, resolver)
 
-    bx, by = lua.globals().Layout.plotCentre(plots["layout"], 1)
-    assert bx is not None, "plot 1 does not exist -- the fixture is wrong"
+    bx, by = own_a_plot(lua, plots)
     block = float(P.BLOCK)
     make_body = lua.execute("""
         return function( x, y, z )
@@ -4478,9 +4830,13 @@ def over_budget_never_opens_somebody_elses_plot():
     P, Prot = lua.globals().Plots, lua.globals().Protection
     plots, prot, body = _plot_fixture(lua)
 
-    # claimed by somebody who is not here, which is the LOCKED case
-    ok, why = P.sv_claim(plots, 1, "SW-0001")
-    assert ok, f"could not claim plot 1: {why}"
+    # Claimed by somebody who is NOT here, which is the LOCKED case. The shared
+    # fixture hands back a plot that is owned AND held -- since V79 that is the
+    # only way a plot is buildable at all -- so reaching the locked case means
+    # undoing both halves, not just claiming over the top.
+    plots["owners"][1] = "SW-0001"
+    plots["zoneOpen"] = lua.table_from({})
+    plots["zoneHeld"] = lua.table_from({})
     assert P.sv_bodyIsOpen(plots, body) is False, (
         "an empty claimed plot is not locked -- the fixture cannot test this")
 
@@ -7372,9 +7728,23 @@ def everything_the_checklist_tells_you_to_type_still_exists():
 
         text = " ".join([str(item["title"]), " ".join(steps), str(item["pass"])])
 
+        # A PREFIX OF A CAPTION COUNTS, and it has to.
+        #
+        # The pattern needs two letters a word, so a caption containing a
+        # one-letter word is cut in half by it: "TEAM UP WITH A NEIGHBOUR" comes
+        # out of the text as "TEAM UP WITH", which is not equal to any caption
+        # and never can be. Exact matching therefore forbade the checklist from
+        # ever naming such a button -- and the failure it produced ("is not a
+        # button on any panel") says the opposite of what was wrong.
+        #
+        # Substring, not equality. It still catches the thing this exists for --
+        # a checklist telling somebody to press a button that is not there --
+        # because a phrase absent from every caption is still absent.
         for phrase in sorted(set(re.findall(
                 r"\b([A-Z][A-Z0-9]+(?: [A-Z][A-Z0-9]+)+)\b", text))):
-            if phrase in captions or all(w in PROSE for w in phrase.split()):
+            if any(phrase in c for c in captions):
+                continue
+            if all(w in PROSE for w in phrase.split()):
                 continue
             problems.append(f"{item['id']}: {phrase!r} is not a button on any panel")
 
@@ -9593,7 +9963,8 @@ def no_panel_is_taller_than_the_canvas():
     MARGIN = 30                       # the panel is centred, so this is per edge
     for name in ("MenuGui", "PeopleGui", "SettingsGui", "PlotsGui", "EventGui",
                  "MyPlotGui", "StyleGui", "FocusGui", "ProtectionGui",
-                 "BackupsGui", "DevGui", "ConfirmGui"):
+                 "BackupsGui", "DevGui", "ConfirmGui", "PresetGui",
+                 "TutorialGui", "ChecklistGui"):
         g = lua.globals()[name]
         if g is None or g.W is None or g.H is None:
             continue
@@ -9605,6 +9976,16 @@ def no_panel_is_taller_than_the_canvas():
 
 
 def main():
+    check("panels: every panel on disk is actually checked",
+          every_panel_is_actually_checked)
+    check("teams: only the four next to you, and never across a road",
+          teaming_is_offered_to_the_right_four_and_nobody_else)
+    check("teams: a neighbour row says why, and only offers what works",
+          a_neighbour_row_says_why_and_offers_a_button_only_when_it_can)
+    check("teams: leaving a team does not take your plot",
+          leaving_a_team_does_not_take_your_plot)
+    check("teams: the whole thing is reachable without typing",
+          the_team_screen_is_reachable_without_typing)
     check("rules: over budget still lets you trim", over_budget_still_lets_you_trim)
     check("rules: over budget never opens somebody else's plot",
           over_budget_never_opens_somebody_elses_plot)
@@ -9772,7 +10153,8 @@ def main():
           the_filler_becomes_shared_only_after_teaming)
     check("plots: public ground belongs to nobody", public_ground_belongs_to_nobody)
     check("plots: spawn is the middle of the map", spawn_is_the_middle_of_the_map)
-    check("plots: an empty unclaimed plot stays open", an_unclaimed_empty_plot_stays_open)
+    check("plots: an unclaimed plot is nobody's to build on",
+          an_unclaimed_plot_is_nobodys_to_build_on)
     check("plots: a player's block of our materials is not the city",
           a_players_block_of_our_materials_is_not_the_city)
     check("plots: the decking is safe but litter standing on it is not",

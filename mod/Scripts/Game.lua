@@ -8,6 +8,7 @@ dofile( "$CONTENT_DATA/Scripts/Identity.lua" )
 dofile( "$CONTENT_DATA/Scripts/SettingsGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/PlotsGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/StyleGui.lua" )
+dofile( "$CONTENT_DATA/Scripts/PresetGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/GuardedTools.lua" )
 dofile( "$CONTENT_DATA/Scripts/MenuGui.lua" )
 dofile( "$CONTENT_DATA/Scripts/Event.lua" )
@@ -1489,9 +1490,11 @@ function Game.client_onCreate( self )
 	sm.game.bindChatCommand( "/home", {}, "cl_onAdminCommand",
 		"Teleport back to your own plot" )
 	sm.game.bindChatCommand( "/plot",
-		{ { "string", "action", false, { "claim", "info", "team", "leave", "list" } },
+		{ { "string", "action", false,
+		    { "claim", "info", "team", "unteam", "leave", "list" } },
 		  { "string", "who", true } },
-		"cl_onAdminCommand", "claim | info | team <player> (front, behind, left or right) | leave | list" )
+		"cl_onAdminCommand",
+		"claim | info | team <player or plot number> | unteam | leave | list" )
 	sm.game.bindChatCommand( "/players", {}, "cl_onAdminCommand",
 		"Who is here, with session id and permanent id" )
 	-- Everything a builder does with their own ground, on one panel. NOT host
@@ -1510,9 +1513,15 @@ function Game.client_onCreate( self )
 		"cl_onAdminCommand",
 		"Host: start <prep> <build> | stop | pause | resume | skip | add <min> | status" )
 
+	-- NO enumValues, and that is the change. The four built-ins used to be an
+	-- enum, which is a nicer prompt right up until the host saves a preset of
+	-- their own and the command will not accept its name. Trailing optional
+	-- words rejoin into a name with spaces in it, the same way /kick does.
 	sm.game.bindChatCommand( "/preset",
-		{ { "string", "name", true, { "build", "show", "lockdown", "sandbox" } } },
-		"cl_onAdminCommand", "Host: apply a whole set of settings at once" )
+		{ { "string", "name", true }, { "string", "word", true },
+		  { "string", "more", true }, { "string", "rest", true } },
+		"cl_onAdminCommand",
+		"Host: <name> to apply | save <name> | delete <name> | blank to list" )
 	sm.game.bindChatCommand( "/citystyle", { { "string", "name", true } },
 		"cl_onAdminCommand",
 		"style the city -- /citystyle for the list. Rebuild the city to apply it." )
@@ -1742,6 +1751,14 @@ function Game.cl_onSettingsGuiClick( self, widgetName, data )
 		return
 	end
 
+	-- SAVE YOURS: the host's own named presets. The four built-in ones stay as
+	-- one-press buttons in the nav; this is where saving and deleting live.
+	if data.action == "presets" then
+		self.network:sendToServer( "sv_n_openPanel",
+			{ panel = "presets", back = "settings" } )
+		return
+	end
+
 	-- Switching tab or page is pure presentation, so it re-renders locally
 	-- instead of round-tripping to the server. Only a value change needs the
 	-- server, because only the server decides what the settings are.
@@ -1774,6 +1791,112 @@ end
 
 function Game.cl_onSettingsGuiClose( self, widgetName )
 	self:cl_forgetPanel()
+end
+
+
+--[[ presets panel ]]
+
+-- GATED AT THE OPENER, not at the routes into it. Three openers were missing
+-- this test and nothing leaked only because every route was gated separately --
+-- which is relying on the client, since the panel tree is built on the player's
+-- own machine. The opener is the one choke point every route ends at.
+function Game.sv_openPresetGui( self, player, status, back, page )
+	if player ~= sm.player.getHostPlayer() then return end
+
+	local builtin = {}
+	for _, key in ipairs( Settings.PRESET_ORDER ) do
+		builtin[#builtin + 1] = { key = key, label = Settings.PRESETS[key].label }
+	end
+	local mine = {}
+	for _, key in ipairs( Settings.Sv_CustomNames() ) do
+		mine[#mine + 1] = { key = key,
+			label = tostring( ( Settings.custom[key] or {} ).label or key ) }
+	end
+
+	self.network:sendToClient( player, "client_openPresetGui", {
+		builtin = builtin, mine = mine, page = page or 1,
+		status = status, back = back or "settings",
+	} )
+end
+
+function Game.client_openPresetGui( self, data )
+	if self.cl == nil then self.cl = {} end
+	self.cl.presetState = data
+	self:cl_showPanel( "presets", PresetGui.Build( data ) )
+end
+
+function Game.cl_onPresetGuiClose( self )
+	self:cl_forgetPanel()
+end
+
+function Game.cl_onPresetGuiClick( self, widgetName, data )
+	if type( data ) ~= "table" then return end
+	if data.action == "close" then
+		self:cl_closeLater( "panel" )
+		return
+	end
+	if data.action == "back" then
+		local back = ( self.cl and self.cl.presetState and self.cl.presetState.back )
+			or "settings"
+		self.network:sendToServer( "sv_n_openPanel", { panel = back } )
+		return
+	end
+	self.network:sendToServer( "sv_n_presetGuiAction", {
+		action = data.action, preset = data.preset, page = data.page,
+		-- carried on every hop so BACK returns to whichever panel opened this,
+		-- the same way StyleGui threads it through
+		back = ( self.cl and self.cl.presetState and self.cl.presetState.back ) } )
+end
+
+-- THE HANDLER DOES NOT TOUCH THE GUI, and that is not a style preference.
+--
+-- Building a fresh widget tree from inside a text callback destroys the EditBox
+-- that currently holds the keyboard focus, and that crashed the game outright:
+-- "game crashed when I tried to change the number of build time", with the log
+-- ending mid-line and no Lua error. So this sends and returns; the server sends
+-- the panel back a moment later with the result on its status line.
+function Game.cl_onPresetNameTyped( self, widgetName, text )
+	local ok, err = pcall( function()
+		if widgetName ~= PresetGui.NAME_BOX then return end
+		self.network:sendToServer( "sv_n_presetGuiAction", {
+			action = "save", name = tostring( text or "" ),
+			back = ( self.cl and self.cl.presetState and self.cl.presetState.back ) } )
+	end )
+	if not ok and not ( self.cl and self.cl.presetNameFaulted ) then
+		if self.cl then self.cl.presetNameFaulted = true end
+		sm.log.warning( "[ServerWorks] preset name failed: " .. tostring( err ) )
+	end
+end
+
+function Game.sv_n_presetGuiAction( self, data, player )
+	if type( data ) ~= "table" then return end
+	if player ~= sm.player.getHostPlayer() then return end
+
+	local status, page = nil, data.page
+	if data.action == "save" then
+		local _, detail = Settings.Sv_SavePreset( data.name )
+		status = detail
+	elseif data.action == "delete" then
+		local _, detail = Settings.Sv_DeletePreset( data.preset )
+		status = detail
+	elseif data.action == "apply" then
+		local ok, detail = Settings.Sv_ApplyPreset( data.preset )
+		status = detail
+		if ok then
+			-- Exactly what /preset does after an apply. A preset can turn a tool
+			-- on or off, and the guard runs on the CLIENT off a list the server
+			-- pushed -- so a client that never got the new list enforces the old
+			-- one while looking perfectly healthy.
+			self.sv.blockedTools = Settings.Sv_BlockedTools()
+			self.sv.hazardTools = Settings.Sv_HazardTools()
+			self.sv.hostOnlyTools = Settings.Sv_HostOnlyTools()
+			self.network:sendToClients( "client_setBlockedTools", self:sv_toolPayload() )
+			self:sv_toWorld( "/settingschanged", {}, player )
+			self:sv_broadcast( "Server preset: " .. detail )
+		end
+	end
+
+	self:sv_openPresetGui( player, status, data.back, page )
 end
 
 
@@ -2523,12 +2646,13 @@ function Game.cl_onMyPlotClick( self, widgetName, data )
 		self.network:sendToServer( "sv_n_openMenu", {} )
 		return
 	end
-	self.network:sendToServer( "sv_n_myPlotAction", { action = data.action } )
+	self.network:sendToServer( "sv_n_myPlotAction",
+		{ action = data.action, index = data.index, view = data.view } )
 end
 
 function Game.sv_n_myPlotAction( self, data, player )
 	if type( data ) ~= "table" then return end
-	local map = { claim = "claim", leave = "leave" }
+	local map = { claim = "claim", leave = "leave", unteam = "unteam" }
 	-- panel = "myplot" tells the world to redraw the panel with the reply on it
 	-- rather than only writing to a chat log that is behind the panel.
 	if data.action == "find" then
@@ -2540,6 +2664,24 @@ function Game.sv_n_myPlotAction( self, data, player )
 	elseif map[data.action] then
 		self:sv_toWorld( "/plot", { "/plot", map[data.action] }, player,
 			{ panel = "myplot" } )
+
+	-- SWITCHING VIEW IS A SERVER ROUND TRIP, not a local re-render, because the
+	-- team screen is built out of live plot state -- who owns what, and which
+	-- requests are outstanding. Re-rendering from a stale client copy would
+	-- show a neighbour as unclaimed seconds after they claimed.
+	elseif data.action == "view" then
+		local view = ( data.view == "team" ) and "team" or "plot"
+		self:sv_toWorld( "/myplot", { "/myplot", view }, player )
+
+	-- A PLOT NUMBER, never a name. The world resolves it to whoever owns that
+	-- plot; see World's /plot team branch for why a number is the safe handle.
+	elseif data.action == "team" then
+		local index = tonumber( data.index )
+		if index ~= nil then
+			self:sv_toWorld( "/plot", { "/plot", "team", tostring( index ) },
+				player, { panel = "myplot", view = "team" } )
+		end
+
 	elseif data.action == "refresh" then
 		self:sv_toWorld( "/myplot", {}, player )
 	end
@@ -4085,6 +4227,8 @@ function Game.sv_n_openPanel( self, data, player )
 		self:sv_openSettingsGui( player, "safety", 1 )
 	elseif data.panel == "style" then
 		self:sv_openStyleGui( player, nil, nil, data.back )
+	elseif data.panel == "presets" then
+		self:sv_openPresetGui( player, nil, data.back )
 	elseif data.panel == "focus" then
 		self:sv_openFocusGui( player )
 	elseif data.panel == "protection" then
@@ -4265,10 +4409,14 @@ function Game.sv_n_adminCommand( self, params, player, viaPanel )
 		reply( "  /plot claim         claim the plot you are stood on" )
 		reply( "  /plot info          who owns this ground" )
 		reply( "  /myplot             claim, find and give up your plot, on one panel" )
-		reply( "  /plot team <name>   ask a neighbour to team up (they type it back)" )
-		reply( "                      front, behind, left or right only -- not diagonal." )
-		reply( "                      Teams chain, so a corner joins via whoever links you." )
-		reply( "  /plot leave         give up your plot" )
+		reply( "  /plot team <name|number>  ask a neighbour to team up" )
+		reply( "                      they ask you back to agree. The plot NUMBER works" )
+		reply( "                      too, and is the safe handle -- names can hold" )
+		reply( "                      characters you cannot type." )
+		reply( "                      Front, behind, left or right only -- not diagonal," )
+		reply( "                      and not across a road. Teams chain." )
+		reply( "  /plot unteam        leave the team, keep your plot" )
+		reply( "  /plot leave         give up your plot (and the team with it)" )
 		reply( "  /home               teleport back to your own plot" )
 		reply( "  /players            who is here     /rules  the server rules" )
 		reply( "  /budget             what your plot is using, against what it is allowed" )
@@ -4342,6 +4490,30 @@ function Game.sv_n_adminCommand( self, params, player, viaPanel )
 			for _, line in ipairs( Settings.Sv_PresetLines() ) do reply( line ) end
 			return
 		end
+
+		-- SAVE AND DELETE ANSWER HERE AND RETURN, before the apply path below.
+		-- Neither changes the live settings, so neither may run the tool
+		-- re-push and the broadcast that follows an apply -- announcing "Server
+		-- preset: saved 'friday'" to the whole lobby would be a lie about what
+		-- just happened to their world.
+		local verb = string.lower( tostring( name ) )
+		if verb == "save" or verb == "delete" or verb == "remove" then
+			-- The name is every remaining word joined back up. The chat parser
+			-- splits on spaces and has no quoting, so "friday night" arrives as
+			-- two params -- the same fix /kick uses for names with spaces.
+			local words = {}
+			for i = 3, #params do words[#words + 1] = tostring( params[i] ) end
+			local given = table.concat( words, " " )
+			local ok, detail
+			if verb == "save" then
+				ok, detail = Settings.Sv_SavePreset( given )
+			else
+				ok, detail = Settings.Sv_DeletePreset( given )
+			end
+			reply( detail )
+			return
+		end
+
 		local ok, detail = Settings.Sv_ApplyPreset( name )
 		reply( detail )
 		if ok then

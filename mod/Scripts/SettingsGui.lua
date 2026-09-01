@@ -207,8 +207,15 @@ function SettingsGui.Build( values, group, page, status )
 	end
 
 	-- presets, bottom of the nav column
-	-- presets sit above the footer rule: 22 for the heading plus 30 a row
-	local py = SettingsGui.H - 78 - ( 22 + 30 * #( Settings.PRESET_ORDER or {} ) )
+	--
+	-- The four built-ins stay one press each -- they are the ones a host reaches
+	-- for with a lobby already in the world, and putting them behind another
+	-- panel would cost the one thing they are for. SAVE YOURS is the way to the
+	-- full picker: the host's own named presets, and the box that makes one.
+	--
+	-- presets sit above the footer rule: 22 for the heading plus 30 a row, and
+	-- one more row for SAVE YOURS
+	local py = SettingsGui.H - 78 - ( 22 + 30 * ( #( Settings.PRESET_ORDER or {} ) + 1 ) )
 	kids[#kids + 1] = text( "PresetHead", "PRESETS", 14, py, NAV_W - 28, 18,
 		"SM_LabelTiny", DIM, "Left" )
 	py = py + 22
@@ -218,6 +225,9 @@ function SettingsGui.Build( values, group, page, status )
 			{ action = "preset", preset = name }, "SM_ButtonSmall" )
 		py = py + 30
 	end
+	kids[#kids + 1] = button( "PresetMine", "SAVE YOURS",
+		14, py, NAV_W - 28, 26, "StyledButtonLarge",
+		{ action = "presets" }, "SM_ButtonSmall" )
 
 	-- the rows
 	local rows = SettingsGui.RowsFor( group )

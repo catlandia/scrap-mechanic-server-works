@@ -11,7 +11,7 @@ Read it before believing any other document in here.
 
 ## The one thing to understand about the checks
 
-`python dev/check_all.py` runs **222 checks** in ten seconds and they all pass.
+`python dev/check_all.py` runs **229 checks** in ten seconds and they all pass.
 That is worth having and it is not evidence the mod works.
 
 | what the checks DO touch | what they CANNOT touch |
@@ -505,6 +505,24 @@ Every line of it is checks-and-reasoning; nothing here has been seen on a screen
   is not sitting on top of the title.
 
 ---
+
+### V79 -- the plot rule changed, and none of it has been played
+
+Three things, all of them code-complete and check-covered, **none of them run in
+a real world**. They are the top of the list next time the game is open:
+
+| | what to look at |
+|---|---|
+| **unclaimed ground is shut** | stand on a plot nobody owns and try to place a block. It must refuse. Claim it and the same block must go down. Checklist `plots-free-shut` |
+| **a free plot must not push you off** | stand on one for ten seconds. Being shoved off free ground would make claiming a race, and a plot somebody else owns must still push. `plots-free-stand` |
+| **the free plot FLOOR must not be erasable** | point the remove tool at the concrete of a free plot. Junk sitting on it should go; the slab must not. This is the half that would have shipped broken. `plots-free-litter` |
+| **TEAM UP** | MY PLOT, then TEAM UP WITH A NEIGHBOUR. The list is the feature -- the rules behind it are old and were only ever unreachable. `plots-team-panel` |
+| **SAVE YOURS** | settings nav, type a name, press Enter. There is no SAVE button and that is deliberate |
+
+The teaming rules themselves (no diagonals, no teaming across a road, chained
+teams, the shared seam) have been correct in `Plots.lua` for versions and are
+checked outside the game. What has never been exercised is the panel, and the
+two-person half of it needs a second person like everything else in TWO PEOPLE.
 
 ### New in V64-V78, and what of it has run
 

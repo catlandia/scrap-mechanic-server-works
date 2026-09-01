@@ -38,6 +38,21 @@
 Settings = {}
 
 Settings.PATH = "$CONTENT_DATA/Settings.json"
+
+-- THE HOST'S OWN PRESETS, saved under names they choose.
+--
+-- ASKED FOR: "make settings being able to set as pressets with names."
+--
+-- Its own file rather than a corner of Settings.json, for the reason every
+-- other file here is separate: Settings.json is rewritten on every /set, and a
+-- host's saved configurations are the last thing that should share a write path
+-- with the value they are in the middle of nudging.
+--
+-- It survives a new world. Sv_ResetWorldState clears what describes a WORLD,
+-- and a saved configuration describes the HOST -- the same distinction that
+-- keeps Checklist.json and `developer` out of the reset. A host who saved
+-- "friday night" once should find it there on every world they ever make.
+Settings.PRESET_PATH = "$CONTENT_DATA/Presets.json"
 Settings.values = {}
 
 -- Tool uuids, read out of the game's own scripts rather than a wiki:
@@ -121,10 +136,21 @@ function Settings.DevCommandAllowed( params )
 	return arg == escape or ( params[1] == "/crowd" and arg == "0" )
 end
 
--- MAY PEOPLE BUILD ON THE CITY ITSELF -- the roads, the plaza, the decking?
+-- MAY PEOPLE BUILD ON THE CITY ITSELF -- the roads, the plaza, the decking,
+-- and every plot nobody has claimed?
 --
 -- ASKED FOR: "add a settings that alows for the city to be modified too.
 -- because in the stream. the host allowed to modify the plaza. and the road."
+-- Later, of unclaimed plots: "unless the settings for the whole renovation is
+-- on." So this is THE renovation switch -- everything the city owns rather than
+-- only the parts between the plots, which is what a host means when they open
+-- the place up.
+--
+-- WHAT IT NEVER OPENS: a plot somebody has claimed. Renovation is permission
+-- over unowned ground, and someone else's build is not that. Nor is it a way
+-- round the protection mode -- Plots.sv_freeGroundVerdict sits behind the host
+-- bubble and Protection.profileFor short-circuits on a locked mode long before
+-- either, so a /lockdown still freezes everything.
 --
 -- Off by default, because the default is a plot event and the whole reason a
 -- plot event works is that the ground between the plots is not anybody's to
@@ -505,10 +531,18 @@ Settings.SCHEMA = {
 	{ key = "maximportparts", kind = "number", default = 0,
 	  help = "biggest creation NOTlift will import, in parts (0 = no limit)" },
 
-	{ key = "plots", kind = "bool", default = false, help = "restrict building to owned plots" },
+	-- ON by default, and that is a deliberate reversal.
+	--
+	-- "the default when joining is build mode. and you should only be able to
+	-- build on plot that is owned." Plot ownership off by default meant a fresh
+	-- world was a free-for-all until the host found this switch -- which is the
+	-- opposite of what an event server is for, and the opposite of what every
+	-- other default here assumes. See Settings.Sv_ResetWorldState, which forces
+	-- it on for each new world for the same reason.
+	{ key = "plots", kind = "bool", default = true, help = "restrict building to owned plots" },
 	-- See Settings.CityIsOpen for what this costs as well as what it gives.
 	{ key = "citybuild", kind = "bool", default = false,
-	  help = "let people build on the roads, the plaza and the decking" },
+	  help = "renovation: build anywhere nobody has claimed -- roads, plaza, deck, free plots" },
 	{ key = "pushintruders", kind = "bool", default = true,
 	  help = "shove players off plots they do not own" },
 
@@ -756,6 +790,7 @@ function Settings.Sv_Load( applyNow )
 		end
 	end
 	Settings.Sv_Migrate()
+	Settings.Sv_LoadPresets()
 	if applyNow ~= false then
 		Settings.Sv_ApplyAll()
 	end
@@ -999,8 +1034,114 @@ Settings.PRESETS = {
 
 Settings.PRESET_ORDER = { "build", "show", "lockdown", "sandbox" }
 
+--[[ the host's own presets ]]
+
+-- Words a preset may not be called, because /preset reads its first argument as
+-- a verb before it reads it as a name. A preset called "save" could be created
+-- and then never applied, which is a trap rather than a limitation.
+Settings.PRESET_VERBS = { save = true, delete = true, list = true, remove = true }
+
+-- The one key a saved preset must never carry. worldstamp is how the mod knows
+-- whether the files on disk belong to THIS world (see Sv_ResetWorldState);
+-- restoring a stamp from another world would tell a fresh world it was old and
+-- skip the reset that keeps a new world clean.
+Settings.PRESET_NEVER = { worldstamp = true, migrations = true }
+
+Settings.custom = {}
+
+function Settings.Sv_LoadPresets()
+	Settings.custom = {}
+	local ok, exists = pcall( sm.json.fileExists, Settings.PRESET_PATH )
+	if ok and exists then
+		local read, loaded = pcall( sm.json.open, Settings.PRESET_PATH )
+		if read and type( loaded ) == "table" then
+			Settings.custom = loaded
+		end
+	end
+end
+
+function Settings.Sv_SavePresetFile()
+	local ok, err = pcall( sm.json.save, Settings.custom, Settings.PRESET_PATH )
+	if not ok then
+		sm.log.warning( "[ServerWorks] could not write presets: " .. tostring( err ) )
+	end
+end
+
+-- A name a host typed, reduced to something that can be a json key, a chat
+-- argument and a widget name at once. Lower case with spaces collapsed to
+-- hyphens: "Friday Night" and "friday night" are the same preset, which is what
+-- somebody typing it a week later expects.
+function Settings.PresetKey( name )
+	local key = string.lower( tostring( name or "" ) )
+	key = string.gsub( key, "%s+", "-" )
+	key = string.gsub( key, "[^%w%-_]", "" )
+	return key
+end
+
+function Settings.Sv_SavePreset( name )
+	local key = Settings.PresetKey( name )
+	if key == "" then
+		return false, "give the preset a name -- /preset save <name>"
+	end
+	if #key > 24 then
+		return false, "that name is too long -- 24 characters at most"
+	end
+	if Settings.PRESETS[key] then
+		return false, string.format(
+			"'%s' is one of the four built-in presets and cannot be written over", key )
+	end
+	if Settings.PRESET_VERBS[key] then
+		return false, string.format( "'%s' is a /preset command word -- pick another name", key )
+	end
+
+	-- EVERY SETTING, not a chosen subset. A preset the host saved is "the way I
+	-- had it", and a preset that quietly dropped the one switch they had just
+	-- changed would be worse than no preset at all. The two keys in
+	-- PRESET_NEVER are bookkeeping rather than settings.
+	local values, n = {}, 0
+	for _, row in ipairs( Settings.SCHEMA ) do
+		if not Settings.PRESET_NEVER[row.key] then
+			values[row.key] = Settings.values[row.key]
+			n = n + 1
+		end
+	end
+	local existed = Settings.custom[key] ~= nil
+	Settings.custom[key] = { label = tostring( name ), values = values }
+	Settings.Sv_SavePresetFile()
+	sm.log.info( string.format( "[ServerWorks] preset '%s' saved, %d settings", key, n ) )
+	return true, string.format( "%s '%s' -- %d settings",
+		existed and "replaced" or "saved", key, n )
+end
+
+function Settings.Sv_DeletePreset( name )
+	local key = Settings.PresetKey( name )
+	if Settings.PRESETS[key] then
+		return false, string.format( "'%s' is built in -- it cannot be deleted", key )
+	end
+	if Settings.custom[key] == nil then
+		return false, string.format( "there is no preset called '%s'", key )
+	end
+	Settings.custom[key] = nil
+	Settings.Sv_SavePresetFile()
+	return true, string.format( "deleted preset '%s'", key )
+end
+
+-- Every custom preset, newest-looking order being meaningless here, so
+-- alphabetical -- a host scanning for the one they want reads a sorted list
+-- faster than an insertion-ordered one.
+function Settings.Sv_CustomNames()
+	local names = {}
+	for key in pairs( Settings.custom ) do names[#names + 1] = key end
+	table.sort( names )
+	return names
+end
+
 function Settings.Sv_ApplyPreset( name )
-	local preset = Settings.PRESETS[string.lower( tostring( name ) )]
+	local key = string.lower( tostring( name ) )
+	-- Built in first. A host cannot save over one of these (Sv_SavePreset
+	-- refuses), so the two namespaces cannot collide -- but looking here first
+	-- means that stays true even if a Presets.json is edited by hand.
+	local preset = Settings.PRESETS[key] or Settings.custom[Settings.PresetKey( name )]
 	if preset == nil then
 		return false, string.format( "no preset called '%s'", tostring( name ) )
 	end
@@ -1021,8 +1162,18 @@ end
 function Settings.Sv_PresetLines()
 	local lines = {}
 	for _, key in ipairs( Settings.PRESET_ORDER ) do
-		lines[#lines + 1] = string.format( "  %-9s %s", key, Settings.PRESETS[key].label )
+		lines[#lines + 1] = string.format( "  %-12s %s", key, Settings.PRESETS[key].label )
 	end
+	local mine = Settings.Sv_CustomNames()
+	if #mine > 0 then
+		lines[#lines + 1] = "  -- yours --"
+		for _, key in ipairs( mine ) do
+			lines[#lines + 1] = string.format( "  %-12s %s", key,
+				tostring( Settings.custom[key].label or key ) )
+		end
+	end
+	lines[#lines + 1] = "  /preset save <name>    save what you have set right now"
+	lines[#lines + 1] = "  /preset delete <name>  remove one of yours"
 	return lines
 end
 
@@ -1200,8 +1351,25 @@ end
 -- preferences -- which tools are on, alarm thresholds, plot size, city style --
 -- and losing those on every new world would be its own bug. Only the two that
 -- describe the state of a particular world are reset.
+-- A NEW WORLD COMES UP IN BUILD MODE, WITH PLOTS ON.
+--
+-- "the default when joining is build mode. and you should only be able to build
+-- on plot that is owned."
+--
+-- protection and buildopen were already reset here -- a fresh world inheriting
+-- the last one's lockdown is the bug this function exists for. `plots` was not,
+-- and it defaulted OFF, so the one thing that makes this an event server rather
+-- than a creative world had to be switched on by hand every time. It is world
+-- regime, exactly like the other two: a new world has a new city and no claims
+-- on it, so there is nothing a host could lose by it coming up owned-plots-only.
+--
+-- `citybuild` is deliberately NOT reset. It is the renovation switch, it is off
+-- by default anyway, and a host who turned it on for how they run events should
+-- not have to find it again -- the same rule that keeps `developer` out of here.
 function Settings.Sv_ResetWorldState( stamp )
 	Settings.Sv_SetQuiet( "protection", "open" )
 	Settings.Sv_SetQuiet( "buildopen", true )
+	Settings.Sv_SetQuiet( "plots", true )
+	Settings.Sv_SetQuiet( "pushintruders", true )
 	Settings.Sv_SetQuiet( "worldstamp", stamp )
 end
