@@ -14,112 +14,93 @@ Companions:
 [`BUTTONS.md`](BUTTONS.md) everything a json GUI needs ·
 [`CHANGELOG.md`](CHANGELOG.md) what every version fixed
 
-Current version: **V76**. All 222 checks pass. `python dev/check_all.py --sync`
+Current version: **V78**. All 224 checks pass. `python dev/check_all.py --sync`
 before playing, and **restart Scrap Mechanic** — scripts are read at world load.
 
 ---
 
-## V65, and what it changed about who can do what
+## WHERE THIS LEFT OFF -- read this first
 
-- **A guest has one chat command: `/menu`.** Everything else is host-only. They
-  still do everything they could before, through buttons -- the menu is now the
-  only door rather than one of two. If something a guest needs turns out NOT to
-  be on it, that is the bug, not the refusal.
-- **Every host panel gates at its opener**, not only on the menu that hides the
-  button.
-- **`citybuild`** (SERVER SETTINGS, PLOTS) opens the roads, the plaza and the
-  decking for building. Off by default. It does not survive a `/lockdown`, and
-  it costs the litter escape on shared ground -- see the changelog.
-- **The unstuck button lands in the middle of the city**, 20 blocks above
-  whatever is standing there, instead of vanilla's fixed 16,16 out in a field.
-- **The ban list is proven to survive a new world**, perma ids included.
+**The mod is finished enough to publish and has never been published.** That is
+the single outstanding action and it is one nobody but the owner can do.
 
----
+`description.json` has no `fileId`, which is how you can tell: it has never been
+uploaded. Publishing happens inside the game and writes that id back into the
+file. **Tell the next session once it is done** so the id gets committed --
+otherwise the next `--sync` overwrites it.
 
-## V64, and what it changed about the shape of a session
+Before uploading: **restart Scrap Mechanic.** `description.json`, `preview.jpg`
+and every script are read at startup, so a running game is showing an older
+build than the folder holds.
 
-Asked for when the owner's time to test got shorter, which is the constraint
-this build is written around:
+### What changed, V64 to V78
 
-> "look now ive got far less time to test and work on the mod ... you are gonna
-> polish the mod in state that it is now."
+The detail is in [`CHANGELOG.md`](CHANGELOG.md); this is what a person needs to
+know to use it.
 
-So nothing new was started. What changed is what the mod OFFERS:
+- **`/developer on`** gates DEV TOOLS, TESTING CHECKLIST, `/crowd`, `/bench`,
+  `/bridge` and `/check`. **Off by default**, so a fresh world hides them. Every
+  dev tool keeps its OFF switch working whatever the mode -- `/crowd off` never
+  refuses -- so the switch can never strand a crowd.
+- **A guest may type exactly one command: `/menu`.** Everything else is
+  host-only and reached by button. If a guest needs something that turns out not
+  to be on the menu, that is the bug, not the refusal.
+- **BANS** is its own menu entry. Banning is a list you click, never a name you
+  type -- a Scrap Mechanic name can hold characters a host cannot type at all,
+  so every button carries a perma id. The allow list works on an empty server,
+  which is the only time it is any use.
+- **HOW THIS WORKS** is the in-game tutorial: three sections you pick between,
+  gated -- players get one, a host gets two, developer mode adds the third. It
+  opens by itself three seconds after somebody joins **for the first time**.
+- **`citybuild`** opens the roads, the plaza, the decking and the seams for
+  building. Off by default. It does not survive a `/lockdown`.
+- **The BUILD preset is complete now.** It was missing `destructible` -- the
+  damage switch -- which was ON in the live settings, so explosives worked
+  through build events.
+- **Backups**: `python dev/backup_world.py --watch` copies the game's own save
+  file every time you quit. Unconditional, and consistent even while the game is
+  running because it goes through sqlite. **This is the backup that matters** --
+  `/snapshot` saves buildings and plot ownership and nothing else.
 
-- **The menu is ten entries, not twelve.** `DEV TOOLS` and `TESTING CHECKLIST`
-  are behind **`/developer on`**, which is off by default and persists. That is
-  a gate rather than a filter -- `/crowd`, `/bench`, `/bridge` and `/check` all
-  refuse while it is off, and the four places that open a dev panel each ask the
-  mode again, because the menu is drawn on the player's own machine.
-- **You can always switch a dev tool OFF.** `/crowd off`, `/crowd 0`,
-  `/bench stop` and `/bridge off` work whatever the mode. Turning developer mode
-  off with a crowd standing would otherwise strand it -- the same shape as the
-  part budget that forbade its own remedy.
-- **Banning is a list you click, and never a name you type.** `WHO IS HERE ->
-  EVERYONE SEEN` lists every player the server has ever recorded, with BAN on
-  each row and UNBAN on anyone already banned. The button carries the `SW-` id,
-  because a Scrap Mechanic name can hold characters a host cannot type at all.
-  The FIND box only narrows the list.
-- **The mod says it is a WORK IN PROGRESS** on the menu, in the join message and
-  in its Custom Game description -- to guests as well as the host.
+### START HERE: what only the owner can do
 
-**This changes the first two minutes of every test session from here on.** A
-fresh world comes up with developer mode OFF, so the way in is:
+**1. Publish it**, then say so. See above.
 
-    /developer on
+**2. Take four screenshots.** The Workshop gallery has one image and the four
+newest features have none. `python dev/steam_images.py --list`, then `--add <n>`:
 
-and then `/check` and `/bridge on` are reachable again. `docs/CHANGELOG.md` V64
-has the reasoning for each piece.
+    HOW THIS WORKS   the tutorial, open on FOR PLAYERS
+    BANS             the picker, with a few names on it
+    MY PLOT          with a plot actually claimed
+    a lockdown       the world frozen, PROTECTION panel open
 
----
+The crowd shot is already pinned as 01 and is the one the owner asked to keep.
 
-## THE NEXT STEP: run an event
+**3. Read the tutorial in game and look for hollow boxes.** The game builds a
+glyph atlas per font from strings it has already drawn, so a character it has
+never rendered comes out as an empty square. A check holds the tutorial inside
+the characters other panels draw, but that check is a precaution and not a
+measurement. Boxes are the thing to look for.
 
-Not build anything. **Run one.**
+**4. Anything needing a second person.** Thirteen checklist items, and they are
+the only ones nothing here can reach: a guest being refused, a guest with no
+chat commands, the focus marker seen by somebody else, the per-client network
+budget, and the tutorial opening for a genuinely new arrival.
 
-V55 spent itself on measurement — `/crowd`, `/bench`, a benchmark reporter, a
-character-set generator, sixty new checks. That work is done and it answered the
-question it was built for. What it did not do is touch goal 2 or goal 3, and the
-core of goal 2 — *freeze every build once a batch is finished* — **has still
-never been run in a real event.** Neither has the event clock, nor restore, nor
-the plot rules in anger.
+### What the bridge already settled, so nobody re-tests it
 
-The project's own working agreement is *one working freeze beats five stubbed
-systems*. There are now rather more than five measured systems and no run event.
+Driven live on 2026-09-01, recorded in `Checklist.json` (32 of 97 answered,
+**none failing**):
 
-### START HERE: three things, in this order
-
-**1. Look at the middle of the city.** The first restore ever run left a hole
-where the plaza had been, that is fixed, and the fix has been re-run — 195
-bodies back, 99 deck creations where a hole would leave 98. The only thing
-missing is somebody's eyes on it. Then `backup-restore` goes green.
-
-**2. Re-test `/lockdown`, which V60 rebuilt again and which has still never
-run.** It is now three things rather than one: every tool off a **guest** and
-none off **you**, fire and cratering and aggro forced off by the mode, and a
-four-metre bubble that follows you so you can still fix things while the world
-is shut. `/lockdown`, then `/protection` — it prints the guest list, the host
-list and whether the bubble is open, shut or switched off.
-
-The bubble is the part to look at hardest, because it is an approximation and
-not a permission: there is no per-player build flag in this engine (39 Body
-bindings, none takes a player), so the mod unlocks the ground you are standing
-on and relocks it when you leave. Another **player** standing next to you shuts
-it; a crowd bot does not. `/check` has three items for all of this —
-`prot-lockdown`, `prot-hostbuild`, `prot-lockdown-fire`.
-
-**3. `/developer on`, then `/bridge on`, and the work moves off your hands.**
-V64 put the dev tools behind that first switch, so a fresh world refuses the
-second one until it is thrown. The bridge carried its
-first real session on 2026-08-29 and found two bugs in an hour, in features
-that had shipped weeks earlier and never been run. It is off by default and
-the switch persists; a world that comes up with it open says so in the log.
-
-    python dev/bridge.py --status
-    python dev/bridge.py --file dev/bridge_smoke.txt --wait 3
-
-**What it cannot reach:** a second player, a held tool, a key press, a button,
-or the screen. That is roughly half the checklist and it stays yours.
+| | |
+|---|---|
+| **restore** | 676 shapes / 195 bodies before, `195 of 195` restored, identical after. **The last red line in the project, now green** |
+| `/lockdown`, `/unlock` | all 195 bodies to `locked` and back |
+| `citybuild` | `/unlock` returned `open_destructible 195` where it has always returned `locked 99, open_destructible 96` -- the deck is no longer scenery |
+| the developer gate | `/crowd 5` refused with it off, `/crowd off` still worked |
+| the allow list | added and removed somebody with nobody else online |
+| the event clock | started, took its phase snapshot |
+| `Multiplayer = 2` | is **Friends**, read out of the running world |
 
 ### The list in the game, for the half a bridge cannot do
 
@@ -273,8 +254,12 @@ button saga forced through.
    change.
 5. **Six style presets exist** — garden, brutalist, boardwalk, arctic, warehouse,
    neon. Guesses at taste, free to change.
-6. **`/purge here <radius>`** is the same guess-and-delete shape as the sweep
-   that was removed on request. Say the word and it goes too.
+6. ~~**`/purge here <radius>`**~~ **SETTLED 2026-09-01: it stays.** "its needed
+   just as a side thing of the delete tool. its fine." It is the typed half of
+   the Cleaner -- both ignore every permission flag, which is what makes them
+   the only things that can shift stuck litter, and the Cleaner needs something
+   to point AT. `/purge` covers what it cannot reach: a whole plot, a radius, or
+   whatever you are carrying.
 7. **`allow_add_mods` is `true`** (V74, reversed from V54). The mod list is
    still the trust boundary -- what changed is who decides. A guest cannot bring
    mods, so the only person who can enable one is you, at world creation.
@@ -284,6 +269,35 @@ button saga forced through.
    free — a bespoke outfit per bot is what took 20 bots to 8 fps. If a crowd of
    128 needs to look less repetitive, add characterset entries with
    `dev/gen_characterset.py`; do not go back to dressing them at runtime.
+
+---
+
+## Settled, so nobody spends a day on it again
+
+**"Public multiplayer is limited to about six players."** It is not, and there
+is no number to raise. Four independent facts, in
+[`../CLAUDE.md`](../CLAUDE.md): the game loads **no `SteamMatchMaking`
+interface at all** (it is `SteamNetworkingSockets` peer-to-peer, so there is no
+lobby and no member limit), `MaxPlayers`/`maxConnections`/`MemberLimit` are zero
+hits, `SteamNetworkServer.cpp` has a complete set of connection-refusal strings
+and **none of them is about being full**, and the whole `sm.game` binding list
+has nothing about connections.
+
+**What it actually is: the visibility setting.** From this owner's own logs --
+one person refused seven times over fifty seconds, alone, and connected on the
+first attempt after the host widened `Multiplayer`. Across all 340 logs: 50
+connections, 10 refusals, 8 of them that one sequence. And narrowing the setting
+mid-session **evicts** people who no longer qualify, one tick later, reported
+only as "not authenticated".
+
+Both are silent on both ends, which is why the mod now prints the mode on
+`/protection` and on the BANS panel, warns when it changes with people in the
+world, and why `dev/session_stats.py` reports the whole connection story for any
+log.
+
+What this does **not** settle: no session here has two people genuinely joining
+at once, so the concurrency claim in the video is neither confirmed nor refuted.
+It just is not the thing the evidence points at.
 
 ---
 

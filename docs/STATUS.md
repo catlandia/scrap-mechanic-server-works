@@ -506,6 +506,30 @@ Every line of it is checks-and-reasoning; nothing here has been seen on a screen
 
 ---
 
+### New in V64-V78, and what of it has run
+
+**Driven live through the bridge on 2026-09-01** -- so these have moved out of
+this section and into A: restore (676 shapes / 195 bodies, identical after),
+`/lockdown` and `/unlock` on a built city, `citybuild` (the deck stopped being
+locked scenery), the developer gate and its `/crowd off` escape, the allow list
+on an empty server, the event clock and its phase snapshot, and the join-mode
+readout.
+
+**Never run**, and every one of them needs hands or eyes:
+
+- **HOW THIS WORKS**, the tutorial. Twelve pages of prose is the most text this
+  mod has ever drawn after the checklist. **Look for hollow boxes** -- the game
+  builds a glyph atlas per font from what it has already drawn, and the check
+  that guards this is a precaution rather than a measurement.
+- **The tutorial opening by itself** on a first join. Needs somebody the server
+  has never seen.
+- **The BANS picker and the allow buttons** -- clicked in anger, on a list with
+  more than one name on it.
+- **A guest with no chat commands.** If anything they need turns out not to be
+  on the menu, that is the finding.
+- **The unstuck button** landing in the middle of the city.
+- **`backup_world.py --watch`** surviving a real play session.
+
 ### New in V65, none of it run
 
 - **A guest with no chat commands.** Needs a second person: have them type
