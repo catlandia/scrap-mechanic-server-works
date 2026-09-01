@@ -14,7 +14,7 @@ Companions:
 [`BUTTONS.md`](BUTTONS.md) everything a json GUI needs ·
 [`CHANGELOG.md`](CHANGELOG.md) what every version fixed
 
-Current version: **V74**. All 217 checks pass. `python dev/check_all.py --sync`
+Current version: **V75**. All 221 checks pass. `python dev/check_all.py --sync`
 before playing, and **restart Scrap Mechanic** — scripts are read at world load.
 
 ---

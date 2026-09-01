@@ -10,6 +10,78 @@ was most of them.
 
 ---
 
+## V75 -- a tutorial, and a page asking you to use this wisely
+
+> "tutorial. for both hosts, devs, and regular players. and adding something
+> like EULA idk. like please use this mod wisely or sum like that."
+
+**The mod had 217 checks and nothing that told anybody what it does.** Every
+panel explains its own buttons; none of them explained the point. A builder
+joining an event had no way to learn that a plot has to be CLAIMED, and a host
+opening the menu for the first time saw eleven buttons with no order to press
+them in.
+
+`HOW THIS WORKS` on the menu, twelve pages, **one entry for three audiences**:
+
+| who | pages |
+|---|---|
+| guest | 5 -- what this is, getting a plot, teaming up, the rules, the menu is the controls |
+| host | those 5, then 5 more -- using it wisely, setting up an event, when something goes wrong, bans and the guest list, the backup that saves everything |
+| developer | those 10, then 2 -- what the dev tools are, and what is actually proven |
+
+Three menu entries would have cost two slots in a column with a hard ceiling.
+The nesting is checked in both directions: a guest can never be shown a host
+page, and a host still sees every guest page **first**, because they are the
+person who gets asked how claiming a plot works.
+
+### PLEASE USE THIS WISELY is the first thing a host reads
+
+Not a licence -- a warning, and it is aimed at the host because they are the one
+holding the power:
+
+> You can freeze what somebody spent an hour building, delete it, push them off
+> ground they claimed, take their tools away, kick them, and ban them
+> permanently. None of that asks them first and none of it is obvious from their
+> side -- a locked plot just stops working.
+>
+> So: tell people the rules before you enforce them. Warn before you lock. Take
+> a backup before you clear anything. A ban is forever and it follows a person
+> across every world you make.
+>
+> The tools are here because an event needs them. They are not here to win
+> arguments.
+
+A check asserts the page exists, is aimed at the host, and is the **first** host
+page. A warning after four pages of setup instructions is a warning nobody has
+read. It also asserts the page names bans, backups and warning specifically --
+the advice is what makes it worth reading rather than a disclaimer.
+
+### The glyph trap caught it immediately
+
+The file's own header warns that prose is where punctuation creeps in, and the
+first run proved it:
+
+    'somebody else's plot'   -- an apostrophe
+    'backup_world.py'        -- an underscore
+
+Neither is a character any shipped panel draws, so neither is known to exist in
+the font's atlas -- they would come out as hollow boxes. Reworded, and the
+tutorial is now held to the same computed safe set the checklist is.
+
+### One check was wrong and got stricter rather than weaker
+
+The menu cap said "at most 10 entries" and refused the tutorial. But the two
+columns are drawn **side by side**, so what runs out is the height of the taller
+one -- a guest entry costs nothing on the host side. A combined cap was refusing
+a constraint that does not exist. It is per column now: 9 host, 6 guest.
+
+### Checks
+
+221, up from 217. Four new: the audience nesting, the wisely page and where it
+sits, every page fitting for every audience, and the glyph set.
+
+---
+
 ## V74 -- block mods are allowed again, and the preview is the real city
 
 ### "only add mods you trust", on the store page

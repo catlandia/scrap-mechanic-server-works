@@ -102,6 +102,13 @@ MenuGui.ENTRIES = {
 	  host = false },
 	{ action = "rules", label = "SERVER RULES",
 	  help = "the limits currently in force", host = false },
+	-- FOR EVERYBODY, and one entry rather than three. The pages themselves are
+	-- audience-gated (Tutorial.PagesFor), so a guest reads the guest ones, a
+	-- host gets the host ones after them, and developer mode adds the rest.
+	-- Three entries would have cost two slots in a column with a hard ceiling.
+	{ action = "howto", label = "HOW THIS WORKS", panel = true,
+	  help = "what this mod is and how to use it, a page at a time",
+	  host = false },
 	-- COMMANDS WAS HERE AND IS NOT ANY MORE, and it was the right one to lose.
 	-- The column has a hard ceiling -- the canvas is 720 units tall, so nine
 	-- host entries is what fits -- and a BANS entry had to come from somewhere.

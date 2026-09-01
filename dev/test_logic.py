@@ -3647,6 +3647,15 @@ def every_caption_can_be_drawn():
         "host": True, "view": "known", "query": "qqq",
         "known": lua.table_from([lua.table_from(known[0])])})))
 
+    # The tutorial, every page for every audience -- by far the most prose this
+    # mod draws after the checklist.
+    G, T = lua.globals().TutorialGui, lua.globals().Tutorial
+    for host in (True, False):
+        for dev in (True, False):
+            for page in range(1, int(T.Count(host, dev)) + 1):
+                collect(f"tutorial/{host}/{dev}/{page}", G.Build(lua.table_from(
+                    {"host": host, "developer": dev, "page": page})))
+
     for mode in ("build", "churn", "off"):
         for bridge in (True, False):
             collect(f"dev/{mode}/{bridge}", lua.globals().DevGui.Build(
@@ -3848,6 +3857,7 @@ def gui_lua():
                 "RosterHud.lua", "EventGui.lua", "ConfirmGui.lua",
                 "SettingsGui.lua", "PlotsGui.lua", "MenuGui.lua", "MyPlotGui.lua",
                 "StyleGui.lua", "FocusGui.lua", "ProtectionGui.lua", "BackupsGui.lua", "PeopleGui.lua", "DevGui.lua",
+                "Tutorial.lua", "TutorialGui.lua",
                 "Checklist.lua", "ChecklistGui.lua")
     lua.globals().Settings.Sv_Load(False)
     return lua
@@ -7670,6 +7680,59 @@ def the_checklist_panel_fits_for_every_item():
         no_button_is_buried(label, items, H)
 
 
+def the_tutorial_draws_no_character_the_other_panels_have_not():
+    """The tutorial is prose, and prose is where punctuation creeps in.
+
+    Same trap and same rule as the checklist below: the game builds a glyph
+    atlas per font out of the strings it renders itself, so a character it has
+    never drawn comes out as a hollow box. MEASURED -- SM_LabelMini drew HOST as
+    (X)OST.
+
+    The safe set is computed from the panels that already ship rather than
+    written down, so it widens by itself the day one of them draws something
+    new. An apostrophe is the one that catches people: "somebody's build" is
+    natural English and may be four correct letters and a box.
+    """
+    lua = gui_lua()
+    proven = set()
+
+    def note(root):
+        for w in walk_full(root):
+            for ch in str(w["caption"] or ""):
+                if not ch.isalnum():
+                    proven.add(ch)
+
+    for host in (True, False):
+        for dev in (True, False):
+            note(lua.globals().MenuGui.Build(host, dev))
+    cfg = {"plot": 20, "gap": 1, "cols": 10, "rows": 10, "roadevery": 0,
+           "roadwidth": 6, "plazacells": 2, "claimed": {}}
+    note(lua.globals().PlotsGui.Build(lua.table_from(
+        {k: (lua.table_from(v) if isinstance(v, dict) else v)
+         for k, v in cfg.items()})))
+    for phase in ("off", "prep", "build", "buffer", "ended"):
+        note(lua.globals().EventGui.Build(lua.table_from(
+            {"phase": phase, "remaining": 754.0, "prep": 10, "build": 60,
+             "buffer": 5})))
+    assert len(proven) > 5, "the proven set came out empty -- the scan is broken"
+
+    G, T = lua.globals().TutorialGui, lua.globals().Tutorial
+    used = {}
+    for host in (True, False):
+        for dev in (True, False):
+            for page in range(1, int(T.Count(host, dev)) + 1):
+                root = G.Build(lua.table_from(
+                    {"host": host, "developer": dev, "page": page}))
+                for w in walk_full(root):
+                    for ch in str(w["caption"] or ""):
+                        if not ch.isalnum() and ch not in proven:
+                            used.setdefault(ch, str(w["caption"])[:60])
+    assert not used, (
+        "the tutorial draws characters no other panel does, and nothing has "
+        "ever confirmed the font has them: "
+        + "; ".join(f"{ch!r} in {where!r}" for ch, where in list(used.items())[:5]))
+
+
 def the_checklist_draws_no_character_the_other_panels_have_not():
     """The game builds a limited glyph set per font out of the strings it draws
     itself, and a character outside it comes out as a hollow box. MEASURED:
@@ -8036,13 +8099,24 @@ def the_dev_tools_are_off_the_menu_until_somebody_asks_for_them():
         left, _ = labels(False, developer)
         assert not (set(left) & dev), "a guest is offered a developer entry"
 
-    # AND THE COUNT IS THE POINT. "too many buttons is too much": the default
-    # host menu is what somebody actually running an event looks at.
+    # AND THE COUNT IS THE POINT. "too many buttons is too much".
+    #
+    # PER COLUMN, not in total, and the first version of this got that wrong.
+    # The two columns are drawn side by side, so what runs out is the HEIGHT of
+    # the taller one -- adding a guest entry costs nothing on the host side. A
+    # combined cap refused a fourth guest entry because the host had seven,
+    # which is not a constraint that exists.
+    #
+    # The ceiling is the canvas: getViewSize() is 1720x720, entries are on a 54
+    # pitch, and nine is what fits under a header and a footer.
     left, right = labels(True, False)
-    assert len(left) + len(right) <= 10, (
-        f"the default host menu has {len(left) + len(right)} entries. Every one "
-        "of them has to earn its place -- put new ones behind /developer, or on "
-        "the panel they belong to")
+    lon, ron = labels(True, True)
+    assert len(ron) <= 9, (
+        f"the host column has {len(ron)} entries with developer mode on, and "
+        "nine is what the canvas fits. Put new ones on the panel they belong to")
+    assert len(lon) <= 6, (
+        f"the guest column has {len(lon)} entries. A guest opening this should "
+        "see a short list, not a control panel")
 
 
 def hiding_a_button_is_not_the_same_as_shutting_a_door():
@@ -8832,6 +8906,114 @@ def the_build_preset_leaves_nothing_dangerous_on():
         "writing it means /developer on cannot give it back")
 
 
+def the_tutorial_tells_each_person_what_they_can_do():
+    """ASKED FOR: "tutorial. for both hosts, devs, and regular players."
+
+    Three audiences, one menu entry. A guest reads the guest pages; a host gets
+    those and the host ones; developer mode adds the rest. The alternative was
+    three entries in a column with a hard ceiling.
+
+    What this guards is the direction of the nesting -- a guest must never be
+    shown a host page, and a host must still see the guest ones, because they
+    are the person who gets asked how claiming a plot works.
+    """
+    lua = gui_lua()
+    T = lua.globals().Tutorial
+
+    def ids(host, dev):
+        return [str(pg["id"]) for pg in T.PagesFor(host, dev).values()]
+
+    guest = ids(False, False)
+    host = ids(True, False)
+    devs = ids(True, True)
+
+    assert guest, "a guest is shown no tutorial at all"
+    assert set(guest) < set(host), (
+        "a host does not see everything a guest sees. They are the one who gets "
+        "asked how any of it works")
+    assert set(host) < set(devs), "developer mode adds no pages"
+    assert ids(False, True) == guest, (
+        "developer mode shows a GUEST extra pages. It is a host switch")
+
+    # The guest pages have to come first for everyone, or a builder opening this
+    # lands on something about backups.
+    assert host[:len(guest)] == guest, (
+        f"the host order is {host} -- the guest pages must come first, or the "
+        "first thing anybody reads is not for them")
+
+    # Every page complete and uniquely named.
+    seen = set()
+    for pg in T.PAGES.values():
+        pid, who = str(pg["id"]), str(pg["who"])
+        assert pid not in seen, f"two tutorial pages share the id {pid!r}"
+        seen.add(pid)
+        assert who in ("all", "host", "dev"), f"{pid}: unknown audience {who!r}"
+        assert str(pg["title"]).strip(), f"{pid} has no title"
+        assert len(list(pg["lines"].values())) > 2, f"{pid} has almost no content"
+
+
+def the_tutorial_says_to_use_it_wisely():
+    """ASKED FOR: "adding something like EULA idk. like please use this mod
+    wisely or sum like that."
+
+    Not a licence -- a warning, and it belongs to the HOST, because they are the
+    one holding the power. This mod can freeze what somebody spent an hour
+    building, delete it, push them off ground they claimed, take their tools,
+    and ban them from every world you will ever make. None of that asks first.
+
+    So the page has to exist, has to be for the host, and has to be the FIRST
+    thing a host reads -- a warning after four pages of setup instructions is a
+    warning nobody has read.
+    """
+    lua = gui_lua()
+    T = lua.globals().Tutorial
+    pages = {str(pg["id"]): pg for pg in T.PAGES.values()}
+    assert "wisely" in pages, (
+        "there is no 'use this wisely' page. This mod hands a stranger real "
+        "power over other people and says nothing about it")
+    assert str(pages["wisely"]["who"]) == "host", (
+        "the wisely page is not aimed at the host, who is the only person it "
+        "is about")
+
+    host = [str(pg["id"]) for pg in T.PagesFor(True, False).values()]
+    guest = [str(pg["id"]) for pg in T.PagesFor(False, False).values()]
+    assert host[len(guest)] == "wisely", (
+        f"the first host page is {host[len(guest)]!r}. The warning has to come "
+        "before the instructions, or it is a warning nobody reaches")
+
+    body = " ".join(str(x) for x in pages["wisely"]["lines"].values()).lower()
+    for must in ("ban", "backup", "warn"):
+        assert must in body, (
+            f"the wisely page never mentions {must!r} -- it is the specific "
+            "advice that makes it worth reading rather than a disclaimer")
+
+
+def the_tutorial_panel_fits_every_page():
+    """Every page, for every audience. A page that overflows is a page whose
+    last lines are off the bottom of the screen with no error anywhere."""
+    lua = gui_lua()
+    G, T = lua.globals().TutorialGui, lua.globals().Tutorial
+    for host in (True, False):
+        for dev in (True, False):
+            total = int(T.Count(host, dev))
+            for page in list(range(1, total + 1)) + [0, 99]:
+                root = G.Build(lua.table_from(
+                    {"host": host, "developer": dev, "page": page,
+                     "status": "x"}))
+                label = f"tutorial/{host}/{dev}/{page}"
+                items = panel_fits(label, root, G.W, G.H)
+                no_button_is_buried(label, items, G.H)
+
+    # And no page may be longer than the panel is tall, which the fits check
+    # above only catches once a page is ALREADY too long. This is the budget.
+    for pg in T.PAGES.values():
+        n = len(list(G.Lines(pg).values()))
+        assert n <= int(G.LINES), (
+            f"tutorial page {pg['id']!r} wraps to {n} lines and the panel holds "
+            f"{int(G.LINES)}. Split it rather than making the panel taller -- "
+            "the canvas is 720 units and this one is already 660")
+
+
 def the_ban_ui_is_on_the_menu(): 
     """ASKED FOR TWICE. "make it accesible via menu", and then, with a
     screenshot of a menu that did not have it: "where is the ban? I want the ban
@@ -9113,7 +9295,10 @@ def a_guest_can_open_no_host_panel():
     # separately, and every other branch must name isHost.
     router = game[game.index("function Game.sv_n_menuOpen"):]
     router = router[:router.index(chr(10) + "end" + chr(10))]
-    GUEST_ENTRIES = {"myplot", "rules", "players", "plot"}
+    # Entries a guest is entitled to. `howto` is deliberately one of them: the
+    # person who most needs to be told how any of this works is the builder who
+    # just joined, and they have exactly one chat command.
+    GUEST_ENTRIES = {"myplot", "rules", "players", "plot", "howto"}
     for m in re.finditer(r'what == "(\w+)"([^\n]*)', router):
         what, rest = m.group(1), m.group(2)
         if what in GUEST_ENTRIES:
@@ -9491,6 +9676,12 @@ def main():
           a_dev_tool_can_always_be_switched_off)
     check("menu: the mod says it is a work in progress",
           the_mod_says_it_is_unfinished)
+    check("tutorial: it tells each person what they can do",
+          the_tutorial_tells_each_person_what_they_can_do)
+    check("tutorial: it says to use this wisely, to the host, first",
+          the_tutorial_says_to_use_it_wisely)
+    check("tutorial: the panel fits every page",
+          the_tutorial_panel_fits_every_page)
     check("menu: a guest can open no host panel", a_guest_can_open_no_host_panel)
     check("gui: no panel is taller than the canvas", no_panel_is_taller_than_the_canvas)
     check("city: it can be opened up, and is shut by default",
@@ -9587,6 +9778,8 @@ def main():
           the_checklist_panel_has_exactly_one_typed_box)
     check("checklist: it draws no character the other panels have not",
           the_checklist_draws_no_character_the_other_panels_have_not)
+    check("tutorial: it draws no character the other panels have not",
+          the_tutorial_draws_no_character_the_other_panels_have_not)
     check("checklist: answering writes the file at once",
           answering_from_the_panel_writes_the_file_at_once)
 

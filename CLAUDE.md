@@ -2514,7 +2514,11 @@ credit it with fixing the thing that actually degraded.
     mod/Scripts/Bridge.lua      /bridge -- a file the mod watches, so a running
                                 world can be driven from outside the game
 
-    mod/Scripts/Checklist.lua   the dev checklist: 94 things nobody has tested,
+    mod/Scripts/Tutorial.lua    what this mod is, for guests, hosts and devs --
+                                twelve pages, audience-gated, with the
+                                PLEASE USE THIS WISELY notice first for a host
+    mod/Scripts/TutorialGui.lua the panel that pages through it
+    mod/Scripts/Checklist.lua   the dev checklist: 95 things nobody has tested,
                                 what to do, and what counts as a pass
     mod/Scripts/ChecklistGui.lua the panel that answers them -- /check
 
@@ -2530,7 +2534,7 @@ credit it with fixing the thing that actually degraded.
     dev/check_lua.py            compiles every mod script through a real Lua parser
     dev/check_uuids.py          every uuid the mod names, against the install
     dev/test_layout.py          runs Layout.lua and proves the city is a partition
-    dev/test_logic.py           runs the mod's rules and panel layouts (217 checks)
+    dev/test_logic.py           runs the mod's rules and panel layouts (221 checks)
     dev/sync_mod.py             repo -> game Mods folder (preserves live BanList.json)
     dev/backup_world.py         copies the game's OWN Save/<world>.db. The only
                                 real whole-world backup -- a /snapshot is

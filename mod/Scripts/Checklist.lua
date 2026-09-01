@@ -45,7 +45,7 @@ Checklist = {}
 
 -- Bumped with VERSION. dev/test_logic.py fails if the two disagree, because a
 -- stale build number silently mislabels every result recorded after it.
-Checklist.BUILD = 74
+Checklist.BUILD = 75
 
 Checklist.FILE = "$CONTENT_DATA/Checklist.json"
 
@@ -160,6 +160,15 @@ Checklist.ITEMS = {
 	      .. "sounds: the worst slowdown ever measured on this project was the "
 	      .. "game writing errors to disk, 1.8 GB of them in one session",
 	  log = "Lua Error Traceback" },
+
+	{ id = "boot-howto", group = "boot",
+	  title = "HOW THIS WORKS reads properly, for a guest and for you",
+	  steps = { "open /menu and press HOW THIS WORKS",
+	            "page through all of it and watch for hollow boxes",
+	            "turn /developer off and check the last two pages disappear" },
+	  pass = "every page fits, no square boxes where a letter should be, and a "
+	      .. "guest never sees the host pages. The boxes are the thing to look "
+	      .. "for -- the game only has the letters it has already drawn once" },
 
 	{ id = "boot-modsbox", group = "boot",
 	  title = "The add-mods box is on the world creation screen",

@@ -1024,6 +1024,10 @@ function Game.client_welcome( self, data )
 	-- and chat commands are host-only now -- so naming /sw to somebody who
 	-- cannot run it would be advertising a refusal.
 	lines[#lines + 1] = "  /menu   everything on buttons -- your plot, the rules, who is here."
+	-- The one line a new arrival is guaranteed to read, pointing at the one
+	-- place that explains the rest. A builder who has never seen this mod does
+	-- not know a plot has to be CLAIMED, and nothing else tells them.
+	lines[#lines + 1] = "          then HOW THIS WORKS, if you have not used this before."
 	if data.host then
 		lines[#lines + 1] = "  /sw for commands, /rules for the server rules."
 	else
@@ -2379,6 +2383,8 @@ function Game.sv_n_menuOpen( self, data, player )
 		self:sv_openDevGui( player )
 	elseif what == "myplot" then
 		self:sv_toWorld( "/myplot", {}, player )
+	elseif what == "howto" then
+		self:sv_openTutorialGui( player )
 	elseif what == "rules" then
 		-- viaPanel: a guest may press this and may not type it. See the two
 		-- command tables at the top of this file.
@@ -3123,6 +3129,58 @@ function Game.sv_doAllow( self, token, allowed )
 	return ok, detail
 end
 
+
+--[[ the tutorial ]]
+
+-- OPEN TO EVERYBODY, and that is the point of it. A builder who has just joined
+-- an event is the person who most needs to be told that a plot has to be
+-- claimed, and they have exactly one chat command.
+--
+-- The server decides `host` and `developer`, the same way sv_openMenu does. A
+-- client that lies about either gets to READ two more pages of prose, which is
+-- the one place in this mod where that costs nothing.
+function Game.sv_openTutorialGui( self, player, page, status )
+	self.network:sendToClient( player, "client_openTutorialGui", {
+		host = ( player == sm.player.getHostPlayer() ),
+		developer = Settings.DeveloperOn(),
+		page = page,
+		status = status,
+	} )
+end
+
+function Game.client_openTutorialGui( self, state )
+	if self.cl == nil then self.cl = {} end
+	self.cl.tutorialState = state
+	self:cl_showPanel( "howto", TutorialGui.Build( state ) )
+end
+
+function Game.cl_onTutorialClose( self )
+	self:cl_forgetPanel()
+	if self.cl then self.cl.tutorialState = nil end
+end
+
+function Game.cl_onTutorialClick( self, widgetName, data )
+	if type( data ) ~= "table" or self.cl == nil then return end
+	local state = self.cl.tutorialState
+	if state == nil then return end
+
+	if data.action == "close" then
+		self:cl_closeLater( "panel" )
+		return
+	end
+	if data.action == "back" then
+		self.network:sendToServer( "sv_n_openMenu", {} )
+		return
+	end
+	if data.action == "page" then
+		-- Local. Nothing on this panel changes anything on the server, so a
+		-- round trip would only add a tick of latency to turning a page.
+		-- cl_renderLater rather than a direct render: building a new tree
+		-- destroys the widget whose callback is running.
+		state.page = data.page
+		self:cl_renderLater( "howto", TutorialGui.Build( state ) )
+	end
+end
 
 --[[ the people panel ]]
 
@@ -3983,6 +4041,8 @@ function Game.sv_n_openPanel( self, data, player )
 		self:sv_openPeopleGui( player )
 	elseif data.panel == "bans" then
 		self:sv_openPeopleGui( player, nil, "known" )
+	elseif data.panel == "howto" then
+		self:sv_openTutorialGui( player )
 	elseif data.panel == "dev" and Settings.DeveloperOn() then
 		self:sv_openDevGui( player )
 	end
