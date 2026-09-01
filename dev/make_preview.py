@@ -291,7 +291,12 @@ def main():
 
     x = 96
     d.text((x, 300), TITLE, font=f_title, fill=TEXT)
-    d.rectangle([x, 452, x + 190, 458], fill=ACCENT)
+
+    # THE RULE IS MEASURED FROM THE TITLE, not a number that happened to look
+    # right once. It was a fixed 190px under a title around 990px wide, so it
+    # underlined "SE" and read as a rendering fault rather than a flourish.
+    tb = d.textbbox((x, 300), TITLE, font=f_title)
+    d.rectangle([x, 458, tb[2], 464], fill=ACCENT)
     d.text((x, 496), TAGLINE, font=f_tag, fill=MUTED)
 
     y = 606

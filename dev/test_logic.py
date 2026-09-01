@@ -9089,6 +9089,68 @@ def the_tutorial_panel_fits_every_page():
             "the canvas is 720 units and this one is already 660")
 
 
+def every_script_is_actually_loaded():
+    """A FILE THAT EXISTS AND IS NEVER LOADED IS A BUTTON THAT DOES NOTHING.
+
+    REPORTED, with a screenshot of the menu: "teh button does nothing."
+
+    HOW THIS WORKS was wired end to end -- menu entry, router branch, opener,
+    panel, 222 checks passing -- and `Tutorial.lua` and `TutorialGui.lua` were
+    never added to Game.lua's dofile list. The server handler reached for a nil
+    global, threw inside a network callback, and the button did nothing at all
+    with nothing in the log to say why.
+
+    NOTHING IN THE SUITE COULD SEE IT, and that is the point of this check. Every
+    other check loads the scripts it needs by name through `fresh()`, so the
+    panel built perfectly in the harness and did not exist in the game. The
+    harness's own loading is not evidence about the mod's.
+
+    This is the mirror of the orphaned Wardrobe.lua in CLAUDE.md -- that was a
+    file the game loaded and the repo had deleted; this is a file the repo has
+    and the game never loads. Both are silent, and both cost a session.
+    """
+    import json
+
+    MOD = SCRIPTS.parent
+
+    # Everything that can pull a script in, and they are not all Lua.
+    text = ""
+    for f in SCRIPTS.glob("*.lua"):
+        text += io.open(f, encoding="utf-8").read()
+    for extra in (MOD / "config.json",):
+        if extra.is_file():
+            text += io.open(extra, encoding="utf-8", errors="replace").read()
+    for pattern in ("Tools/**/*.json", "Tools/**/*.toolset", "Tools/**/*.tooldb",
+                    "Characters/**/*.json", "Characters/**/*.characterset",
+                    "Objects/**/*.json"):
+        for f in MOD.glob(pattern):
+            text += io.open(f, encoding="utf-8", errors="replace").read()
+
+    orphans = []
+    for f in sorted(SCRIPTS.glob("*.lua")):
+        # Only the TWO config.json names are exempt. World.lua is not one of
+        # them -- Game.lua names it when it creates the world -- so it stays in
+        # the scan, which is stricter than exempting it would have been.
+        if f.stem in ("Game", "Player"):
+            continue
+        if f.name not in text:
+            orphans.append(f.name)
+
+    assert not orphans, (
+        "these scripts are in the mod and NOTHING loads them -- no dofile, no "
+        "toolset, no characterset. Anything that reaches for what they define "
+        "gets nil and fails silently: " + ", ".join(orphans))
+
+    # ...and the entry points really are named where the game looks for them.
+    cfg = MOD / "config.json"
+    if cfg.is_file():
+        raw = io.open(cfg, encoding="utf-8-sig").read()
+        for stem in ("Game", "Player"):
+            assert stem in raw, (
+                f"{stem}.lua is not named in config.json, so the game never "
+                "runs it at all")
+
+
 def the_ban_ui_is_on_the_menu(): 
     """ASKED FOR TWICE. "make it accesible via menu", and then, with a
     screenshot of a menu that did not have it: "where is the ban? I want the ban
@@ -9742,6 +9804,7 @@ def main():
     check("plumbing: every command a panel sends is answered",
           every_command_a_panel_sends_is_answered)
     check("plumbing: every button reaches a branch", every_button_reaches_a_branch)
+    check("plumbing: every script is actually loaded", every_script_is_actually_loaded)
     check("menu: every command is on the menu", every_command_is_on_the_menu)
     check("menu: the dev tools are off it until somebody asks",
           the_dev_tools_are_off_the_menu_until_somebody_asks_for_them)

@@ -45,7 +45,7 @@ Checklist = {}
 
 -- Bumped with VERSION. dev/test_logic.py fails if the two disagree, because a
 -- stale build number silently mislabels every result recorded after it.
-Checklist.BUILD = 76
+Checklist.BUILD = 77
 
 Checklist.FILE = "$CONTENT_DATA/Checklist.json"
 
