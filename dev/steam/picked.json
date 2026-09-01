@@ -4,19 +4,22 @@
       "file": "20260826014733_1.jpg",
       "name": "the-crowd",
       "why": "90 crowd bots on a built city, roster and event HUD live",
-      "full": false
+      "full": false,
+      "note": "* the mechanics in this picture are /crowd test bots, not real players"
     },
     {
       "file": "20260901195837_1.jpg",
       "name": "the-city",
       "why": "128 bots on a full city, seen from the plaza pillar",
-      "full": false
+      "full": false,
+      "note": "* the mechanics in this picture are /crowd test bots, not real players"
     },
     {
       "file": "20260901195852_1.jpg",
       "name": "ground-level",
       "why": "standing in the crowd, plots and roads around you",
-      "full": false
+      "full": false,
+      "note": "* the mechanics in this picture are /crowd test bots, not real players"
     }
   ]
 }
