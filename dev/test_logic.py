@@ -9151,6 +9151,77 @@ def every_script_is_actually_loaded():
                 "runs it at all")
 
 
+def the_tutorial_does_not_promise_what_the_engine_cannot_do():
+    """REPORTED, with a screenshot of the tutorial: "make sure tutorials dont lie
+    like this like come on it doesnt work like that and you know it."
+
+    Fair, and the sentence was: "You claim one, you build on it, and nobody can
+    touch it but you."
+
+    That is flatly false and CLAUDE.md says why in bold: **body permission flags
+    are per-BODY, not per-player.** There is no `setBuildableBy( player )`. A
+    plot is buildable by everybody or by nobody, so while you are STANDING on
+    yours it is open to anyone who can reach it -- what keeps them off is
+    `sv_pushOut`, not the blocks refusing them.
+
+    A tutorial that overstates protection is worse than no tutorial: somebody
+    walks away from a half-built machine believing the mod is guarding it.
+
+    So this is a list of claims the code cannot support, each tied to the fact
+    that kills it. It is deliberately about SPECIFIC sentences rather than
+    prose in general -- a check cannot read for truth, but it can stop the four
+    lies that were actually written from coming back.
+    """
+    lua = gui_lua()
+    T, S = lua.globals().Tutorial, lua.globals().Settings
+    S.Sv_Load(False)
+
+    body = " ".join(
+        str(line) for pg in T.PAGES.values() for line in pg["lines"].values()
+    ).lower()
+
+    # phrase -> why it is a lie
+    FORBIDDEN = {
+        "nobody can touch it but you":
+            "flags are per-body, so a claimed plot you are standing on is open "
+            "to anyone in reach. Being pushed off is the protection",
+        "only you can build":
+            "same -- there is no per-player build permission in this engine",
+        "nothing is ever taken away":
+            "autoremove deletes banned parts outright when a host turns it on",
+        "cannot be griefed":
+            "the whole of docs/ANTI-GRIEF.md is about why protection cannot be "
+            "prevention",
+        "nobody can join":
+            "the mod cannot stop a join; the game's Multiplayer setting does",
+    }
+    for phrase, why in FORBIDDEN.items():
+        assert phrase not in body, (
+            f"the tutorial says {phrase!r}, and it is not true: {why}")
+
+    # CLAIMS TIED TO A DEFAULT. If the default flips, the sentence has to change
+    # with it -- which is exactly the kind of drift nobody notices.
+    assert S.Get("hostbuild") is False, (
+        "hostbuild now defaults ON. The protection page tells a host a lockdown "
+        "includes them and that MY BUBBLE is what turns the exemption on -- "
+        "rewrite it before flipping the default")
+    protect = " ".join(
+        str(l) for pg in T.PAGES.values() if str(pg["id"]) == "protect"
+        for l in pg["lines"].values()).lower()
+    assert "that includes you" in protect, (
+        "the protection page no longer says a lockdown freezes the HOST too. It "
+        "does, by default -- hostbuild is off")
+
+    # And the plot page has to name the mechanism, or a reader is left believing
+    # the flags are doing something they are not.
+    plot = " ".join(
+        str(l) for pg in T.PAGES.values() if str(pg["id"]) == "plot"
+        for l in pg["lines"].values()).lower()
+    assert "pushed off" in plot, (
+        "the plot page does not say that being pushed off is what enforces "
+        "ownership, so a reader assumes the blocks are refusing them")
+
+
 def the_ban_ui_is_on_the_menu(): 
     """ASKED FOR TWICE. "make it accesible via menu", and then, with a
     screenshot of a menu that did not have it: "where is the ban? I want the ban
@@ -9820,6 +9891,8 @@ def main():
           a_guest_is_never_offered_a_section_they_cannot_read)
     check("tutorial: it says to use this wisely, to the host, first",
           the_tutorial_says_to_use_it_wisely)
+    check("tutorial: it does not promise what the engine cannot do",
+          the_tutorial_does_not_promise_what_the_engine_cannot_do)
     check("tutorial: the panel fits every page",
           the_tutorial_panel_fits_every_page)
     check("menu: a guest can open no host panel", a_guest_can_open_no_host_panel)
