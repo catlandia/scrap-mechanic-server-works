@@ -11,7 +11,7 @@ Read it before believing any other document in here.
 
 ## The one thing to understand about the checks
 
-`python dev/check_all.py` runs **221 checks** in ten seconds and they all pass.
+`python dev/check_all.py` runs **222 checks** in ten seconds and they all pass.
 That is worth having and it is not evidence the mod works.
 
 | what the checks DO touch | what they CANNOT touch |

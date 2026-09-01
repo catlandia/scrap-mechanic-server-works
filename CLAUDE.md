@@ -2534,7 +2534,7 @@ credit it with fixing the thing that actually degraded.
     dev/check_lua.py            compiles every mod script through a real Lua parser
     dev/check_uuids.py          every uuid the mod names, against the install
     dev/test_layout.py          runs Layout.lua and proves the city is a partition
-    dev/test_logic.py           runs the mod's rules and panel layouts (221 checks)
+    dev/test_logic.py           runs the mod's rules and panel layouts (222 checks)
     dev/sync_mod.py             repo -> game Mods folder (preserves live BanList.json)
     dev/backup_world.py         copies the game's OWN Save/<world>.db. The only
                                 real whole-world backup -- a /snapshot is

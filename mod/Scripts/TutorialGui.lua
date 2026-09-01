@@ -19,7 +19,8 @@ TutorialGui.LINES = 14           -- most a page may have; a check enforces it
 TutorialGui.COLS = 78            -- wrap width, in characters
 
 local PAD = 30
-local BODY_TOP = 150
+local TABS_Y = 84
+local BODY_TOP = 178
 local LINE_H = 30
 
 local BG = "0.055 0.062 0.078 1"
@@ -109,14 +110,19 @@ end
 -- state: {
 --   host       whether the reader is the host
 --   developer  whether developer mode is on
---   page       which page they are on
+--   section    which of the three they are reading -- clamped to one they may
+--   page       which page of that section
 --   status     what the last press did
 -- }
 function TutorialGui.Build( state )
 	state = state or {}
 	local isHost = state.host == true
 	local dev = state.developer == true
-	local page, index, total = Tutorial.Page( isHost, dev, state.page )
+	-- Clamped here as well as on the server. The panel is built on the reader's
+	-- own machine, so a section they may not read must not be drawable even if
+	-- the state says otherwise.
+	local section = Tutorial.SectionFor( state.section, isHost, dev )
+	local page, index, total = Tutorial.Page( section, state.page )
 
 	local root = widget{ Name = "BackPanel", Type = "Widget", Skin = "PanelEmpty",
 		Anchor = "Center", InheritsPick = true, NeedKey = false, NeedMouse = false,
@@ -130,14 +136,25 @@ function TutorialGui.Build( state )
 	kids[#kids + 1] = fill( "Rule", 0, 64, TutorialGui.W, 2, ACCENT, 1 )
 	kids[#kids + 1] = text( "Title", "HOW THIS WORKS", PAD, 16, 520, 30,
 		"SM_Header", LABEL, "Left" )
-	kids[#kids + 1] = text( "Sub",
-		isHost and ( dev and "for players, hosts and developer mode"
-			or "for players and hosts" )
-		or "everything a builder needs to know",
+	kids[#kids + 1] = text( "Sub", "pick a section, then read it a page at a time",
 		PAD, 42, 520, 18, "SM_TextTiny", DIM, "Left" )
 	kids[#kids + 1] = text( "Count",
-		string.format( "%d of %d", index, math.max( 1, total ) ),
-		TutorialGui.W - PAD - 200, 42, 200, 18, "SM_TextTiny", DIM, "Right" )
+		string.format( "page %d of %d", index, math.max( 1, total ) ),
+		TutorialGui.W - PAD - 220, 42, 220, 18, "SM_TextTiny", DIM, "Right" )
+
+	--[[ the section tabs ]]
+
+	-- ONLY THE SECTIONS THIS PERSON MAY READ ARE DRAWN AT ALL. A greyed-out
+	-- FOR DEVS tab would tell a guest there is something they are missing and
+	-- give them nothing to do about it; a section they cannot open is better
+	-- as a section they never learn exists.
+	local tx = PAD
+	for i, sec in ipairs( Tutorial.SectionsFor( isHost, dev ) ) do
+		kids[#kids + 1] = button( "Sec" .. i, sec.label, tx, TABS_Y, 210, 32,
+			( sec.id == section ) and "StyledButtonLarge" or "SecondaryButton",
+			{ action = "section", section = sec.id } )
+		tx = tx + 222
+	end
 
 	--[[ the page ]]
 
@@ -146,7 +163,7 @@ function TutorialGui.Build( state )
 			PAD, BODY_TOP, W, 24, "SM_Text", DIM, "Left" )
 	else
 		kids[#kids + 1] = text( "PageTitle", tostring( page.title ),
-			PAD, 96, W, 28, "SM_TextLarge", ACCENT, "Left" )
+			PAD, 132, W, 28, "SM_TextLarge", ACCENT, "Left" )
 		local y = BODY_TOP
 		for i, line in ipairs( TutorialGui.Lines( page ) ) do
 			if line ~= "" then

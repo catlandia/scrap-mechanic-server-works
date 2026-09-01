@@ -508,6 +508,21 @@ function Game.server_onFixedUpdate( self, dt )
 	end
 
 	-- Re-read the ban file so a tool outside the game can push a ban mid-event.
+	-- The first-join tutorial, once its three seconds are up.
+	if self.sv.tutorialFor ~= nil then
+		local keep = {}
+		for _, job in ipairs( self.sv.tutorialFor ) do
+			if tick < job.at then
+				keep[#keep + 1] = job
+			elseif sm.exists( job.player ) then
+				pcall( function()
+					self:sv_openTutorialGui( job.player, "all", 1 )
+				end )
+			end
+		end
+		self.sv.tutorialFor = ( #keep > 0 ) and keep or nil
+	end
+
 	-- Deferred from the join path, for the reason written at Identity.Sv_Touch.
 	if tick >= ( self.sv.nextIdentityFlush or 0 ) then
 		self.sv.nextIdentityFlush = tick + TICKS_PER_SECOND
@@ -975,6 +990,28 @@ function Game.server_onPlayerJoined( self, player, newPlayer )
 			.. "and the lift will not pick up or place anything." )
 		self.network:sendToClient( player, "client_showMessage",
 			"  /unlock reopens it. (Left over from an event that ended.)" )
+	end
+
+	-- THE TUTORIAL MEETS PEOPLE WHO HAVE NEVER SEEN THIS BEFORE.
+	--
+	-- ASKED FOR: "in game tutorial. when you are joining. it tells how to use
+	-- the mod." A line in the welcome text is not that -- chat scrolls, and the
+	-- one person who needs it is busy looking at a city they do not understand.
+	--
+	-- ONLY ON A FIRST JOIN. Identity.Sv_Touch returns whether it had to invent a
+	-- perma id, which is exactly "this is somebody new". Opening it every time
+	-- would be the mod interrupting a regular for the fiftieth time.
+	--
+	-- DEFERRED, for the same reason the focus marker is: this client's world
+	-- script does not exist yet while server_onPlayerJoined runs, and a panel
+	-- pushed into a client that is still being built is a panel with nowhere to
+	-- land.
+	if rec.firstJoin and Settings.Get( "tutorialonjoin" ) ~= false then
+		self.sv.tutorialFor = self.sv.tutorialFor or {}
+		self.sv.tutorialFor[#self.sv.tutorialFor + 1] = {
+			player = player,
+			at = sm.game.getCurrentTick() + 3 * TICKS_PER_SECOND,
+		}
 	end
 
 	-- If they already own a plot from a previous session, put it back on their
@@ -3139,10 +3176,16 @@ end
 -- The server decides `host` and `developer`, the same way sv_openMenu does. A
 -- client that lies about either gets to READ two more pages of prose, which is
 -- the one place in this mod where that costs nothing.
-function Game.sv_openTutorialGui( self, player, page, status )
+function Game.sv_openTutorialGui( self, player, section, page, status )
+	local isHost = ( player == sm.player.getHostPlayer() )
+	local dev = Settings.DeveloperOn()
 	self.network:sendToClient( player, "client_openTutorialGui", {
-		host = ( player == sm.player.getHostPlayer() ),
-		developer = Settings.DeveloperOn(),
+		host = isHost,
+		developer = dev,
+		-- Clamped on the SERVER as well as in the panel. The panel is drawn on
+		-- the reader's machine, so the only copy of this decision that a client
+		-- cannot edit is this one.
+		section = Tutorial.SectionFor( section, isHost, dev ),
 		page = page,
 		status = status,
 	} )
@@ -3172,12 +3215,21 @@ function Game.cl_onTutorialClick( self, widgetName, data )
 		self.network:sendToServer( "sv_n_openMenu", {} )
 		return
 	end
-	if data.action == "page" then
+	if data.action == "page" or data.action == "section" then
 		-- Local. Nothing on this panel changes anything on the server, so a
 		-- round trip would only add a tick of latency to turning a page.
 		-- cl_renderLater rather than a direct render: building a new tree
 		-- destroys the widget whose callback is running.
-		state.page = data.page
+		--
+		-- Switching section starts at page one: carrying page 4 across into a
+		-- section with two pages would land on the last one, which reads as the
+		-- button having done something odd.
+		if data.action == "section" then
+			state.section = data.section
+			state.page = 1
+		else
+			state.page = data.page
+		end
 		self:cl_renderLater( "howto", TutorialGui.Build( state ) )
 	end
 end

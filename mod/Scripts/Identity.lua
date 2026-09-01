@@ -126,6 +126,10 @@ end
 -- name we have never seen.
 function Identity.Sv_Touch( player )
 	local rec = Identity.Sv_FindByName( player.name )
+	-- Whether this is somebody the server has never seen. The tutorial opens
+	-- itself on a first join and must not on the fiftieth, and this is the only
+	-- place that knows the difference.
+	local isNew = ( rec == nil )
 
 	if rec == nil then
 		rec = {
@@ -154,6 +158,9 @@ function Identity.Sv_Touch( player )
 	-- Sv_Ban and Sv_SetAllowed still write immediately, because those are the
 	-- ones somebody types while something is going wrong.
 	Identity.playersDirty = true
+	-- Set every time, so a returning player is positively marked as NOT new
+	-- rather than inheriting a stale true from the record they were given.
+	rec.firstJoin = isNew
 	return rec
 end
 

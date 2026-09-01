@@ -9,9 +9,19 @@
 -- opening it for the first time is looking at eleven buttons with no order to
 -- press them in.
 --
--- ONE ENTRY, THREE AUDIENCES. A guest sees the pages a guest needs; a host sees
--- those plus the host ones; developer mode adds the rest. The alternative was
--- three menu entries, and the menu has a hard ceiling -- see MenuGui.W.
+-- THREE SECTIONS YOU PICK BETWEEN, one menu entry. Asked for exactly:
+--
+--   "you can select for players for hosts and for devs. the players can only
+--    acces for players and host can access both. but not the dev. if the dev
+--    mode is on then hosts can access them all"
+--
+-- So the access rule is a table, not prose -- see Tutorial.CanRead. A guest
+-- gets one section and never sees the others exist; a host gets two; developer
+-- mode is what unlocks the third, for a host only.
+--
+-- Sections rather than one long read because the three audiences want different
+-- things at different moments: a builder wants the plot rules NOW, a host wants
+-- the setup order before an event, and neither wants to page past the other.
 --
 -- PLAIN ASCII, and that is not decoration. The game builds a glyph atlas per
 -- font out of the strings it renders itself, so an apostrophe or an ellipsis
@@ -21,8 +31,61 @@
 
 Tutorial = {}
 
--- who each page is for. "all" is everybody including guests.
-Tutorial.AUDIENCES = { "all", "host", "dev" }
+-- THE THREE SECTIONS, in the order they are offered. `who` on a page names the
+-- section it belongs to.
+--
+-- Ids stay "all"/"host"/"dev" and the LABELS are what anybody reads: the id is
+-- the access rule and the label is the audience, and conflating them is how a
+-- rename turns into a permission change.
+Tutorial.SECTIONS = {
+	{ id = "all",  label = "FOR PLAYERS" },
+	{ id = "host", label = "FOR HOSTS" },
+	{ id = "dev",  label = "FOR DEVS" },
+}
+
+-- THE ACCESS RULE, in one place because five things ask it: the tabs, the page
+-- lookup, the panel opener, the clamp and the check.
+--
+-- Note what developer mode does NOT do: it never opens a section to a guest.
+-- It is a host switch, so it can only ever widen what a host sees.
+function Tutorial.CanRead( who, isHost, developer )
+	if who == "all" then return true end
+	if not isHost then return false end
+	if who == "host" then return true end
+	if who == "dev" then return developer == true end
+	return false
+end
+
+-- The sections this person may choose between, in order.
+function Tutorial.SectionsFor( isHost, developer )
+	local out = {}
+	for _, sec in ipairs( Tutorial.SECTIONS ) do
+		if Tutorial.CanRead( sec.id, isHost, developer ) then
+			out[#out + 1] = sec
+		end
+	end
+	return out
+end
+
+function Tutorial.PagesIn( who )
+	local out = {}
+	for _, page in ipairs( Tutorial.PAGES ) do
+		if page.who == who then out[#out + 1] = page end
+	end
+	return out
+end
+
+-- Which section this person is actually looking at. Clamped rather than
+-- refused: a guest arriving with section = "dev" -- from a stale panel, or from
+-- a client that made it up -- lands on the one they may read instead of an
+-- empty screen they cannot explain.
+function Tutorial.SectionFor( wanted, isHost, developer )
+	if wanted ~= nil and Tutorial.CanRead( wanted, isHost, developer ) then
+		return wanted
+	end
+	local open = Tutorial.SectionsFor( isHost, developer )
+	return ( open[1] and open[1].id ) or "all"
+end
 
 Tutorial.PAGES = {
 
@@ -193,19 +256,13 @@ Tutorial.PAGES = {
 }
 
 
--- Which pages this person may read. Pure, so the audience split is checkable
--- without a game.
---
--- A host sees the guest pages too, and in the guest ORDER -- somebody running
--- an event still has to know how claiming a plot works, because they are the
--- one who will be asked.
+-- Every page this person may read, across every section they may open. Kept
+-- because it is the honest answer to "what can they see", which is what the
+-- access checks ask.
 function Tutorial.PagesFor( isHost, developer )
 	local out = {}
 	for _, page in ipairs( Tutorial.PAGES ) do
-		local who = page.who
-		if who == "all"
-			or ( who == "host" and isHost )
-			or ( who == "dev" and isHost and developer == true ) then
+		if Tutorial.CanRead( page.who, isHost, developer ) then
 			out[#out + 1] = page
 		end
 	end
@@ -216,10 +273,10 @@ function Tutorial.Count( isHost, developer )
 	return #Tutorial.PagesFor( isHost, developer )
 end
 
--- Clamped rather than validated: a page number left over from a longer list
--- must land on the last page, not on an empty panel.
-function Tutorial.Page( isHost, developer, index )
-	local pages = Tutorial.PagesFor( isHost, developer )
+-- One page of one section. Clamped rather than validated: a page number left
+-- over from a longer section must land on the last page, not on an empty panel.
+function Tutorial.Page( who, index )
+	local pages = Tutorial.PagesIn( who )
 	local n = #pages
 	if n == 0 then return nil, 1, 0 end
 	index = math.max( 1, math.min( n, math.floor( tonumber( index ) or 1 ) ) )

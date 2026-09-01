@@ -45,7 +45,7 @@ Checklist = {}
 
 -- Bumped with VERSION. dev/test_logic.py fails if the two disagree, because a
 -- stale build number silently mislabels every result recorded after it.
-Checklist.BUILD = 75
+Checklist.BUILD = 76
 
 Checklist.FILE = "$CONTENT_DATA/Checklist.json"
 
@@ -166,9 +166,18 @@ Checklist.ITEMS = {
 	  steps = { "open /menu and press HOW THIS WORKS",
 	            "page through all of it and watch for hollow boxes",
 	            "turn /developer off and check the last two pages disappear" },
-	  pass = "every page fits, no square boxes where a letter should be, and a "
-	      .. "guest never sees the host pages. The boxes are the thing to look "
-	      .. "for -- the game only has the letters it has already drawn once" },
+	  pass = "every page fits, no square boxes where a letter should be, and "
+	      .. "you see FOR PLAYERS and FOR HOSTS but FOR DEVS only with developer "
+	      .. "mode on. The boxes are the thing to look for -- the game only has "
+	      .. "the letters it has already drawn once" },
+
+	{ id = "boot-howto-join", group = "boot",
+	  title = "The tutorial opens by itself for somebody new",
+	  steps = { "make a fresh world, or ban and unban yourself to be new again",
+	            "have somebody who has never joined this server come in" },
+	  pass = "HOW THIS WORKS opens for them a few seconds after they land, on "
+	      .. "FOR PLAYERS, and does NOT open again next time they join",
+	  needs = "guest" },
 
 	{ id = "boot-modsbox", group = "boot",
 	  title = "The add-mods box is on the world creation screen",

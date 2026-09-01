@@ -10,6 +10,75 @@ was most of them.
 
 ---
 
+## V76 -- the tutorial is three sections you pick, and it meets you at the door
+
+> "you can select for players for hosts and for devs. the players can only acces
+> for players and host can access both. but not the dev. if the dev mode is on
+> then hosts can access them all"
+
+That is precise enough to be a table, so it is one -- `Tutorial.CanRead`:
+
+| section | player | host | host + dev |
+|---|---|---|---|
+| FOR PLAYERS | yes | yes | yes |
+| FOR HOSTS | no | **yes** | yes |
+| FOR DEVS | no | **no** | **yes** |
+
+The check spells out all twelve cells rather than deriving them, because a rule
+written as a loop can agree with a bug in the same loop. It also pins the half
+that is easiest to get wrong: **developer mode never widens a guest.** The flag
+is global and the rule is not.
+
+**Sections a person cannot read are not drawn at all**, rather than greyed out --
+a disabled FOR DEVS tab tells a guest there is something they cannot have and
+gives them nothing to do about it. But the missing tab is courtesy, not the
+rule: the panel is built on the reader's own machine, so the section is clamped
+in `TutorialGui.Build` *and* again in `sv_openTutorialGui`. Ask for a section you
+may not read and you get one you may.
+
+### It opens itself the first time somebody joins
+
+> "in game tutorial. when you are joining. it tells how to use the mod."
+
+A line in the welcome text is not that -- chat scrolls, and the person who needs
+it is busy looking at a city they do not understand. `HOW THIS WORKS` now opens
+by itself, on FOR PLAYERS, three seconds after a **first** join.
+
+**Only a first join.** `Identity.Sv_Touch` already knew whether it had to invent
+a perma id, which is exactly "this is somebody new" -- it just never said so.
+It returns `firstJoin` now, set on every touch so a returning player is
+positively marked NOT new rather than inheriting a stale flag.
+
+Deferred by three seconds for the same reason the focus marker is: the joining
+client's world script does not exist yet while `server_onPlayerJoined` runs, and
+a panel pushed at a client that is still being built has nowhere to land.
+
+`tutorialonjoin` turns it off, for a host testing on fresh worlds.
+
+### A check that was passing while proving less than it looked
+
+V75's fits check walked `page 1..12` against a panel that now holds one section
+at a time, so the pager clamped and it re-rendered the last page eleven times.
+Green, and testing almost nothing. It walks section by section now, including
+`nil` and a nonsense section id.
+
+Same for the font and glyph sweeps.
+
+### Checks
+
+222. Three new access breaks verified: a host reading FOR DEVS without developer
+mode, a guest reading FOR HOSTS, and the clamp removed so a guest gets whatever
+section they ask for. All three go red.
+
+One more corpus fix: the checklist-drift check scans `*Gui*.lua` for button
+captions, and the tab labels live in `Tutorial.lua` -- the content file, not the
+panel. It called FOR PLAYERS a made-up button. **Where a caption is defined and
+where it is drawn are two different files whenever content is split from panel**,
+which is the third time this project has had to widen a corpus rather than fix
+the thing it was complaining about.
+
+---
+
 ## V75 -- a tutorial, and a page asking you to use this wisely
 
 > "tutorial. for both hosts, devs, and regular players. and adding something

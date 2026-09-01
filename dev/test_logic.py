@@ -3652,9 +3652,12 @@ def every_caption_can_be_drawn():
     G, T = lua.globals().TutorialGui, lua.globals().Tutorial
     for host in (True, False):
         for dev in (True, False):
-            for page in range(1, int(T.Count(host, dev)) + 1):
-                collect(f"tutorial/{host}/{dev}/{page}", G.Build(lua.table_from(
-                    {"host": host, "developer": dev, "page": page})))
+            for sec in ("all", "host", "dev"):
+                for page in range(1, len(list(T.PagesIn(sec).values())) + 1):
+                    collect(f"tutorial/{host}/{dev}/{sec}/{page}",
+                            G.Build(lua.table_from(
+                                {"host": host, "developer": dev,
+                                 "section": sec, "page": page})))
 
     for mode in ("build", "churn", "off"):
         for bridge in (True, False):
@@ -7313,8 +7316,13 @@ def everything_the_checklist_tells_you_to_type_still_exists():
     # Captions the panels really draw, so a button named in an instruction is a
     # button that is on the screen.
     captions = set()
-    for f in sorted(SCRIPTS.glob("*Gui*.lua")):
-        if f.name.startswith("Checklist"):
+    # Tutorial.lua is in here despite not being a *Gui* file: its SECTIONS carry
+    # the tab labels, so a panel-only scan would call FOR PLAYERS a made-up
+    # button. Where a caption is DEFINED and where it is drawn are two different
+    # files whenever the content is split from the panel.
+    files = list(SCRIPTS.glob("*Gui*.lua")) + [SCRIPTS / "Tutorial.lua"]
+    for f in sorted(set(files)):
+        if f.name.startswith("Checklist") or not f.is_file():
             continue
         src = io.open(f, encoding="utf-8").read()
         captions |= set(re.findall(r'"([A-Z][A-Z0-9 ]{2,})"', src))
@@ -7720,13 +7728,15 @@ def the_tutorial_draws_no_character_the_other_panels_have_not():
     used = {}
     for host in (True, False):
         for dev in (True, False):
-            for page in range(1, int(T.Count(host, dev)) + 1):
-                root = G.Build(lua.table_from(
-                    {"host": host, "developer": dev, "page": page}))
-                for w in walk_full(root):
-                    for ch in str(w["caption"] or ""):
-                        if not ch.isalnum() and ch not in proven:
-                            used.setdefault(ch, str(w["caption"])[:60])
+            for sec in ("all", "host", "dev"):
+                for page in range(1, len(list(T.PagesIn(sec).values())) + 1):
+                    root = G.Build(lua.table_from(
+                        {"host": host, "developer": dev, "section": sec,
+                         "page": page}))
+                    for w in walk_full(root):
+                        for ch in str(w["caption"] or ""):
+                            if not ch.isalnum() and ch not in proven:
+                                used.setdefault(ch, str(w["caption"])[:60])
     assert not used, (
         "the tutorial draws characters no other panel does, and nothing has "
         "ever confirmed the font has them: "
@@ -8906,50 +8916,115 @@ def the_build_preset_leaves_nothing_dangerous_on():
         "writing it means /developer on cannot give it back")
 
 
-def the_tutorial_tells_each_person_what_they_can_do():
-    """ASKED FOR: "tutorial. for both hosts, devs, and regular players."
+def the_tutorial_sections_follow_the_access_rule():
+    """ASKED FOR, and stated precisely enough to be a table:
 
-    Three audiences, one menu entry. A guest reads the guest pages; a host gets
-    those and the host ones; developer mode adds the rest. The alternative was
-    three entries in a column with a hard ceiling.
+        "you can select for players for hosts and for devs. the players can
+         only acces for players and host can access both. but not the dev. if
+         the dev mode is on then hosts can access them all"
 
-    What this guards is the direction of the nesting -- a guest must never be
-    shown a host page, and a host must still see the guest ones, because they
-    are the person who gets asked how claiming a plot works.
+    So this is that sentence as a matrix, run against the real Tutorial.CanRead.
+    Every cell is spelled out rather than derived, because a rule written as a
+    loop can agree with a bug in the same loop.
     """
     lua = gui_lua()
     T = lua.globals().Tutorial
 
-    def ids(host, dev):
-        return [str(pg["id"]) for pg in T.PagesFor(host, dev).values()]
+    #                    guest        host         host+dev     guest+dev
+    EXPECTED = {
+        "all":  {(False, False): True,  (True, False): True,
+                 (True, True): True,    (False, True): True},
+        "host": {(False, False): False, (True, False): True,
+                 (True, True): True,    (False, True): False},
+        "dev":  {(False, False): False, (True, False): False,
+                 (True, True): True,    (False, True): False},
+    }
+    for who, cells in EXPECTED.items():
+        for (host, dev), want in cells.items():
+            got = bool(T.CanRead(who, host, dev))
+            assert got is want, (
+                f"section {who!r}: host={host} developer={dev} gives {got}, "
+                f"expected {want}. A host may read players and hosts but not "
+                "devs until developer mode is on, and developer mode never "
+                "opens anything to a guest")
 
-    guest = ids(False, False)
-    host = ids(True, False)
-    devs = ids(True, True)
+    # DEVELOPER MODE IS A HOST SWITCH. Turning it on must not widen a guest by
+    # one page -- that is the half of the rule easiest to get wrong, because the
+    # flag is global and the rule is not.
+    assert ([str(x["id"]) for x in T.SectionsFor(False, True).values()]
+            == [str(x["id"]) for x in T.SectionsFor(False, False).values()]), (
+        "developer mode changes what a GUEST can read")
 
-    assert guest, "a guest is shown no tutorial at all"
-    assert set(guest) < set(host), (
-        "a host does not see everything a guest sees. They are the one who gets "
-        "asked how any of it works")
-    assert set(host) < set(devs), "developer mode adds no pages"
-    assert ids(False, True) == guest, (
-        "developer mode shows a GUEST extra pages. It is a host switch")
+    assert [str(x["id"]) for x in T.SectionsFor(True, True).values()] == \
+        ["all", "host", "dev"], "a host in developer mode cannot reach all three"
 
-    # The guest pages have to come first for everyone, or a builder opening this
-    # lands on something about backups.
-    assert host[:len(guest)] == guest, (
-        f"the host order is {host} -- the guest pages must come first, or the "
-        "first thing anybody reads is not for them")
+    # A section nobody may read must clamp to one they may, not to nothing.
+    assert str(T.SectionFor("dev", False, False)) == "all", (
+        "a guest asking for the dev section gets an empty panel instead of the "
+        "one they may read")
+    assert str(T.SectionFor("dev", True, False)) == "all", (
+        "a host without developer mode asking for the dev section is not clamped")
+    assert str(T.SectionFor("host", True, False)) == "host", (
+        "clamping throws away a section the reader IS allowed")
+    assert str(T.SectionFor(None, True, True)) == "all", (
+        "with nothing chosen, a host does not land on the players section -- "
+        "which is the one everybody starts on")
 
-    # Every page complete and uniquely named.
+    # And every page belongs to a section that exists.
+    ids = {str(x["id"]) for x in T.SECTIONS.values()}
     seen = set()
     for pg in T.PAGES.values():
         pid, who = str(pg["id"]), str(pg["who"])
+        assert who in ids, f"page {pid!r} is in section {who!r}, which is not one"
         assert pid not in seen, f"two tutorial pages share the id {pid!r}"
         seen.add(pid)
-        assert who in ("all", "host", "dev"), f"{pid}: unknown audience {who!r}"
         assert str(pg["title"]).strip(), f"{pid} has no title"
         assert len(list(pg["lines"].values())) > 2, f"{pid} has almost no content"
+    for sec in ids:
+        assert len(list(T.PagesIn(sec).values())) > 0, f"section {sec!r} is empty"
+
+
+def a_guest_is_never_offered_a_section_they_cannot_read():
+    """The tabs are drawn on the reader's own machine, so what stops a guest is
+    not that the tab is missing -- it is that the panel and the server both
+    clamp the section. The missing tab is courtesy; the clamp is the rule.
+
+    A greyed-out FOR DEVS tab would also be worse than none: it tells a guest
+    there is something they cannot have and gives them nothing to do about it.
+    """
+    lua = gui_lua()
+    G = lua.globals().TutorialGui
+
+    def tabs(host, dev, section=None):
+        root = G.Build(lua.table_from(
+            {"host": host, "developer": dev, "section": section, "page": 1}))
+        return [str(n["Caption"]) for n in walk_raw(root)
+                if n["onClick"] is not None and n["onClickData"] is not None
+                and str(n["onClickData"]["action"] or "") == "section"]
+
+    assert tabs(False, False) == ["FOR PLAYERS"], (
+        f"a guest is offered {tabs(False, False)}")
+    assert tabs(False, True) == ["FOR PLAYERS"], (
+        "developer mode offers a guest more tabs")
+    assert tabs(True, False) == ["FOR PLAYERS", "FOR HOSTS"], (
+        f"a host without developer mode is offered {tabs(True, False)}")
+    assert tabs(True, True) == ["FOR PLAYERS", "FOR HOSTS", "FOR DEVS"], (
+        f"a host with developer mode is offered {tabs(True, True)}")
+
+    # THE CLAMP IS THE PART THAT MATTERS. Ask for a section you may not read and
+    # the panel must draw one you may -- not the one you asked for.
+    def shown_titles(host, dev, section):
+        root = G.Build(lua.table_from(
+            {"host": host, "developer": dev, "section": section, "page": 1}))
+        return " ".join(str(n["caption"] or "") for n in walk_full(root))
+
+    guest_dev = shown_titles(False, False, "dev")
+    for leak in ("DEVELOPER MODE", "PLEASE USE THIS WISELY"):
+        assert leak not in guest_dev, (
+            f"a guest who asks for the dev section is shown {leak!r}")
+    host_nodev = shown_titles(True, False, "dev")
+    assert "DEVELOPER MODE" not in host_nodev, (
+        "a host without developer mode who asks for the dev section is shown it")
 
 
 def the_tutorial_says_to_use_it_wisely():
@@ -8975,10 +9050,9 @@ def the_tutorial_says_to_use_it_wisely():
         "the wisely page is not aimed at the host, who is the only person it "
         "is about")
 
-    host = [str(pg["id"]) for pg in T.PagesFor(True, False).values()]
-    guest = [str(pg["id"]) for pg in T.PagesFor(False, False).values()]
-    assert host[len(guest)] == "wisely", (
-        f"the first host page is {host[len(guest)]!r}. The warning has to come "
+    first = [str(pg["id"]) for pg in T.PagesIn("host").values()][0]
+    assert first == "wisely", (
+        f"the first page of FOR HOSTS is {first!r}. The warning has to come "
         "before the instructions, or it is a warning nobody reaches")
 
     body = " ".join(str(x) for x in pages["wisely"]["lines"].values()).lower()
@@ -8995,14 +9069,15 @@ def the_tutorial_panel_fits_every_page():
     G, T = lua.globals().TutorialGui, lua.globals().Tutorial
     for host in (True, False):
         for dev in (True, False):
-            total = int(T.Count(host, dev))
-            for page in list(range(1, total + 1)) + [0, 99]:
-                root = G.Build(lua.table_from(
-                    {"host": host, "developer": dev, "page": page,
-                     "status": "x"}))
-                label = f"tutorial/{host}/{dev}/{page}"
-                items = panel_fits(label, root, G.W, G.H)
-                no_button_is_buried(label, items, G.H)
+            for sec in ("all", "host", "dev", None, "nonsense"):
+                total = len(list(T.PagesIn(sec or "all").values()))
+                for page in list(range(1, total + 1)) + [0, 99]:
+                    root = G.Build(lua.table_from(
+                        {"host": host, "developer": dev, "section": sec,
+                         "page": page, "status": "x"}))
+                    label = f"tutorial/{host}/{dev}/{sec}/{page}"
+                    items = panel_fits(label, root, G.W, G.H)
+                    no_button_is_buried(label, items, G.H)
 
     # And no page may be longer than the panel is tall, which the fits check
     # above only catches once a page is ALREADY too long. This is the budget.
@@ -9676,8 +9751,10 @@ def main():
           a_dev_tool_can_always_be_switched_off)
     check("menu: the mod says it is a work in progress",
           the_mod_says_it_is_unfinished)
-    check("tutorial: it tells each person what they can do",
-          the_tutorial_tells_each_person_what_they_can_do)
+    check("tutorial: the sections follow the access rule",
+          the_tutorial_sections_follow_the_access_rule)
+    check("tutorial: a guest is never offered a section they cannot read",
+          a_guest_is_never_offered_a_section_they_cannot_read)
     check("tutorial: it says to use this wisely, to the host, first",
           the_tutorial_says_to_use_it_wisely)
     check("tutorial: the panel fits every page",

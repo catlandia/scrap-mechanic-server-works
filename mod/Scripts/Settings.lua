@@ -599,6 +599,10 @@ Settings.SCHEMA = {
 	-- gates and why it is not simply a matter of tidiness. /developer on|off is
 	-- the same switch with a shorter name, because it is reached for in the
 	-- middle of a test session rather than while reading a settings page.
+	-- The tutorial opens itself the first time somebody joins. Off is for a host
+	-- who is testing and does not want it in their face on every fresh world.
+	{ key = "tutorialonjoin", kind = "bool", default = true,
+	  help = "show HOW THIS WORKS to somebody the first time they join" },
 	{ key = "developer", kind = "bool", default = false,
 	  help = "show the dev tools: crowd, benchmark, outside control, checklist" },
 	{ key = "autosave", kind = "number", default = 10,
