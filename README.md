@@ -7,17 +7,25 @@ survive between events.
 Built after a griefer wrecked builds two minutes before the end of a public stream
 event on 2026-08-22.
 
+**Made with AI.** The code here was written with
+[Claude Code](https://claude.com/claude-code), Anthropic's AI coding tool,
+directed and tested by one person. It is said on the Workshop page too, in the
+first three lines, because somebody who would rather not run AI-written code is
+entitled to know that before they install rather than after.
+
 ---
 
 ## Status
 
-**V56.** Seen working in game: lockdown, plot claiming and enforcement, the city
+**V80, and never published until now.** Seen working in game: lockdown, plot claiming and enforcement, the city
 builder (up to 384 plots without denting a 40 Hz tick), snapshots, bans and the
 allow list, the settings and city-layout panels, tool bans that hold, NOTlift
 importing a creation, the Cleaner, the crowd-bot load harness, and the focus
 marker.
 
-Never run in a real event with real people. That is the honest headline, and
+Never run in a real event with real people, and fewer than a third of its
+features have ever been exercised in a live game at all -- 32 of 106, which is
+`/check`'s own count rather than an impression. That is the honest headline, and
 [`docs/STATUS.md`](docs/STATUS.md) is the ledger that keeps it honest — it
 separates what has been *seen working*, what was seen broken and has a fix
 nobody has re-tested, and what has never executed at all. `check_all.py` passing
