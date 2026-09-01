@@ -1,27 +1,31 @@
-"""Prepare the supporting images for the Workshop page.
+"""Turn Scrap Mechanic screenshots into Workshop gallery images.
 
-The Workshop shows one preview (mod/preview.jpg, made by make_preview.py) and
-then a gallery. This crops the chosen screenshots to 16:9, cuts the hotbar and
-whatever debug text was on screen, and writes them numbered into dev/steam/
-as lossless PNGs, ready to upload.
+You take the screenshots; this makes them uploadable. Every output is a lossless
+1920x1080 PNG in dev/steam/, numbered so the upload order is the filename order.
 
-PNG rather than JPEG because half of these are UI panels and striped roads --
-hard edges and small text, which is exactly what JPEG smears, and a gallery
-image gets looked at full size. The mod's own preview stays a JPEG: Steam caps
-the PREVIEW image at 1 MB and a photographic PNG will not fit under it.
+    python dev/steam_images.py --list          newest screenshots, numbered
+    python dev/steam_images.py --add 3         add screenshot 3 from that list
+    python dev/steam_images.py --add 3 --name plots --why "claiming a plot"
+    python dev/steam_images.py --new           add everything taken since the
+                                               last time this ran
+    python dev/steam_images.py                 rebuild what is already picked
+    python dev/steam_images.py --drop 02       remove one again
 
-NO OVERLAY ON THESE, deliberately. The preview carries the title, the version
-and the work-in-progress warning; a gallery shot that repeats all that is a
-worse screenshot and a busier page. These are just the mod, cleanly framed.
+THE HOTBAR IS CUT AUTOMATICALLY and the HUD is not. A Scrap Mechanic capture has
+the hotbar across the bottom, which is the game's furniture and says nothing
+about this mod -- but the roster count top-left and the event clock top-right ARE
+the mod, and cutting them would throw away the only proof in the picture that
+anything is running. So the default crop takes the bottom off and nothing else.
+--full keeps the hotbar for a shot where it matters.
 
-WHY THE CROPS ARE WRITTEN DOWN. Every one was chosen by looking at the shot: the
-hotbar sits in the bottom ~190px of a 1440-tall capture, the chat log runs down
-the left, and the roster HUD in the top left is worth KEEPING because it is the
-mod. A blanket crop would take the wrong thing off at least one of them.
-
-    python dev/steam_images.py            build them
-    python dev/steam_images.py --list     say what is chosen and why
+PNG rather than JPEG: half of these end up being UI panels and hard-edged
+striped roads, which is what JPEG smears, and a gallery image is looked at full
+size. The mod's own preview stays a JPEG -- Steam caps THAT one at 1 MB and the
+same picture as a PNG does not fit under it.
 """
+import argparse
+import datetime
+import json
 import pathlib
 import sys
 
@@ -32,95 +36,143 @@ except ImportError:
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT = ROOT / "dev" / "steam"
+PICKED = OUT / "picked.json"          # what has been chosen, and why
 SIZE = (1920, 1080)
 
-# Steam keeps screenshots per user; this is resolved rather than hard-coded so
-# the script survives another account being added.
 STEAM = pathlib.Path(r"C:\Program Files (x86)\Steam\userdata")
 APPID = "387990"
+
+# Fraction of the capture height the hotbar occupies. MEASURED on this owner's
+# 3440x1440 captures: the hotbar tops out around y=1245, so a shade under 14%.
+HOTBAR = 0.135
 
 
 def shots_dir():
     best = None
-    for user in STEAM.glob("*/760/remote/" + APPID + "/screenshots"):
-        if user.is_dir() and (best is None or
-                              len(list(user.glob("*.jpg"))) > len(list(best.glob("*.jpg")))):
-            best = user
+    for d in STEAM.glob("*/760/remote/" + APPID + "/screenshots"):
+        if d.is_dir() and (best is None
+                           or len(list(d.glob("*.jpg"))) > len(list(best.glob("*.jpg")))):
+            best = d
     return best
 
 
-# name, crop (x, y, w, h) in the 3440x1440 capture, what it shows
-CHOSEN = [
-    ("01-the-crowd", "20260826014733_1.jpg", (300, 0, 2840, 1245),
-     "90 crowd bots on a built city, with the roster and event HUD live. "
-     "The mod doing the thing the mod is for."),
+def shots(src):
+    return sorted(src.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
 
-    ("02-the-city", "20260825232922_1.jpg", (0, 0, 3440, 1245),
-     "The deck running to the horizon -- plots, the metal seams between them, "
-     "and the striped roads. What /plotbuild makes."),
 
-    ("03-ground-level", "20260826012038_1.jpg", (700, 0, 2740, 1245),
-     "Standing on it, with a few bots about. Shows the scale of one plot "
-     "against a person, which the top-down shots cannot."),
+def load():
+    if PICKED.is_file():
+        try:
+            return json.loads(PICKED.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"images": []}
 
-    ("04-city-layout", "20260825202433_1.jpg", (380, 40, 2680, 1300),
-     "The CITY LAYOUT panel: every dimension of the city, and a live top-down "
-     "map that updates as you change them. The panel a host starts on."),
-]
+
+def save(state):
+    OUT.mkdir(parents=True, exist_ok=True)
+    PICKED.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def render(src_file, dst, full=False):
+    im = Image.open(src_file).convert("RGB")
+    if not full:
+        im = im.crop((0, 0, im.width, int(im.height * (1.0 - HOTBAR))))
+    # Cover-fit to 16:9, centred.
+    sc = max(SIZE[0] / im.width, SIZE[1] / im.height)
+    im = im.resize((round(im.width * sc), round(im.height * sc)), Image.LANCZOS)
+    left, top = (im.width - SIZE[0]) // 2, (im.height - SIZE[1]) // 2
+    im = im.crop((left, top, left + SIZE[0], top + SIZE[1]))
+    im.save(dst, "PNG", optimize=True)
+    return dst.stat().st_size // 1024
+
+
+def build(state, src):
+    OUT.mkdir(parents=True, exist_ok=True)
+    for old in OUT.glob("*.png"):
+        old.unlink()
+    total = 0
+    for i, entry in enumerate(state["images"], start=1):
+        f = src / entry["file"]
+        if not f.is_file():
+            print(f"  SKIP {entry['file']} -- not in the screenshots folder any more")
+            continue
+        name = "%02d-%s" % (i, entry.get("name") or pathlib.Path(entry["file"]).stem)
+        kb = render(f, OUT / (name + ".png"), entry.get("full", False))
+        total += 1
+        flag = "  >1MB" if kb > 1024 else ""
+        print(f"  {name + '.png':30} {kb:5} KB{flag}   {entry.get('why', '')[:44]}")
+    print(f"\n{total} image(s) in {OUT}")
+    if total:
+        print("Upload order is the filename order. The first thing people see is")
+        print("mod/preview.jpg, from dev/make_preview.py -- that one is a JPEG")
+        print("because Steam caps the preview at 1 MB.")
 
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__.split(chr(10))[0])
+    ap.add_argument("--list", action="store_true", help="newest screenshots, numbered")
+    ap.add_argument("--add", type=int, metavar="N", help="add screenshot N from --list")
+    ap.add_argument("--new", action="store_true",
+                    help="add every screenshot taken since the newest already picked")
+    ap.add_argument("--drop", metavar="NAME", help="remove a picked image by name or number")
+    ap.add_argument("--name", help="short name for the file, with --add")
+    ap.add_argument("--why", default="", help="one line on what it shows")
+    ap.add_argument("--full", action="store_true", help="keep the hotbar in")
+    ap.add_argument("--count", type=int, default=20, help="how many to list")
+    a = ap.parse_args()
+
     src = shots_dir()
     if src is None:
         sys.exit(f"no Scrap Mechanic screenshots under {STEAM}")
+    state = load()
+    picked = {e["file"] for e in state["images"]}
 
-    if "--list" in sys.argv:
-        print(f"source: {src}\n")
-        for name, f, crop, why in CHOSEN:
-            here = "ok " if (src / f).is_file() else "MISSING"
-            print(f"  [{here}] {name}\n      {f}  crop {crop}\n      {why}\n")
-        print("Add your own: put the file in the list above with a crop, or drop")
-        print("a ready-made 16:9 image straight into dev/steam/.")
+    if a.list:
+        print(f"{src}\n")
+        for i, f in enumerate(shots(src)[:a.count], start=1):
+            when = datetime.datetime.fromtimestamp(f.stat().st_mtime)
+            mark = "PICKED" if f.name in picked else "      "
+            print(f"  {i:3}  {mark}  {when:%Y-%m-%d %H:%M}  {f.name}")
+        print("\n  python dev/steam_images.py --add <number> --name plots "
+              "--why \"what it shows\"")
         return
 
-    OUT.mkdir(parents=True, exist_ok=True)
-    made, big = 0, []
-    for name, f, crop, why in CHOSEN:
-        path = src / f
-        if not path.is_file():
-            print(f"  SKIP {name} -- {f} is not there any more")
-            continue
-        im = Image.open(path).convert("RGB")
-        x, y, w, h = crop
-        im = im.crop((x, y, min(x + w, im.width), min(y + h, im.height)))
-        # Cover-fit to 16:9, centred. The crops above are already close, so this
-        # only trims a few pixels -- it is here so a hand-typed crop that is
-        # slightly off still produces a correctly shaped image.
-        sc = max(SIZE[0] / im.width, SIZE[1] / im.height)
-        im = im.resize((round(im.width * sc), round(im.height * sc)), Image.LANCZOS)
-        im = im.crop(((im.width - SIZE[0]) // 2, (im.height - SIZE[1]) // 2,
-                      (im.width - SIZE[0]) // 2 + SIZE[0],
-                      (im.height - SIZE[1]) // 2 + SIZE[1]))
-        dst = OUT / f"{name}.png"
-        im.save(dst, "PNG", optimize=True)
-        kb = dst.stat().st_size // 1024
-        print(f"  {dst.name:22} {kb:5} KB   {why[:50]}")
-        made += 1
-        if kb > 1024:
-            big.append((dst.name, kb))
+    if a.drop:
+        before = len(state["images"])
+        state["images"] = [e for i, e in enumerate(state["images"], start=1)
+                           if e.get("name") != a.drop and str(i) != a.drop.lstrip("0")
+                           and e["file"] != a.drop]
+        save(state)
+        print(f"dropped {before - len(state['images'])}")
+        build(state, src)
+        return
 
-    print(f"\n{made} image(s) in {OUT}")
-    if big:
-        # Steam caps the PREVIEW image at 1 MB. Gallery images added on the
-        # Workshop page are more generous, but a file over that is worth
-        # knowing about before an upload refuses rather than after.
-        print("\n  over 1 MB -- that is the Steam PREVIEW cap. Gallery images")
-        print("  are more generous, but check if one is refused:")
-        for n, kb in big:
-            print(f"    {n}  {kb} KB")
-    print("Upload order is the filename order. The first one people see is")
-    print("mod/preview.jpg, which is made by dev/make_preview.py -- that one")
-    print("stays a JPEG because it has to sit under the 1 MB preview cap.")
+    if a.add is not None:
+        found = shots(src)
+        if not 1 <= a.add <= len(found):
+            sys.exit(f"there is no screenshot {a.add} -- try --list")
+        f = found[a.add - 1]
+        state["images"] = [e for e in state["images"] if e["file"] != f.name]
+        state["images"].append({"file": f.name, "name": a.name or "", "why": a.why,
+                                "full": bool(a.full)})
+        save(state)
+        print(f"added {f.name}")
+
+    if a.new:
+        # Everything newer than the newest thing already picked. "Since last
+        # time" beats a date the user has to remember, and a screenshot taken
+        # BEFORE the ones already chosen is almost never the one they meant.
+        known = [f for f in shots(src) if f.name in picked]
+        cutoff = max((f.stat().st_mtime for f in known), default=0)
+        fresh = [f for f in shots(src) if f.stat().st_mtime > cutoff]
+        for f in reversed(fresh):
+            state["images"].append({"file": f.name, "name": "", "why": "",
+                                    "full": bool(a.full)})
+        save(state)
+        print(f"added {len(fresh)} new screenshot(s)")
+
+    build(state, src)
 
 
 if __name__ == "__main__":
