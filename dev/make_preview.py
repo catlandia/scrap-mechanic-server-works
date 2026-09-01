@@ -20,7 +20,10 @@ Usage:
     python dev/make_preview.py                 re-render at the current version
     python dev/make_preview.py --bump          increment VERSION, then render
     python dev/make_preview.py --set 7         set an explicit version
-    python dev/make_preview.py --photo shot.png  use a screenshot as the backdrop
+    python dev/make_preview.py --photo shot.png  use a different screenshot
+    python dev/make_preview.py --drawn         force the drawn city instead
+    python dev/make_preview.py --photo shot.png --crop 0,0,3440,1240
+                                               ...and cut the HUD off it first
 """
 import io
 import math
@@ -41,6 +44,16 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 VERSION_FILE = ROOT / "VERSION"
 SCRIPTS = ROOT / "mod" / "Scripts"
 OUT = ROOT / "mod" / "preview.jpg"
+
+# THE BACKDROP LIVES IN THE REPO, and that is the point of it being here.
+#
+# It is the owner's own Steam screenshot of a /bench run -- 90 crowd bots
+# standing on a Server Works city -- cropped to lose the hotbar and the debug
+# readout. Copied in rather than referenced where Steam keeps it, because this
+# script runs on every version bump: a path into another program's userdata
+# would render fine today and silently fall back to the drawing the day that
+# folder moved, on the one machine nobody would think to check.
+BACKDROP = ROOT / "dev" / "preview-backdrop.jpg"
 
 # Steam Workshop shows previews at 16:9; every workshop item checked was 1920x1080.
 SIZE = (1920, 1080)
@@ -200,7 +213,7 @@ def scrim(img, width):
     g = Image.new("L", (width, 1))
     for x in range(width):
         t = x / max(1, width - 1)
-        g.putpixel((x, 0), int(238 * (1.0 - t) ** 1.6))
+        g.putpixel((x, 0), int(248 * (1.0 - t) ** 1.35))
     g = g.resize((width, img.size[1]))
     black = Image.new("RGBA", (width, img.size[1]), BG + (255,))
     black.putalpha(g)
@@ -218,20 +231,35 @@ def main():
 
     img = Image.new("RGBA", SIZE, BG + (255,))
 
-    photo = None
+    photo = BACKDROP if BACKDROP.is_file() else None
     if "--photo" in sys.argv:
         photo = pathlib.Path(sys.argv[sys.argv.index("--photo") + 1])
+    if "--drawn" in sys.argv:
+        photo = None                 # force the isometric render instead
 
     if photo and photo.is_file():
         # A REAL SCREENSHOT BEATS THE RENDER. Cover-fit, then dim it so the
         # text stays legible at thumbnail size.
         shot = Image.open(photo).convert("RGBA")
+        # CROP BEFORE FITTING. A game screenshot carries a hotbar, a compass and
+        # whatever debug text was on screen -- none of which belongs on a store
+        # page. Cutting it here rather than dimming it later keeps the part that
+        # is worth showing at full size instead of shrinking it to make room.
+        if "--crop" in sys.argv:
+            cx, cy, cw, ch = (int(v) for v in
+                              sys.argv[sys.argv.index("--crop") + 1].split(","))
+            shot = shot.crop((cx, cy, cx + cw, cy + ch))
         sc = max(SIZE[0] / shot.width, SIZE[1] / shot.height)
         shot = shot.resize((int(shot.width * sc) + 1, int(shot.height * sc) + 1),
                            Image.LANCZOS)
         img.alpha_composite(shot, (-(shot.width - SIZE[0]) // 2,
                                    -(shot.height - SIZE[1]) // 2))
-        img.alpha_composite(Image.new("RGBA", SIZE, BG + (90,)))
+        # DIM HARDER FOR A PHOTO THAN FOR THE RENDER. A game screenshot carries
+        # floating name tags and a compass that the title has to compete with --
+        # the first attempt put the tagline straight through a row of bot names
+        # and neither could be read. The render has no such clutter, so it does
+        # not need this.
+        img.alpha_composite(Image.new("RGBA", SIZE, BG + (120,)))
         drew = True
         print(f"  backdrop: {photo.name}")
     else:
@@ -240,7 +268,8 @@ def main():
         print("  backdrop: " + ("the real city, from Layout.lua"
                                 if drew else "flat (lupa missing)"))
 
-    scrim(img, int(SIZE[0] * 0.62))
+    # Wider and stronger when a photo is behind it, for the same reason.
+    scrim(img, int(SIZE[0] * (0.70 if photo and photo.is_file() else 0.62)))
 
     d = ImageDraw.Draw(img)
     f_title = load_font(132)

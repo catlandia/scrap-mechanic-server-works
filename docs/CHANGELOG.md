@@ -39,8 +39,27 @@ Two things went wrong on the way and both are worth keeping:
   slab with the plots standing on it now, which is both tidier and what the city
   actually is.
 
-`--photo <file>` swaps in a real screenshot as the backdrop. **That beats the
-render the day one exists** -- there is no in-game shot of a finished city yet.
+### ...and then a real screenshot turned up, so it is that instead
+
+There WAS an in-game shot -- 341 of them, in Steam's own folder rather than the
+library I first looked in. The one used is a `/bench` run: **90 crowd bots
+standing on a Server Works city**, roster HUD and event HUD live, cropped to
+lose the hotbar and the benchmark readout.
+
+That is the mod doing the thing the mod is for, so it beats any drawing. The
+render stays as `--drawn` and as the automatic fallback.
+
+**The backdrop is copied into the repo** (`dev/preview-backdrop.jpg`) rather
+than referenced where Steam keeps it. This script runs on every version bump,
+and a path into another program's userdata would render correctly today and
+silently fall back to the drawing the day that folder moved -- on the one
+machine nobody would think to check.
+
+Also offered and declined: four `.webp` files on the Desktop. They are
+Reddit-sourced screenshots of somebody else's game -- the filenames carry
+Reddit's `-v0-<hash>` pattern -- and they show vanilla Chapter 2, not this mod.
+Publishing another person's screenshot as our own preview is not a thing to do
+by accident.
 
 
 > "you know what. lets allow to install block mods."
