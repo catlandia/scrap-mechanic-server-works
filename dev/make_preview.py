@@ -55,6 +55,17 @@ OUT = ROOT / "mod" / "preview.jpg"
 # folder moved, on the one machine nobody would think to check.
 BACKDROP = ROOT / "dev" / "preview-backdrop.jpg"
 
+# A FOOTNOTE THAT BELONGS TO THAT PARTICULAR PICTURE, which is why it lives next
+# to it rather than in the layout code.
+#
+# The 90 mechanics in the shot are /crowd bots on a benchmark, not ninety people
+# who turned up. A store image showing a packed server is a claim, and this
+# project has never once run a real event -- so the picture has to say what it
+# is. Swap BACKDROP and this has to be revisited with it, which is the point of
+# the two being declared together.
+BACKDROP_NOTE = ("* the mechanics above are /crowd test bots on a benchmark, "
+                 "not real players")
+
 # Steam Workshop shows previews at 16:9; every workshop item checked was 1920x1080.
 SIZE = (1920, 1080)
 
@@ -301,6 +312,12 @@ def main():
 
     d.text((x + bw + 26, by + 6), "WORK IN PROGRESS", font=f_wip, fill=WARN)
     d.text((x + bw + 26, by + 42), "expect rough edges", font=f_wip, fill=MUTED)
+
+    # Only for the backdrop it describes. A different --photo may have real
+    # people in it, and a stale disclaimer is worse than none.
+    if photo is not None and photo == BACKDROP:
+        d.text((x, SIZE[1] - 78), BACKDROP_NOTE, font=load_font(24, bold=False),
+               fill=(120, 126, 140))
 
     img.convert("RGB").save(OUT, "JPEG", quality=92, optimize=True)
     print(f"VERSION = {version}")
