@@ -10,6 +10,77 @@ was most of them.
 
 ---
 
+## V80 -- the renovation switch leaked across worlds, and opened a whole city
+
+> "I still can break the other plots. just look."
+
+Right, and the log named it in one line. A **brand new** world, seconds old:
+
+    settings applied in world: fire=false plots=true mode=open
+      (195 bodies, 0 changed [open_destructible 195])
+
+195 of 195 bodies fully open -- buildable and erasable by anybody. `citybuild`
+was **true**, left there by a bridge test in a different world hours earlier,
+and it is the widest "open everything" switch the mod has.
+
+### The bug was a decision, not a slip
+
+V79 wrote `Sv_ResetWorldState` as a hand-written list of keys and deliberately
+left `citybuild` off it, with a comment explaining why: *"it is the renovation
+switch, it is off by default anyway, and a host who turned it on for how they
+run events should not have to find it again."*
+
+Both halves are wrong.
+
+- **Off by default protects nobody once it has been switched on.** A default
+  only ever applies to a key that is ABSENT, and this one was written to
+  `Settings.json` the first time it was tested. It had been true for hours.
+- **It is not a preference.** The test for world state is not whether a host
+  thinks of it as taste -- it is **whether turning it on changes what the lobby
+  may do**. `citybuild` changes that more than any other setting in the file.
+
+Which keys reset is a property of the KEY now: `world = true` in the schema,
+and `Sv_ResetWorldState` walks it. Five carry it -- `protection`, `buildopen`,
+`plots`, `pushintruders`, `citybuild` -- and the check names all five outright
+as well as walking the flag, because a check that only walks the flag proves
+the machinery and nothing about the membership. A list is where the missing
+entry lived, so a check forbids going back to one.
+
+**A migration turns it off once on machines that already have it on**, because
+marking it `world = true` does nothing for a file that already says true. Same
+gap the import cap had to work around in V56.
+
+### Nothing was watching the thing that broke
+
+The deeper miss is that **no check said what each kind of body is supposed to
+end up as.** There were checks for the pieces -- unclaimed is shut, a claimed
+plot with nobody on it is locked, the over-budget verdict only downgrades --
+and every one of them passed while four of the six cases had quietly become
+"open", because each set `citybuild` itself or never touched it.
+
+`who_can_break_what` is the missing one: six rows through the real resolver and
+the real profiles, in one table.
+
+| with renovation OFF | build | erase |
+|---|---|---|
+| a free plot's floor | no | no |
+| something standing on a free plot | no | **yes** -- litter must stay clearable |
+| somebody else's floor | no | no |
+| somebody else's build | no | no |
+| your own | yes | yes |
+
+Plus: renovation opens unowned ground and **never** a claimed plot, and a
+lockdown beats both. Break any cell and it says which one.
+
+### Also
+
+- The store description leads with **VERY EARLY TESTING** and the honest number
+  -- fewer than a third of the features have ever been run in a live game, which
+  is `/check`'s count rather than an impression -- instead of burying "work in
+  progress" after the feature list.
+
+---
+
 ## V79 -- unclaimed ground belongs to nobody, and teaming is finally reachable
 
 > "the default when joining is build mode. and you should only be able to build

@@ -539,11 +539,12 @@ Settings.SCHEMA = {
 	-- opposite of what an event server is for, and the opposite of what every
 	-- other default here assumes. See Settings.Sv_ResetWorldState, which forces
 	-- it on for each new world for the same reason.
-	{ key = "plots", kind = "bool", default = true, help = "restrict building to owned plots" },
+	{ key = "plots", kind = "bool", default = true, world = true,
+	  help = "restrict building to owned plots" },
 	-- See Settings.CityIsOpen for what this costs as well as what it gives.
-	{ key = "citybuild", kind = "bool", default = false,
+	{ key = "citybuild", kind = "bool", default = false, world = true,
 	  help = "renovation: build anywhere nobody has claimed -- roads, plaza, deck, free plots" },
-	{ key = "pushintruders", kind = "bool", default = true,
+	{ key = "pushintruders", kind = "bool", default = true, world = true,
 	  help = "shove players off plots they do not own" },
 
 	-- "Allowlists sounds like a good idea" -- JuneCarya, stream chat, endorsed by
@@ -579,7 +580,7 @@ Settings.SCHEMA = {
 	  help = "rule 4: lights per plot, 0 = unlimited" },
 	{ key = "minbuildheight", kind = "number", default = 0,
 	  help = "rule 1: no basements -- lowest z anything may be built at" },
-	{ key = "buildopen", kind = "bool", default = true,
+	{ key = "buildopen", kind = "bool", default = true, world = true,
 	  help = "rule 3: building allowed. off = nobody builds until you say go" },
 	{ key = "beacons", kind = "bool", default = false, help = "rule 12: allow beacons" },
 	{ key = "fireworks", kind = "bool", default = false, help = "rule 11: allow fireworks" },
@@ -605,6 +606,7 @@ Settings.SCHEMA = {
 	  help = "internal: the world this mod's saved state belongs to" },
 
 	{ key = "protection", kind = "string", default = "open", hidden = true,
+	  world = true,
 	  help = "current protection mode: open, polish, display, sweep or locked" },
 
 	-- Above 256, deliberately. The remove tool deletes at most 16x16 = 256
@@ -755,6 +757,23 @@ Settings.MIGRATIONS = {
 	-- applies to a key that is ABSENT.
 	{ key = "import_cap_off_for_host_v56", run = function( values )
 		values.maximportparts = 0
+	end },
+	-- CITYBUILD OFF, ONCE, ON EVERY MACHINE THAT ALREADY HAS IT ON.
+	--
+	-- Marking it `world = true` makes every NEW world start it off, and does
+	-- nothing at all for the file that already says true -- a default only ever
+	-- applies to a key that is ABSENT, which is the same thing the import cap
+	-- above had to work around.
+	--
+	-- That gap is not theoretical here. This owner's live Settings.json had
+	-- citybuild true, left by a bridge test in a different world, and it is what
+	-- put 195 of 195 bodies on `open_destructible` in a brand new city:
+	-- "I still can break the other plots."
+	--
+	-- Runs once, keyed like every other migration, so a host who genuinely wants
+	-- renovation on turns it back on and keeps it for that world.
+	{ key = "citybuild_off_after_the_v79_leak", run = function( values )
+		values.citybuild = false
 	end },
 }
 
@@ -1356,20 +1375,34 @@ end
 -- "the default when joining is build mode. and you should only be able to build
 -- on plot that is owned."
 --
--- protection and buildopen were already reset here -- a fresh world inheriting
--- the last one's lockdown is the bug this function exists for. `plots` was not,
--- and it defaulted OFF, so the one thing that makes this an event server rather
--- than a creative world had to be switched on by hand every time. It is world
--- regime, exactly like the other two: a new world has a new city and no claims
--- on it, so there is nothing a host could lose by it coming up owned-plots-only.
+-- WHICH KEYS RESET IS A PROPERTY OF THE KEY, not a list kept here, and that is
+-- the whole of what V80 fixed. `world = true` in the SCHEMA means "this
+-- describes the WORLD, so a new world starts it fresh"; everything else
+-- describes the HOST and is carried over, which is why `developer`, the tool
+-- switches and the city style survive.
 --
--- `citybuild` is deliberately NOT reset. It is the renovation switch, it is off
--- by default anyway, and a host who turned it on for how they run events should
--- not have to find it again -- the same rule that keeps `developer` out of here.
+-- V79 SHIPPED THIS AS A HAND-WRITTEN LIST AND LEFT citybuild OFF IT, on the
+-- reasoning that the renovation switch is a host preference that is off by
+-- default anyway. Both halves of that were wrong, and the log said so within
+-- the hour:
+--
+--     settings applied in world: plots=true mode=open
+--       (195 bodies, 0 changed [open_destructible 195])
+--
+-- 195 of 195 bodies fully open on a BRAND NEW WORLD. citybuild had been left on
+-- by a test in a different world hours earlier, it is the single widest "open
+-- everything" switch in the mod, and being off by default protects nobody once
+-- it has been switched on once. REPORTED: "I still can break the other plots."
+--
+-- The general rule this cost: a setting is world state if turning it on changes
+-- what the LOBBY may do, not if a host happens to think of it as a preference.
+-- Deriving the set from the schema is what stops the next one being decided by
+-- whoever adds it.
 function Settings.Sv_ResetWorldState( stamp )
-	Settings.Sv_SetQuiet( "protection", "open" )
-	Settings.Sv_SetQuiet( "buildopen", true )
-	Settings.Sv_SetQuiet( "plots", true )
-	Settings.Sv_SetQuiet( "pushintruders", true )
+	for _, row in ipairs( Settings.SCHEMA ) do
+		if row.world then
+			Settings.Sv_SetQuiet( row.key, row.default )
+		end
+	end
 	Settings.Sv_SetQuiet( "worldstamp", stamp )
 end

@@ -1,7 +1,7 @@
 {
 	"allow_add_mods" : true,
 	"custom_icons" : true,
-	"description" : "WORK IN PROGRESS. Creative custom game built for hosting building events: plots, an event clock, anti-grief protection you can arm in one command, and a ban list that survives between events. Most of it has not yet been run in a real event -- expect rough edges. Block mods can be enabled alongside it: ONLY ADD MODS YOU TRUST. There is no sandbox between mods, so anything you tick runs on your machine with the same reach this one has.",
+	"description" : "VERY EARLY TESTING -- this is the first release and it has never been run at a real event. Fewer than a third of its features have been tested in a live game at all. Expect bugs, expect to lose a build, and please do not run it on anything you would be upset to lose. Creative custom game built for hosting building events: claimable plots with teams, an event clock, anti-grief protection you can arm in one command, whole-world snapshots you can roll back to, and a ban list that survives between events. Block mods can be enabled alongside it: ONLY ADD MODS YOU TRUST. There is no sandbox between mods, so anything you tick runs on your machine with the same reach this one has.",
 	"localId" : "a34bfc8b-2570-420a-973b-3409182dad8d",
 	"name" : "Server Works",
 	"type" : "Custom Game",

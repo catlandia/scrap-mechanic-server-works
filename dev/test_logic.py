@@ -1777,24 +1777,65 @@ def a_new_world_does_not_inherit_the_last_ones_state():
     S, E = lua.globals().Settings, lua.globals().Event
     S.Sv_Load(False)
 
-    # the state a previous world leaves behind
-    S.Sv_SetQuiet("protection", "locked")
-    S.Sv_SetQuiet("buildopen", False)
+    # EVERY key that describes a world, left in the worst state a previous world
+    # could leave it in -- not a chosen two. The reset is derived from the
+    # schema's `world` flag, so this walks the same flag from the other end: set
+    # them all wrong, reset, and demand every one came back to its default.
+    worldly = {}
+    for row in S.SCHEMA.values():
+        if row["world"]:
+            worldly[row["key"]] = row["default"]
+    assert worldly, "no setting is marked `world = true`, so the reset resets nothing"
+
+    for key, default in worldly.items():
+        if isinstance(default, bool):
+            S.Sv_SetQuiet(key, not default)
+        elif isinstance(default, str):
+            S.Sv_SetQuiet(key, "locked")
+        else:
+            S.Sv_SetQuiet(key, float(default) + 1)
     S.Sv_SetQuiet("worldstamp", "the-old-world")
     # ...and a host preference, which must SURVIVE
     S.Sv_SetQuiet("maxjoints", 3)
 
     S.Sv_ResetWorldState("the-new-world")
 
-    assert S.Get("protection") == "open", (
-        "a new world still starts on the previous world's protection mode -- "
-        "which is how a fresh world came up locked")
-    assert S.Get("buildopen") is True, "a new world still starts with building shut"
+    for key, default in worldly.items():
+        assert S.Get(key) == default, (
+            f"a new world inherited {key!r} from the last one: it is {S.Get(key)!r} "
+            f"and should be {default!r}")
     assert S.Get("worldstamp") == "the-new-world", "the stamp was not updated"
     assert S.Get("maxjoints") == 3, (
-        "the reset wiped a HOST preference. Only the two settings that describe "
-        "a particular world may be cleared; losing the tool and rule settings on "
+        "the reset wiped a HOST preference. Only settings that describe a "
+        "particular world may be cleared; losing the tool and rule settings on "
         "every new world would be its own bug")
+
+    # THE FIVE THAT HAVE TO CARRY THE FLAG, named outright.
+    #
+    # Deriving the reset from the schema is only as good as the flag being on
+    # the right rows, and a check that walks the flag from both ends proves the
+    # machinery and nothing about the membership. `citybuild` shipped in V79
+    # WITHOUT it, deliberately, on the reasoning that the renovation switch is a
+    # host preference -- and a brand new world came up with all 195 bodies
+    # `open_destructible` because a test in a different world had left it on
+    # hours earlier. REPORTED: "I still can break the other plots."
+    #
+    # The rule: a setting is world state if turning it on changes what the LOBBY
+    # may do. Every one of these does.
+    for key in ("protection", "buildopen", "plots", "pushintruders", "citybuild"):
+        assert key in worldly, (
+            f"{key!r} is not marked `world = true`, so a new world inherits it "
+            f"from whatever the last one was left on. That is how citybuild "
+            f"opened an entire fresh city to everybody")
+
+    # ...and the reset must not go back to being a hand-written list, because a
+    # list is where the missing entry lived.
+    src = io.open(SCRIPTS / "Settings.lua", encoding="utf-8").read()
+    at = src.index("function Settings.Sv_ResetWorldState")
+    body = src[at:src.index("\nend", at)]
+    assert "row.world" in body, (
+        "Sv_ResetWorldState no longer derives from the schema flag. A list here "
+        "is what let citybuild be forgotten")
 
     ev = E.Sv_ResetFile()
     assert ev["phase"] == "off", (
@@ -3703,6 +3744,128 @@ def the_team_screen_is_reachable_without_typing():
     assert "tonumber( data.index )" in body, (
         "the team action does not resolve a plot number -- if it passes a name "
         "through it inherits the bug the ban picker exists to avoid")
+
+
+def who_can_break_what():
+    """The whole plot truth table, in one place, through the real resolver.
+
+    REPORTED, after V79 shipped: "I still can break the other plots."
+
+    The cause was `citybuild` surviving into a new world -- see
+    a_new_world_does_not_inherit_the_last_ones_state -- but the reason it took a
+    log to find is that no single check said what each kind of body is SUPPOSED
+    to end up as. There were checks for the pieces: unclaimed is shut, a claimed
+    plot with nobody on it is locked, the trim profile downgrades. None of them
+    put the six cases side by side, so a switch that quietly turned four of them
+    into "open" broke nothing that was being watched.
+
+    Six rows, two settings, the real Protection profiles. If any cell moves,
+    this says which one.
+    """
+    lua = fresh("Layout.lua", "Palette.lua", "Settings.lua", "Protection.lua",
+                "Plots.lua", "Event.lua")
+    S = lua.globals().Settings
+    S.Sv_Load(False)
+    P, Prot, L = lua.globals().Plots, lua.globals().Protection, lua.globals().Layout
+
+    plots = lua.eval("Plots()")
+    P.sv_onCreate(plots, lua.table_from({"grid": lua.table_from({}), "enabled": True}))
+    plots["enabled"] = True
+    lua.globals().g_swPlots = plots
+    prot = lua.eval("Protection()")
+    Prot.sv_onCreate(prot, "open")
+    lua.globals().g_swProtection = prot
+
+    Prot.sv_setResolver(prot, lua.execute("""
+        return function( body )
+            if g_swPlots:sv_isScenery( body ) and not Settings.CityIsOpen() then
+                return "locked"
+            end
+            local zone = g_swPlots:sv_bodyIsOpen( body )
+            if zone == "sweep" then return "sweep" end
+            if Settings.Get( "buildopen" ) == false
+                and not g_swProtection:sv_modeClosesBuilding() then
+                return false
+            end
+            return zone
+        end
+    """))
+    Prot.sv_setGroundTest(prot, lua.execute(
+        "return function( body ) return g_swPlots:sv_isGround( body ) end"))
+
+    B = float(P.BLOCK)
+    mk = lua.execute("""
+        return function( x, y, zmin, zmax )
+            local b = { worldPosition = { x = x, y = y, z = zmin } }
+            function b:isOnLift() return false end
+            function b:isGhost() return false end
+            function b:getShapes() return { { shapeUuid = "not-ours" } } end
+            function b:getWorldAabb()
+                return { x = x - 2, y = y - 2, z = zmin },
+                       { x = x + 2, y = y + 2, z = zmax }
+            end
+            return b
+        end
+    """)
+
+    def flags(index, slab):
+        bx, by = L.plotCentre(plots["layout"], index)
+        # a slab reaches the floor; a build on it starts above the slab's top
+        body = mk(float(bx) * B, float(by) * B,
+                  1.00 if slab else 1.30, 1.25 if slab else 2.50)
+        got = Prot.sv_profileForTest(prot, body)
+        prof = got[0] if isinstance(got, tuple) else got
+        assert prof is not None, f"no profile at all for plot {index}"
+        return bool(prof["buildable"]), bool(prof["erasable"])
+
+    def setup(citybuild):
+        S.Sv_SetQuiet("citybuild", citybuild)
+        S.Sv_SetQuiet("buildopen", True)
+        Prot.sv_setMode(prot, "open")
+        plots["owners"] = lua.table_from({})
+        plots["zoneOpen"] = lua.table_from({})
+        plots["zoneHeld"] = lua.table_from({})
+        plots["owners"][2] = "SOMEBODY-ELSE"      # theirs, nobody standing on it
+        plots["owners"][3] = "ME"
+        P.sv_holdTeam(plots, lua.table_from({"kind": "plot", "index": 3}))
+
+    # ---- ORDINARY EVENT: renovation off. This is the shipping default. -------
+    setup(False)
+    #                                        build  erase
+    WANT = {
+        ("free plot", "slab"):              (False, False),
+        # litter, and it has to stay clearable or junk dumped across a few
+        # hundred empty squares is permanent
+        ("free plot", "build"):             (False, True),
+        ("their plot", "slab"):             (False, False),
+        ("their plot", "build"):            (False, False),
+        ("my plot", "slab"):                (True, True),
+        ("my plot", "build"):               (True, True),
+    }
+    index = {"free plot": 1, "their plot": 2, "my plot": 3}
+    for (where, kind), want in WANT.items():
+        got = flags(index[where], kind == "slab")
+        assert got == want, (
+            f"citybuild off, {where} {kind}: buildable/erasable is {got}, "
+            f"should be {want}")
+
+    # ---- RENOVATION ON: unowned ground opens, OWNED ground does not. --------
+    setup(True)
+    assert flags(1, True) == (True, True), (
+        "renovation is on and a free plot is still shut")
+    assert flags(2, True) == (False, False), (
+        "RENOVATION OPENED SOMEBODY ELSE'S PLOT. It is permission over unowned "
+        "ground, never over a build somebody has claimed")
+    assert flags(2, False) == (False, False), (
+        "renovation opened a build standing on somebody else's plot")
+
+    # ---- AND A LOCKDOWN BEATS BOTH. ----------------------------------------
+    Prot.sv_setMode(prot, "locked")
+    for where in ("free plot", "their plot", "my plot"):
+        for slab in (True, False):
+            assert flags(index[where], slab) == (False, False), (
+                f"a lockdown left {where} open -- renovation is permission to "
+                f"build, never permission to ignore the mode")
 
 
 def every_panel_is_actually_checked():
@@ -9976,6 +10139,8 @@ def no_panel_is_taller_than_the_canvas():
 
 
 def main():
+    check("plots: the whole truth table of who can break what",
+          who_can_break_what)
     check("panels: every panel on disk is actually checked",
           every_panel_is_actually_checked)
     check("teams: only the four next to you, and never across a road",
