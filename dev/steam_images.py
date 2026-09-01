@@ -3,7 +3,12 @@
 The Workshop shows one preview (mod/preview.jpg, made by make_preview.py) and
 then a gallery. This crops the chosen screenshots to 16:9, cuts the hotbar and
 whatever debug text was on screen, and writes them numbered into dev/steam/
-ready to upload.
+as lossless PNGs, ready to upload.
+
+PNG rather than JPEG because half of these are UI panels and striped roads --
+hard edges and small text, which is exactly what JPEG smears, and a gallery
+image gets looked at full size. The mod's own preview stays a JPEG: Steam caps
+the PREVIEW image at 1 MB and a photographic PNG will not fit under it.
 
 NO OVERLAY ON THESE, deliberately. The preview carries the title, the version
 and the work-in-progress warning; a gallery shot that repeats all that is a
@@ -79,7 +84,7 @@ def main():
         return
 
     OUT.mkdir(parents=True, exist_ok=True)
-    made = 0
+    made, big = 0, []
     for name, f, crop, why in CHOSEN:
         path = src / f
         if not path.is_file():
@@ -96,14 +101,26 @@ def main():
         im = im.crop(((im.width - SIZE[0]) // 2, (im.height - SIZE[1]) // 2,
                       (im.width - SIZE[0]) // 2 + SIZE[0],
                       (im.height - SIZE[1]) // 2 + SIZE[1]))
-        dst = OUT / f"{name}.jpg"
-        im.save(dst, "JPEG", quality=92, optimize=True)
-        print(f"  {dst.name:22} {dst.stat().st_size // 1024:4} KB   {why[:52]}")
+        dst = OUT / f"{name}.png"
+        im.save(dst, "PNG", optimize=True)
+        kb = dst.stat().st_size // 1024
+        print(f"  {dst.name:22} {kb:5} KB   {why[:50]}")
         made += 1
+        if kb > 1024:
+            big.append((dst.name, kb))
 
     print(f"\n{made} image(s) in {OUT}")
+    if big:
+        # Steam caps the PREVIEW image at 1 MB. Gallery images added on the
+        # Workshop page are more generous, but a file over that is worth
+        # knowing about before an upload refuses rather than after.
+        print("\n  over 1 MB -- that is the Steam PREVIEW cap. Gallery images")
+        print("  are more generous, but check if one is refused:")
+        for n, kb in big:
+            print(f"    {n}  {kb} KB")
     print("Upload order is the filename order. The first one people see is")
-    print("mod/preview.jpg, which is made by dev/make_preview.py.")
+    print("mod/preview.jpg, which is made by dev/make_preview.py -- that one")
+    print("stays a JPEG because it has to sit under the 1 MB preview cap.")
 
 
 if __name__ == "__main__":
