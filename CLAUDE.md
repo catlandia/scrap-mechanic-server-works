@@ -97,7 +97,12 @@ alarm exists to detect, contain and reverse.
 
 There is no sandbox between mods, so a Blocks-and-Parts mod enabled beside this
 one runs server-side Lua on the host with nearly our own reach. `allow_add_mods`
-is therefore a security setting, and it is now **false**.
+is therefore a security setting, and **as of V74 it is TRUE** -- reversed on the
+owner's instruction, with the reasoning at the top of that document. The short
+version of the reversal: **a guest cannot bring mods** (measured, 101 subscribed
+and 1 loaded on a real join), so the only person who can open that door is the
+host, on their own machine. Deciding it for them cost the feature an event
+actually wants. `dev/session_stats.py` now lists every mod a session loaded.
 
 The short version, all of it measured: a guest CANNOT bring their own mods (101
 subscribed, 1 loaded, on a real join), an installed-but-unticked mod executes
@@ -2463,7 +2468,8 @@ credit it with fixing the thing that actually degraded.
 
 ## What exists
 
-    mod/description.json        Custom Game, version 1, allow_add_mods
+    mod/description.json        Custom Game, version 1, allow_add_mods TRUE
+                                since V74 -- see docs/MODS-AND-TRUST.md
     mod/config.json             baseGameContent "Survival" -- the ONLY value that
                                 works; "Creative" registers no scriptable objects
                                 and CreativeGame then never creates a world

@@ -171,7 +171,38 @@ every world in the chain, and an event host is the highest-fanout node in it.
 
 ## What was done
 
-1. **`allow_add_mods: false`** in `mod/description.json`. This is the whole
+> ## REVERSED, V74: `allow_add_mods` is TRUE again
+>
+> Asked for plainly: *"you know what. lets allow to install block mods."*
+>
+> **Nothing below is withdrawn.** Every measurement in this document still
+> holds: there is no sandbox between mods, a Blocks-and-Parts mod enabled
+> beside this one runs server-side Lua on the host with nearly our own reach,
+> and T mod's host-takeover backdoor is a real worked example. The facts did
+> not change. The decision did.
+>
+> **What makes it defensible is the one measurement that decides who is
+> exposed: a guest cannot bring their own mods.** MEASURED, on a real join --
+> 101 subscribed, 1 loaded. The only person who can enable a mod is the HOST,
+> at world creation. So `allow_add_mods` is not a hole a lobby can walk
+> through; it is a decision the owner makes about their own machine, and this
+> mod was making it for them.
+>
+> **The cost is real and this owner has already paid it once.** T mod appears
+> in this machine's own logs, in a session with **155 mods loaded**, and the
+> 95 MB / 4.6 Hz incident recorded below happened in a Server Works world by
+> accident with nobody attacking anything.
+>
+> **What changed to make it survivable:** `dev/session_stats.py` now lists
+> every mod a session loaded, with its Workshop id, and says plainly when
+> anything besides the custom game was running. "My own risk" is only true if
+> you can see what you took.
+>
+> An event that wants custom building parts needs this box. Turning it off
+> protected the host from themselves at the price of the feature, and that
+> was the wrong trade to make on somebody else's behalf.
+
+1. **~~`allow_add_mods: false`~~** in `mod/description.json`. This was the whole
    defense: with it off, the tick box is not there to click, and no script of
    ours has to be correct for that to hold. Cost: players get no extra building
    parts beyond base content. **Reverting is one word.**

@@ -10,11 +10,11 @@ Companions:
 [`ROADMAP.md`](ROADMAP.md) the phased plan ·
 [`../CLAUDE.md`](../CLAUDE.md) engine facts with citations ·
 [`ANTI-GRIEF.md`](ANTI-GRIEF.md) why protection cannot be prevention ·
-[`MODS-AND-TRUST.md`](MODS-AND-TRUST.md) why `allow_add_mods` is false ·
+[`MODS-AND-TRUST.md`](MODS-AND-TRUST.md) what a co-loaded mod can do ·
 [`BUTTONS.md`](BUTTONS.md) everything a json GUI needs ·
 [`CHANGELOG.md`](CHANGELOG.md) what every version fixed
 
-Current version: **V73**. All 217 checks pass. `python dev/check_all.py --sync`
+Current version: **V74**. All 217 checks pass. `python dev/check_all.py --sync`
 before playing, and **restart Scrap Mechanic** — scripts are read at world load.
 
 ---
@@ -275,8 +275,10 @@ button saga forced through.
    neon. Guesses at taste, free to change.
 6. **`/purge here <radius>`** is the same guess-and-delete shape as the sweep
    that was removed on request. Say the word and it goes too.
-7. **`allow_add_mods` is `false`** (V54). The mod list is the trust boundary, so
-   decide it per event rather than leaving it open.
+7. **`allow_add_mods` is `true`** (V74, reversed from V54). The mod list is
+   still the trust boundary -- what changed is who decides. A guest cannot bring
+   mods, so the only person who can enable one is you, at world creation.
+   `dev/session_stats.py` lists every mod a session loaded.
 8. **Crowd looks: eleven.** The bots wear vanilla's ten in-game NPC mechanic
    outfits plus the classic mechanic. More variety is possible and it is not
    free — a bespoke outfit per bot is what took 20 bots to 8 fps. If a crowd of

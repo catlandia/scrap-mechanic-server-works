@@ -342,10 +342,12 @@ Written, compiled, checked, installed. **Never once executed in the game.**
   all test the sender. **This is the one line here that cannot be turned green
   solo:** proving a guest is refused needs a second client, and there is no
   dedicated server to stand in for one.
-- **`allow_add_mods: false`** in `description.json`. The world has never been
-  loaded with it off. What to check is only that the world still creates and the
-  Custom Game still lists -- it changes the world-creation screen, and nothing in
-  `dev/` can see that screen.
+- **`allow_add_mods: true`** in `description.json` (V74, reversed). The world
+  has never been loaded either way since V54. What to check is that the world
+  still creates AND that the "add mods" box is now on the world-creation screen
+  -- it changes that screen, and nothing in `dev/` can see it. If you tick
+  anything, `python dev/session_stats.py` afterwards names every mod that
+  loaded.
 
 ### New in V55, none of it run
 

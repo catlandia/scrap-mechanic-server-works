@@ -10,6 +10,50 @@ was most of them.
 
 ---
 
+## V74 -- block mods are allowed again
+
+> "you know what. lets allow to install block mods."
+
+`allow_add_mods` is back to **true**, reversing V54.
+
+**Nothing in `docs/MODS-AND-TRUST.md` is withdrawn.** Every measurement in it
+still holds: there is no sandbox between mods, a Blocks-and-Parts mod enabled
+beside this one runs server-side Lua on the host with nearly our own reach, and
+T mod's host-takeover backdoor is a real worked example. The facts did not
+change; the decision did.
+
+**What makes the reversal defensible is the one measurement that decides who is
+exposed: a guest cannot bring mods.** MEASURED on a real join -- 101 subscribed,
+1 loaded. The only person who can enable one is the HOST, at world creation. So
+this is not a hole a lobby can walk through; it is a decision about the owner's
+own machine, and the mod was making it for them. An event that wants custom
+building parts needs that box, and turning it off protected the host from
+themselves at the price of the feature.
+
+**The cost is real and this owner has already paid it.** T mod is in this
+machine's own logs, in a session with **155 mods loaded**, and the 95 MB / 4.6 Hz
+incident happened in a Server Works world by accident with nobody attacking
+anything.
+
+### So the mod list is now visible after the fact
+
+`dev/session_stats.py` reports every mod a session loaded, name and Workshop id,
+and says plainly when anything besides the custom game was running:
+
+    mods loaded
+      T mod                        BlocksAndPartsMod  workshop 3438987478
+      Despawner Mod                BlocksAndPartsMod  workshop 3297496121
+      ...
+      ^ 155 mod(s) besides the custom game were loaded.
+
+"My own risk" is only true if you can see what you took. The game lists them on
+startup in one line each; nothing was reading it.
+
+`/check` gains `boot-modsbox` -- confirm the box is actually on the world
+creation screen, which is a thing nothing in `dev/` can see.
+
+---
+
 ## V73 -- the BUILD preset was missing the damage switch
 
 > "the building preset shall disable explosives. clay gun, fires. damage. and

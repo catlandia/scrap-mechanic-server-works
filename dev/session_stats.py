@@ -77,6 +77,21 @@ SKIP = re.compile(rb"Skip sending unreliable network data to client (\d+)"
 #
 # The mode is logged as `Multiplayer: Multiplayer(N)` on load and on every
 # change, which is what makes the correlation readable at all.
+# WHAT ELSE WAS LOADED. The game lists every mod on startup in one line:
+#
+#   Server Works - UGC - Type: CustomGameMod Version: 1/1 - Content ID: <uuid>
+#                        - Steam File ID: 0 - Local: true
+#
+# This matters more now that `allow_add_mods` is true. A Blocks-and-Parts mod
+# enabled beside this one runs server-side Lua on the host with nearly our own
+# reach -- there is no sandbox between mods (docs/MODS-AND-TRUST.md). Only the
+# HOST can tick that box, so it is their own risk and nobody else's, but "my
+# own risk" is only true if they can see what they took.
+MODLINE = re.compile(
+    rb"\s*(.+?) - UGC - Type: (\w+)"
+    rb"(?:.*?Content ID: ([0-9a-f-]+))?"
+    rb"(?:.*?Steam File ID: (\d+))?")
+
 STATE = re.compile(rb"State: ([A-Za-z ]+) -> ([A-Za-z ]+)")
 CONN = re.compile(rb"Connection handle: (\d+), user: (\d+)")
 MPMODE = re.compile(rb"Multiplayer: Multiplayer\((\d+)\)")
@@ -104,6 +119,7 @@ def scan(path, want_spam):
     # steam id -> [skips, worst deficit, first minute seen, last minute seen]
     budget = {}
     # the connection story: mode changes, refusals, and auth drops
+    mods = []
     joins = {"modes": [], "refused": collections.Counter(),
              "connected": collections.Counter(), "noauth": [], "last_user": None,
              "mode_now": None}
@@ -133,6 +149,12 @@ def scan(path, want_spam):
                         minute = t // 60
                         e[2] = minute if e[2] is None else e[2]
                         e[3] = minute
+            if b" - UGC - Type: " in line:
+                m2 = MODLINE.search(line)
+                if m2:
+                    mods.append(tuple(
+                        (g.decode(errors="replace") if g else "") for g in m2.groups()))
+
             c = CONN.search(line)
             if c:
                 joins["last_user"] = c.group(2).decode()
@@ -158,7 +180,7 @@ def scan(path, want_spam):
                 msg = HEAD.sub(b"", line).strip()
                 spam[NUM.sub(b"#", msg)[:110]] += 1
 
-    return per_minute, users, max_pid, lines, spam, budget, joins
+    return per_minute, users, max_pid, lines, spam, budget, joins, mods
 
 
 def rates(per_minute):
@@ -185,7 +207,7 @@ def main():
     size = os.path.getsize(path)
     print(f"{os.path.basename(path)}  ({size / 1e6:.1f} MB)")
 
-    per_minute, users, max_pid, lines, spam, budget, joins = scan(path, want_spam)
+    per_minute, users, max_pid, lines, spam, budget, joins, mods = scan(path, want_spam)
     print(f"lines {lines:,}   distinct steam users {len(users)}   highest player id {max_pid}")
 
     r = rates(per_minute)
@@ -214,6 +236,22 @@ def main():
     # logs on this machine -- 50 connections, 10 refusals -- and 8 of those 10
     # were ONE person retrying every few seconds into a visibility setting that
     # did not allow them, ending the instant the host widened it.
+    # EVERY MOD THAT LOADED. First, because if something else was running the
+    # rest of this report is about that as much as about us.
+    print(NL + "mods loaded")
+    if not mods:
+        print("  none listed (an older build, or the line format changed)")
+    else:
+        for name, kind, cid, fid in mods:
+            where = "local" if fid in ("", "0") else f"workshop {fid}"
+            print(f"  {name[:42]:42} {kind:18} {where}")
+        others = [m for m in mods if m[1] != "CustomGameMod"]
+        if others:
+            print(f"  ^ {len(others)} mod(s) besides the custom game were loaded.")
+            print("    There is no sandbox between mods: anything here ran server-side")
+            print("    Lua on the host with nearly this mod's reach. Only the host can")
+            print("    enable one, so this is a record of what THEY chose to trust.")
+
     print(NL + "who could join")
     modes = joins["modes"]
     if modes:
