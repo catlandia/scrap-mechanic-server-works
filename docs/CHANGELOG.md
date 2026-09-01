@@ -10,7 +10,38 @@ was most of them.
 
 ---
 
-## V74 -- block mods are allowed again
+## V74 -- block mods are allowed again, and the preview is the real city
+
+### "only add mods you trust", on the store page
+
+The description now says it outright: block mods can be enabled alongside this,
+there is no sandbox between mods, and anything ticked runs on your machine with
+the same reach this one has. Somebody reading the Workshop page is the person
+who most needs to know that, and it was only written down in a doc they will
+never open.
+
+### The preview picture is drawn from Layout.lua
+
+Not an illustration of the city -- **the city**. `dev/make_preview.py` runs the
+mod's own `Layout.deckPieces` and `Layout.plotRect` through lupa and renders the
+result isometrically, in the colours out of `Palette.lua`. Change the layout and
+the picture changes with it; it cannot drift from the product.
+
+Two things went wrong on the way and both are worth keeping:
+
+- **The scale was a hand-picked number** and produced a close-up of four plots
+  that read as wallpaper. It is fitted to the bounds now -- an iso diamond is
+  `(w + h) * s` across, so solve for `s`. The point of the picture is that it is
+  96 plots around a plaza, which only lands if all 96 are in frame.
+- **Every deck piece was extruded separately**, and a filler seam is one block
+  wide -- so seen edge-on its side face is a long thin spike. The first render
+  sprouted a row of them off the far corner like antennae. The deck is one flat
+  slab with the plots standing on it now, which is both tidier and what the city
+  actually is.
+
+`--photo <file>` swaps in a real screenshot as the backdrop. **That beats the
+render the day one exists** -- there is no in-game shot of a finished city yet.
+
 
 > "you know what. lets allow to install block mods."
 
